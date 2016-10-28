@@ -30,6 +30,7 @@ def build_dechd(salt, keytable, decrypted_size, sector_size):
   version = 5
   keytablep = keytable + '\0' * 192
   keytablep_crc32 = ('%08x' % (binascii.crc32(keytablep) & 0xffffffff)).decode('hex')
+  # Constants are based on what veracrypt-1.17 generates.
   header_format_version = 5
   minimum_version_to_extract = (1, 11)
   hidden_volume_size = 0
@@ -51,7 +52,6 @@ def build_dechd(salt, keytable, decrypted_size, sector_size):
   header = struct.pack('>4sHBB4s16xQQQQLL120x', 'VERA', header_format_version, minimum_version_to_extract[0], minimum_version_to_extract[1], keytablep_crc32, hidden_volume_size, decrypted_size, base_offset_for_key, decrypted_size, flag_bits, sector_size)
   assert len(header) == 188
   header_crc32 = ('%08x' % (binascii.crc32(header) & 0xffffffff)).decode('hex')
-  #assert 0, keytablep_crc32.encode('hex')
   dechd = ''.join((salt, header, header_crc32, keytablep))
   assert len(dechd) == 512
   return dechd
@@ -62,19 +62,24 @@ def build_table(keytable, decrypted_size, raw_device):
   check_decrypted_size(decrypted_size)
   if isinstance(raw_device, (list, tuple)):
     raw_device = '%d:%s' % tuple(raw_device)
+  cipher = 'aes-xts-plain64'
   iv_offset = offset = 0x20000
   start_offset_on_logical = 0
+  opt_params = ('allow_discards',)
+  if opt_params:
+    opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
+  else:
+    opt_params_str = ''
   # https://www.kernel.org/doc/Documentation/device-mapper/dm-crypt.txt
-  return '%d %d crypt aes-xts-plain64 %s %d %s %s 1 allow_discards\n' % (
-      start_offset_on_logical,
-      decrypted_size >> 9,
-      keytable.encode('hex'),
-      iv_offset >> 9,
-      raw_device,
-      offset >> 9)
+  return '%d %d crypt %s %s %d %s %s%s\n' % (
+      start_offset_on_logical, decrypted_size >> 9,
+      cipher, keytable.encode('hex'),
+      iv_offset >> 9, raw_device, offset >> 9, opt_params_str)
 
 
 def work():
+  passphrase = 'foo'
+  raw_device = '7:0'
   decrypted_size = 0x9000
   sector_size = 512
   salt = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d03942ec54401d109d407c8033ede03930c95ddcc61b5b44ce3de6cac8b44'.decode('hex')
@@ -95,10 +100,27 @@ def work():
 
   dechd2 = build_dechd(salt, keytable, decrypted_size, sector_size)
   assert dechd2 == dechd
-  table = build_table(keytable, decrypted_size, '7:0')
-  expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256'
+  table = build_table(keytable, decrypted_size, raw_device)
+  expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256 1 allow_discards\n'
+  assert table == expected_table
 
-  print 'OK'
+  print 'OK1'
+
+  import CryptoPlus.Cipher.python_AES  
+  cipher = CryptoPlus.Cipher.python_AES.new('2b7e151628aed2a6abf7158809cf4f3c'.decode('hex'))
+  crypted = cipher.encrypt('6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51'.decode('hex'))
+  assert crypted.encode('hex') == '3ad77bb40d7a3660a89ecaf32466ef97f5d3d58503b9699de785895a96fdbaaf'
+
+  # !! TODO(pts): How do we derive the key from the passphrase.
+  # !! How do we generate a good keytable? Is it just random?
+  key = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
+  assert len(key) == 64
+  key = 
+  cipher = CryptoPlus.Cipher.python_AES.new((key[0 : 32], key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
+  assert cipher.decrypt(enchd[64:]) == dechd[64:]
+  assert cipher.encrypt(dechd[64:]) == enchd[64:]
+
+  print 'OK2'
 
 
 if __name__ == '__main__':
