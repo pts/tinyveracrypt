@@ -53,6 +53,15 @@ Yes, if the volume was created with the default settings of VeraCrypt 1.17.
 It's possible to open other kinds of volumes as well, some of them is easy
 to add.
 
+Q7. Does tinyveracrypt share any code with VeraCrypt?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""
+No, tinyveracrypt has been written from scratch in Python.
+
+Q8. VeraCrypt has passed a software security audit. Did it cover tinyveracrypt?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+No, it hasn't. tinyveracrypt isn't audited software. If you need audited
+software for encrypted block devices, use vanilla VeraCrypt.
+
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 https://veracrypt.codeplex.com/wikipage?title=VeraCrypt%20Volume%20Format%20Specification
