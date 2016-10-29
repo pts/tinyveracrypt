@@ -10,15 +10,15 @@ import sys
 # --- strxor.
 
 try:
-  import Crypto.Util.strxor
-  def make_strxor(size, strxor=Crypto.Util.strxor.strxor):
+  __import__('Crypto.Util.strxor')
+  def make_strxor(size, strxor=sys.modules['Crypto.Util.strxor'].strxor):
     return strxor
 except ImportError:
   # This is the naive implementation, it's too slow:
   #
   # def strxor(a, b, izip=itertools.izip):
   #   return ''.join(chr(ord(x) ^ ord(y)) for x, y in izip(a, b))
-  # 
+  #
   # 58 times slower pure Python implementation, see
   # http://stackoverflow.com/a/19512514/97248
   def make_strxor(size):
@@ -34,252 +34,173 @@ except ImportError:
 #
 # Uses make_strxor above.
 #
-# !! remove comments, docstrings, unused
 
-strxor_16 = make_strxor(16)
+class rijndael(object):
+    """Helper class used by crypt_aes_xts."""
 
-class XTS:
-    def __init__(self, codebook1, codebook2):
-        self.codebook1 = codebook1
-        self.codebook2 = codebook2
+    # --- Initialize the following constants: [S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, num_rounds, rcon, shifts.
 
-    def update(self, data, ed):
-        # supply n as a raw string
-        # tweak = data sequence number
+    shifts = [[[0, 0], [1, 3], [2, 2], [3, 1]],
+              [[0, 0], [1, 5], [2, 4], [3, 3]],
+              [[0, 0], [1, 7], [3, 5], [4, 4]]]
 
-        output = []
-        assert len(data) > 15, "At least one block of 128 bits needs to be supplied"
-        assert len(data) < (1 << 27)
+    # [keysize][block_size]
+    num_rounds = {16: {16: 10, 24: 12, 32: 14}, 24: {16: 12, 24: 12, 32: 14}, 32: {16: 14, 24: 14, 32: 14}}
 
-        # initializing T
-        # e_k2_n = E_K2(tweak)
-        e_k2_n = self.codebook2.encrypt('\0' * 16)[::-1]
-        self.T = int(e_k2_n.encode('hex'), 16)
+    A = [[1, 1, 1, 1, 1, 0, 0, 0],
+         [0, 1, 1, 1, 1, 1, 0, 0],
+         [0, 0, 1, 1, 1, 1, 1, 0],
+         [0, 0, 0, 1, 1, 1, 1, 1],
+         [1, 0, 0, 0, 1, 1, 1, 1],
+         [1, 1, 0, 0, 0, 1, 1, 1],
+         [1, 1, 1, 0, 0, 0, 1, 1],
+         [1, 1, 1, 1, 0, 0, 0, 1]]
 
-        i=0
-        while i < ((len(data) // 16)-1): #Decrypt all the blocks but one last full block and opt one last partial block
-            # C = E_K1(P xor T) xor T
-            output.append(self.__xts_step(ed,data[i*16:(i+1)*16],self.T))
-            # T = E_K2(n) mul (a pow i)
-            self.__T_update()
-            i+=1
+    # produce log and alog tables, needed for multiplying in the
+    # field GF(2^m) (generator = 3)
+    alog = [1]
+    for i in xrange(255):
+        j = (alog[-1] << 1) ^ alog[-1]
+        if j & 0x100 != 0:
+            j ^= 0x11B
+        alog.append(j)
 
-        # Check if the data supplied is a multiple of 16 bytes -> one last full block and we're done
-        if len(data[i*16:]) == 16:
-            # C = E_K1(P xor T) xor T
-            output.append(self.__xts_step(ed,data[i*16:(i+1)*16],self.T))
-            # T = E_K2(n) mul (a pow i)
-            self.__T_update()
-        else:
-            T_temp = [self.T]
-            self.__T_update()
-            T_temp.append(self.T)
-            if ed=='d':
-                # Permutation of the last two indexes
-                T_temp.reverse()
-            # Decrypt/Encrypt the last two blocks when data is not a multiple of 16 bytes
-            Cm1 = data[i*16:(i+1)*16]
-            Cm = data[(i+1)*16:]
-            PP = self.__xts_step(ed,Cm1,T_temp[0])
-            Cp = PP[len(Cm):]
-            Pm = PP[:len(Cm)]
-            CC = Cm+Cp
-            Pm1 = self.__xts_step(ed,CC,T_temp[1])
-            output.append(Pm1)
-            output.append(Pm)
-        return ''.join(output)
+    log = [0] * 256
+    for i in xrange(1, 255):
+        log[alog[i]] = i
 
-    def __xts_step(self,ed,tocrypt,T):
-        T_string = ('%032x' % T).decode('hex')[::-1]
-        # C = E_K1(P xor T) xor T
-        if ed == 'd':
-            return strxor_16(T_string, self.codebook1.decrypt(strxor_16(T_string, tocrypt)))
-        else:
-            return strxor_16(T_string, self.codebook1.encrypt(strxor_16(T_string, tocrypt)))
+    # multiply two elements of GF(2^m)
+    def mul(a, b, alog, log):
+        if a == 0 or b == 0:
+            return 0
+        return alog[(log[a & 0xFF] + log[b & 0xFF]) % 255]
 
-    def __T_update(self):
-        # Used for calculating T for a certain step using the T value from the previous step
-        self.T = self.T << 1
-        # if (Cout)
-        if self.T >> (8*16):
-            #T[0] ^= GF_128_FDBK;
-            self.T ^= 0x100000000000000000000000000000087
+    # substitution box based on F^{-1}(x)
+    box = [[0] * 8 for i in xrange(256)]
+    box[1][7] = 1
+    for i in xrange(2, 256):
+        j = alog[255 - log[i]]
+        for t in xrange(8):
+            box[i][t] = (j >> (7 - t)) & 0x01
 
+    B = [0, 1, 1, 0, 0, 0, 1, 1]
 
-shifts = [[[0, 0], [1, 3], [2, 2], [3, 1]],
-          [[0, 0], [1, 5], [2, 4], [3, 3]],
-          [[0, 0], [1, 7], [3, 5], [4, 4]]]
-
-# [keysize][block_size]
-num_rounds = {16: {16: 10, 24: 12, 32: 14}, 24: {16: 12, 24: 12, 32: 14}, 32: {16: 14, 24: 14, 32: 14}}
-
-A = [[1, 1, 1, 1, 1, 0, 0, 0],
-     [0, 1, 1, 1, 1, 1, 0, 0],
-     [0, 0, 1, 1, 1, 1, 1, 0],
-     [0, 0, 0, 1, 1, 1, 1, 1],
-     [1, 0, 0, 0, 1, 1, 1, 1],
-     [1, 1, 0, 0, 0, 1, 1, 1],
-     [1, 1, 1, 0, 0, 0, 1, 1],
-     [1, 1, 1, 1, 0, 0, 0, 1]]
-
-# produce log and alog tables, needed for multiplying in the
-# field GF(2^m) (generator = 3)
-alog = [1]
-for i in xrange(255):
-    j = (alog[-1] << 1) ^ alog[-1]
-    if j & 0x100 != 0:
-        j ^= 0x11B
-    alog.append(j)
-
-log = [0] * 256
-for i in xrange(1, 255):
-    log[alog[i]] = i
-
-# multiply two elements of GF(2^m)
-def mul(a, b):
-    if a == 0 or b == 0:
-        return 0
-    return alog[(log[a & 0xFF] + log[b & 0xFF]) % 255]
-
-# substitution box based on F^{-1}(x)
-box = [[0] * 8 for i in xrange(256)]
-box[1][7] = 1
-for i in xrange(2, 256):
-    j = alog[255 - log[i]]
-    for t in xrange(8):
-        box[i][t] = (j >> (7 - t)) & 0x01
-
-B = [0, 1, 1, 0, 0, 0, 1, 1]
-
-# affine transform:  box[i] <- B + A*box[i]
-cox = [[0] * 8 for i in xrange(256)]
-for i in xrange(256):
-    for t in xrange(8):
-        cox[i][t] = B[t]
-        for j in xrange(8):
-            cox[i][t] ^= A[t][j] * box[i][j]
-
-# S-boxes and inverse S-boxes
-S =  [0] * 256
-Si = [0] * 256
-for i in xrange(256):
-    S[i] = cox[i][0] << 7
-    for t in xrange(1, 8):
-        S[i] ^= cox[i][t] << (7-t)
-    Si[S[i] & 0xFF] = i
-
-# T-boxes
-G = [[2, 1, 1, 3],
-    [3, 2, 1, 1],
-    [1, 3, 2, 1],
-    [1, 1, 3, 2]]
-
-AA = [[0] * 8 for i in xrange(4)]
-
-for i in xrange(4):
-    for j in xrange(4):
-        AA[i][j] = G[i][j]
-        AA[i][i+4] = 1
-
-for i in xrange(4):
-    pivot = AA[i][i]
-    if pivot == 0:
-        t = i + 1
-        while AA[t][i] == 0 and t < 4:
-            t += 1
-            assert t != 4, 'G matrix must be invertible'
+    # affine transform:  box[i] <- B + A*box[i]
+    cox = [[0] * 8 for i in xrange(256)]
+    for i in xrange(256):
+        for t in xrange(8):
+            cox[i][t] = B[t]
             for j in xrange(8):
-                AA[i][j], AA[t][j] = AA[t][j], AA[i][j]
-            pivot = AA[i][i]
-    for j in xrange(8):
-        if AA[i][j] != 0:
-            AA[i][j] = alog[(255 + log[AA[i][j] & 0xFF] - log[pivot & 0xFF]) % 255]
-    for t in xrange(4):
-        if i != t:
-            for j in xrange(i+1, 8):
-                AA[t][j] ^= mul(AA[i][j], AA[t][i])
-            AA[t][i] = 0
+                cox[i][t] ^= A[t][j] * box[i][j]
 
-iG = [[0] * 4 for i in xrange(4)]
+    # S-boxes and inverse S-boxes
+    S =  [0] * 256
+    Si = [0] * 256
+    for i in xrange(256):
+        S[i] = cox[i][0] << 7
+        for t in xrange(1, 8):
+            S[i] ^= cox[i][t] << (7-t)
+        Si[S[i] & 0xFF] = i
 
-for i in xrange(4):
-    for j in xrange(4):
-        iG[i][j] = AA[i][j + 4]
+    # T-boxes
+    G = [[2, 1, 1, 3],
+        [3, 2, 1, 1],
+        [1, 3, 2, 1],
+        [1, 1, 3, 2]]
 
-def mul4(a, bs):
-    if a == 0:
-        return 0
-    r = 0
-    for b in bs:
-        r <<= 8
-        if b != 0:
-            r = r | mul(a, b)
-    return r
+    AA = [[0] * 8 for i in xrange(4)]
 
-T1 = []
-T2 = []
-T3 = []
-T4 = []
-T5 = []
-T6 = []
-T7 = []
-T8 = []
-U1 = []
-U2 = []
-U3 = []
-U4 = []
+    for i in xrange(4):
+        for j in xrange(4):
+            AA[i][j] = G[i][j]
+            AA[i][i+4] = 1
 
-for t in xrange(256):
-    s = S[t]
-    T1.append(mul4(s, G[0]))
-    T2.append(mul4(s, G[1]))
-    T3.append(mul4(s, G[2]))
-    T4.append(mul4(s, G[3]))
+    for i in xrange(4):
+        pivot = AA[i][i]
+        if pivot == 0:
+            t = i + 1
+            while AA[t][i] == 0 and t < 4:
+                t += 1
+                assert t != 4, 'G matrix must be invertible'
+                for j in xrange(8):
+                    AA[i][j], AA[t][j] = AA[t][j], AA[i][j]
+                pivot = AA[i][i]
+        for j in xrange(8):
+            if AA[i][j] != 0:
+                AA[i][j] = alog[(255 + log[AA[i][j] & 0xFF] - log[pivot & 0xFF]) % 255]
+        for t in xrange(4):
+            if i != t:
+                for j in xrange(i+1, 8):
+                    AA[t][j] ^= mul(AA[i][j], AA[t][i], alog, log)
+                AA[t][i] = 0
 
-    s = Si[t]
-    T5.append(mul4(s, iG[0]))
-    T6.append(mul4(s, iG[1]))
-    T7.append(mul4(s, iG[2]))
-    T8.append(mul4(s, iG[3]))
+    iG = [[0] * 4 for i in xrange(4)]
 
-    U1.append(mul4(t, iG[0]))
-    U2.append(mul4(t, iG[1]))
-    U3.append(mul4(t, iG[2]))
-    U4.append(mul4(t, iG[3]))
+    for i in xrange(4):
+        for j in xrange(4):
+            iG[i][j] = AA[i][j + 4]
 
-# round constants
-rcon = [1]
-r = 1
-for t in xrange(1, 30):
-    r = mul(2, r)
-    rcon.append(r)
+    def mul4(a, bs, mul, alog, log):
+        if a == 0:
+            return 0
+        r = 0
+        for b in bs:
+            r <<= 8
+            if b != 0:
+                r = r | mul(a, b, alog, log)
+        return r
 
-del A
-del AA
-del pivot
-del B
-del G
-del box
-del log
-del alog
-del i
-del j
-del r
-del s
-del t
-del mul
-del mul4
-del cox
-del iG
+    T1 = []
+    T2 = []
+    T3 = []
+    T4 = []
+    T5 = []
+    T6 = []
+    T7 = []
+    T8 = []
+    U1 = []
+    U2 = []
+    U3 = []
+    U4 = []
 
-class rijndael:
+    for t in xrange(256):
+        s = S[t]
+        T1.append(mul4(s, G[0], mul, alog, log))
+        T2.append(mul4(s, G[1], mul, alog, log))
+        T3.append(mul4(s, G[2], mul, alog, log))
+        T4.append(mul4(s, G[3], mul, alog, log))
+
+        s = Si[t]
+        T5.append(mul4(s, iG[0], mul, alog, log))
+        T6.append(mul4(s, iG[1], mul, alog, log))
+        T7.append(mul4(s, iG[2], mul, alog, log))
+        T8.append(mul4(s, iG[3], mul, alog, log))
+
+        U1.append(mul4(t, iG[0], mul, alog, log))
+        U2.append(mul4(t, iG[1], mul, alog, log))
+        U3.append(mul4(t, iG[2], mul, alog, log))
+        U4.append(mul4(t, iG[3], mul, alog, log))
+
+    # round constants
+    rcon = [1]
+    r = 1
+    for t in xrange(1, 30):
+        r = mul(2, r, alog, log)
+        rcon.append(r)
+
+    del A, AA, pivot, B, G, box, log, alog, i, j, r, s, t, mul, mul4, cox, iG
+
+
+    # --- End of constant initialization.
+
     def __init__(self, key):
         block_size = 16
         if len(key) != 16 and len(key) != 24 and len(key) != 32:
             raise ValueError('Invalid key size: ' + str(len(key)))
         self.block_size = block_size
+        rcon, S, U1, U2, U3, U4 = self.rcon, self.S, self.U1, self.U2, self.U3, self.U4
 
-        ROUNDS = num_rounds[len(key)][block_size]
+        ROUNDS = self.num_rounds[len(key)][block_size]
         BC = block_size / 4
         # encryption round keys
         Ke = [[0] * BC for i in xrange(ROUNDS + 1)]
@@ -347,7 +268,7 @@ class rijndael:
     def encrypt(self, plaintext):
         if len(plaintext) != self.block_size:
             raise ValueError('wrong block length, expected ' + str(self.block_size) + ' got ' + str(len(plaintext)))
-        Ke = self.Ke
+        Ke, shifts, S, T1, T2, T3, T4 = self.Ke, self.shifts, self.S, self.T1, self.T2, self.T3, self.T4
 
         BC = self.block_size / 4
         ROUNDS = len(Ke) - 1
@@ -390,7 +311,7 @@ class rijndael:
     def decrypt(self, ciphertext):
         if len(ciphertext) != self.block_size:
             raise ValueError('wrong block length, expected ' + str(self.block_size) + ' got ' + str(len(plaintext)))
-        Kd = self.Kd
+        Kd, shifts, Si, T5, T6, T7, T8 = self.Kd, self.shifts, self.Si, self.T5, self.T6, self.T7, self.T8
 
         BC = self.block_size / 4
         ROUNDS = len(Kd) - 1
@@ -431,7 +352,8 @@ class rijndael:
         return ''.join(result)
 
 
-# ---
+strxor_16 = make_strxor(16)
+
 
 def check_aes_xts_key(aes_xts_key):
   if len(aes_xts_key) != 64:
@@ -454,10 +376,66 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt):
   #   else:
   #     return cipher.decrypt(data)
 
-  return XTS(rijndael(aes_xts_key[0 : 32]), rijndael(aes_xts_key[32 : 64])).update(data, ('e', 'd')[not do_encrypt])
+  assert len(data) > 15, "At least one block of 128 bits needs to be supplied"
+  assert len(data) < (1 << 27)
+  do_decrypt = not do_encrypt
+  codebook1, codebook2 = rijndael(aes_xts_key[0 : 32]), rijndael(aes_xts_key[32 : 64])
+  codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
+  # initializing T
+  # e_k2_n = E_K2(tweak)
+  e_k2_n = codebook2.encrypt('\0' * 16)[::-1]
+  T = [int(e_k2_n.encode('hex'), 16)]
 
-assert crypt_aes_xts('x' * 64, 'y' * 35, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fa1289ef677ad71945095f99a59d7c366e69269'  # !! Move to test().
+  def step(tocrypt):
+    T_string = ('%032x' % T[0]).decode('hex')[::-1]
+    # C = E_K1(P xor T) xor T
+    return strxor_16(T_string, codebook1_crypt(strxor_16(T_string, tocrypt)))
+
+  def T_update():
+    # Used for calculating T for a certain step using the T value from the previous step
+    T[0] <<= 1
+    # if (Cout)
+    if T[0] >> (8*16):
+      #T[0] ^= GF_128_FDBK;
+      T[0] ^= 0x100000000000000000000000000000087
+
+  output = []
+  i=0
+  while i < ((len(data) // 16)-1): #Decrypt all the blocks but one last full block and opt one last partial block
+    # C = E_K1(P xor T) xor T
+    output.append(step(data[i*16:(i+1)*16]))
+    # T = E_K2(n) mul (a pow i)
+    T_update()
+    i+=1
+
+  # Check if the data supplied is a multiple of 16 bytes -> one last full block and we're done
+  if len(data[i*16:]) == 16:
+    # C = E_K1(P xor T) xor T
+    output.append(step(data[i*16:(i+1)*16]))
+    # T = E_K2(n) mul (a pow i)
+    T_update()
+  else:
+    T_temp = [T[0]]
+    T_update()
+    T_temp.append(T[0])
+    if do_decrypt:
+      # Permutation of the last two indexes
+      T_temp.reverse()
+    # Decrypt/Encrypt the last two blocks when data is not a multiple of 16 bytes
+    Cm1 = data[i*16:(i+1)*16]
+    Cm = data[(i+1)*16:]
+    T[0] = T_temp[0]
+    PP = step(Cm1)
+    Cp = PP[len(Cm):]
+    Pm = PP[:len(Cm)]
+    CC = Cm+Cp
+    T[0] = T_temp[1]
+    Pm1 = step(CC)
+    output.append(Pm1)
+    output.append(Pm)
+  return ''.join(output)
+
 
 # ---
 
@@ -472,7 +450,7 @@ def do_hmac(key, msg, digest_cons, blocksize):
   inner = digest_cons()
   if len(key) > blocksize:
     key = digest_cons(key).digest()
-    # Usually inner.digest_size <= blocksize, so now len(key) < blocksize. 
+    # Usually inner.digest_size <= blocksize, so now len(key) < blocksize.
   key += '\0' * (blocksize - len(key))
   outer.update(key.translate(hmac_trans_5C))
   inner.update(key.translate(hmac_trans_36))
@@ -651,7 +629,7 @@ def check_full_dechd(dechd):
     raise ValueError('Missing NUL padding at 132.')
   if dechd[256 + 64 : 512].lstrip('\0'):
     raise ValueError('Missing NUL padding after keytable.')
-  
+
 
 def build_table(keytable, decrypted_size, raw_device):
   check_keytable(keytable)
@@ -728,6 +706,9 @@ def get_table(device, passphrase, raw_device):
 
 
 def test():
+  assert crypt_aes_xts('x' * 64, 'y' * 32, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fe6926943919e0fc5385306027a473c58'
+  assert crypt_aes_xts('x' * 64, 'y' * 35, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fa1289ef677ad71945095f99a59d7c366e69269'
+
   passphrase = 'foo'
   raw_device = '7:0'
   decrypted_size = 0x9000
