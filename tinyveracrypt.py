@@ -1,12 +1,43 @@
 #! /usr/bin/python
 # by pts@fazekas.hu at Fri Oct 28 16:32:11 CEST 2016
+# !! Which Python version works?
 
 import binascii
 import itertools
 import struct
 import sys
 
-import CryptoPlus.Cipher.python_AES  # !! Embed.
+# ---  AES XTS crypto code.
+# !! embed it
+
+
+def check_aes_xts_key(aes_xts_key):
+  if len(aes_xts_key) != 64:
+    raise ValueError('aes_xts_key must be 64 bytes, got: %d' % len(aes_xts_key))
+
+
+# We use pure Python code (from CryptoPlus) for AES XTS encryption. This is
+# slow, but it's not a problem, because we have to encrypt only 512 bytes
+# per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
+# other C crypto libraries with Python bindings don't support AES XTS.
+def crypt_aes_xts(aes_xts_key, data, do_encrypt):
+  check_aes_xts_key(aes_xts_key)
+  # This would work instead of inlining:
+  #
+  #   import CryptoPlus.Cipher.python_AES
+  #   new_aes_xts = lambda aes_xts_key: CryptoPlus.Cipher.python_AES.new((aes_xts_key[0 : 32], aes_xts_key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
+  import CryptoPlus.Cipher.python_AES
+  new_aes_xts = lambda aes_xts_key: CryptoPlus.Cipher.python_AES.new((aes_xts_key[0 : 32], aes_xts_key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
+  cipher = new_aes_xts(aes_xts_key)
+  if do_encrypt:
+    return cipher.encrypt(data)
+  else:
+    return cipher.decrypt(data)
+
+
+assert crypt_aes_xts('x' * 64, 'y' * 35, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fa1289ef677ad71945095f99a59d7c366e69269'  # !! Move to test().
+
+# ---
 
 # Helpers for do_hmac.
 hmac_trans_5C = ''.join(chr(x ^ 0x5C) for x in xrange(256))
@@ -117,11 +148,6 @@ def check_keytable(keytable):
 def check_header_key(header_key):
   if len(header_key) != 64:
     raise ValueError('header_key must be 64 bytes, got: %d' % len(header_key))
-
-
-def check_aes_xts_key(aes_xts_key):
-  if len(aes_xts_key) != 64:
-    raise ValueError('aes_xts_key must be 64 bytes, got: %d' % len(aes_xts_key))
 
 
 def check_dechd(dechd):
@@ -243,19 +269,6 @@ def build_table(keytable, decrypted_size, raw_device):
       iv_offset >> 9, raw_device, offset >> 9, opt_params_str)
 
 
-# We use pure Python code (from CryptoPlus) for AES XTS encryption. This is
-# slow, but it's not a problem, because we have to encrypt only 512 bytes
-# per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
-# other C crypto libraries with Python bindings don't support AES XTS.
-def crypt_aes_xts(aes_xts_key, data, do_encrypt):
-  check_aes_xts_key(aes_xts_key)
-  cipher = CryptoPlus.Cipher.python_AES.new((aes_xts_key[0 : 32], aes_xts_key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
-  if do_encrypt:
-    return cipher.encrypt(data)
-  else:
-    return cipher.decrypt(data)
-
-
 def encrypt_header(dechd, header_key):
   check_dechd(dechd)
   check_header_key(header_key)
@@ -295,8 +308,22 @@ def parse_dechd(dechd):
   return keytable, decrypted_size
 
 
+def get_table(device, passphrase, raw_device):
+  enchd = open(device).read(512)
+  if len(enchd) != 512:
+    raise ValueError('Raw device too short for VeraCrypt header.')
+  header_key = build_header_key(passphrase, enchd)  # Slow.
+  dechd = decrypt_header(enchd, header_key)
+  try:
+    check_full_dechd(dechd)
+  except ValueError, e:
+    # We may put str(e) to the debug log, if requested.
+    raise ValueError('Incorrect passphrase.')
+  keytable, decrypted_size = parse_dechd(dechd)
+  return build_table(keytable, decrypted_size, raw_device)
+
+
 def test():
-  # !! Is it always 500000 iterations? Does it depend on the passphrase length.
   passphrase = 'foo'
   raw_device = '7:0'
   decrypted_size = 0x9000
@@ -306,7 +333,7 @@ def test():
   # Any 64 random bytes will do as a keytable.
   keytable = 'a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b'.decode('hex')
   enchd = salt + '55ade210c4de6bbf5f623fb944908f0b4952958188dbe9ff0723cc6d6e1fdbf9554f4c9a0bbb4f49066641911ccbcb212234a9e677de9404d58950f5eceab3b9d2b290c071e4c74ee848af4ec2d730b13ded8d9bce64b92786b6eaa1c5abe23f23601a2f4ce30283c791f571548ef30b3b32c4558ec102a96176eea3864e3c3bd0f853e55df2de9125c4e782aca78479065839d7878122d9dc5ac8af8626218a3f74ca327a79b61d0cee6f8c4c5972bd53a87fdb7732a86f775e7f6c7ac801b79fa75759554dce512daa6bc4444b49907fa8adb7e5f14963aa8a6a8a3a5bf51b549a7d7569d641331749e88f453163a56a7a3c7f46375b3adfba9f30be9c41200dd9779eaf52220e732f3e4c7ee9c501e63ccd9c6f53bbb70f649c08d64eb740e034e26cdf8dd8209b2e8da9aac90dab3005215410c48109f263e50ba1fa736fd2de0b252bc008f2f1eab2e0fb42c5579bab32ac86686cc264181790c3426eb16dcbdea12f708758e19bbae1072ef7157cef87fd8722f2d2eca8a85510b83ea3d534031e38e018f8554944681885f7d912760d449bca4fbc39ff9bd2c2192f71550b131b2a2afe6371c7c122e6f5c865cb2cbbf889d2ce54da9f55a2000cf4e0'.decode('hex')
-  dechd = salt + ('564552410005010b5741849c0000000000000000000000000000000000000000000000000000000000009000000000000002000000000000000090000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b2df12c0' + keytable.encode('hex') + '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000').decode('hex')
+  dechd = salt + ('564552410005010b5741849c0000000000000000000000000000000000000000000000000000000000009000000000000002000000000000000090000000000000000200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b2df12c0' + keytable.encode('hex') + '00' * 192).decode('hex')
   header_key = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
 
   assert len(salt) == 64
@@ -324,9 +351,9 @@ def test():
   assert table == expected_table
   assert encrypt_header(dechd, header_key) == enchd
   assert decrypt_header(enchd, header_key) == dechd
-  print >>sys.stderr, 'test continuing 1.'
+  print >>sys.stderr, 'info: test continuing 1.'
   assert build_header_key(passphrase, salt) == header_key  # Takes about 6..60 seconds.
-  print >>sys.stderr, 'test OK.'
+  print >>sys.stderr, 'info: test OK.'
 
 
 def main(argv):
@@ -337,22 +364,10 @@ def main(argv):
 
   #device = '../pts-static-cryptsetup/rr.bin'
 
-  enchd = open(device).read(512)
-  if len(enchd) != 512:
-    raise ValueError('Raw device too short for VeraCrypt header.')
-  header_key = build_header_key(passphrase, enchd)  # Slow.
-  dechd = decrypt_header(enchd, header_key)
-  try:
-    check_full_dechd(dechd)
-  except ValueError, e:
-    # We may put str(e) to the debug log, if requested.
-    raise ValueError('Incorrect passphrase.')
-  keytable, decrypted_size = parse_dechd(dechd)
-  table = build_table(keytable, decrypted_size, raw_device)
-  sys.stdout.write(table)
+  sys.stdout.write(get_table(device, passphrase, raw_device))
   sys.stdout.flush()
 
 
 if __name__ == '__main__':
-  #test()
-  sys.exit(main(sys.argv))
+  test()
+  #sys.exit(main(sys.argv))
