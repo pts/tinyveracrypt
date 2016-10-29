@@ -1,0 +1,9 @@
+*.pyc
+*.pyo
+*~
+veracrypt-1.17-console.static
+busybox
+dmsetup
+pp.bin
+calm.bin
+calm.txt
