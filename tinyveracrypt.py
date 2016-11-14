@@ -526,6 +526,22 @@ def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   return ''.join(key)[:size]
 
 
+try:
+  if (has_sha512_openssl_hashlib and
+      getattr(__import__('hashlib'), 'pbkdf2_hmac', None)):
+    # If pbkdf2_hmac is available (since Python 2.7.8), use it. This is a
+    # speedup from 8.8s to 7.0s user time, in addition to openssl_sha512.
+    def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
+      # Ignore `blocksize'. It's embedded in hash_name.
+      import hashlib
+      hash_name = digest_cons.__name__.lower()
+      if hash_name.startswith('openssl_'):
+        hash_name = hash_name[hash_name.find('_') + 1:]
+      return hashlib.pbkdf2_hmac(hash_name, passphrase, salt, iterations, size)
+except ImportError:
+  pass
+
+
 def check_decrypted_size(decrypted_size):
   min_decrypted_size = 36 << 10  # Enforced by VeraCrypt.
   if decrypted_size < min_decrypted_size:
