@@ -531,6 +531,9 @@ try:
       getattr(__import__('hashlib'), 'pbkdf2_hmac', None)):
     # If pbkdf2_hmac is available (since Python 2.7.8), use it. This is a
     # speedup from 8.8s to 7.0s user time, in addition to openssl_sha512.
+    #
+    # TODO(pts): Also use https://pypi.python.org/pypi/backports.pbkdf2 , if
+    # available and it uses OpenSSL.
     def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
       # Ignore `blocksize'. It's embedded in hash_name.
       import hashlib
