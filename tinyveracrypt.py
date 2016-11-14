@@ -490,7 +490,7 @@ elif has_sha512_pycrypto:
   # Faster than: Crypto.Hash.SHA512.SHA512Hash
   sha512 = sys.modules['Crypto.Hash._SHA512'].new
 elif has_sha512_hashlib:
-  sha512 = sys.modules('hashlib').sha512
+  sha512 = sys.modules['hashlib'].sha512
 else:
   # Using a pure Python implementation here would be too slow, because
   # sha512 is used in pbkdf2.
