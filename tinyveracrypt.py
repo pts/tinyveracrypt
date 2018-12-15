@@ -590,11 +590,13 @@ def build_dechd(salt, keytable, decrypted_size, sector_size):
   hidden_volume_size = 0
   base_offset_for_key = 0x20000
   flag_bits = 0
-  # 0 + 64: salt (not included in the header)
+  # --- 0: VeraCrypt hd sector starts here
+  # 0 + 64: salt
+  # --- 64: header starts here
   # 64 + 4: "VERA": 56455241
   # 68 + 2: Volume header format version: 0005
   # 70 + 2: Minimum program version to open (1.11): 010b
-  # 72 + 4: CRC-32 of the decrypted bytes 256..511: ????????
+  # 72 + 4: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
   # 76 + 16: zeros: 00000000000000000000000000000000
   # 92 + 8: size of hidden volume (0 for non-hidden): 0000000000000000
   # 100 + 8: size of decrypted volume: ????????????????
@@ -603,6 +605,11 @@ def build_dechd(salt, keytable, decrypted_size, sector_size):
   # 124 + 4: flag bits (0): 00000000
   # 128 + 4: sector size (512 -- shouldn't it be 4096?): 00000200
   # 132 + 120: zeros: 00..00
+  # --- 252: header ends here
+  # 252 + 4: CRC-32 of header
+  # 256 + 64: keytable (used as key by `dmsetup table' after hex-encoding)
+  # 320 + 192: keytablep: zeros: 00..00
+  # --- 512: VeraCrypt hd sector ends here
   header = struct.pack(
       '>4sHBB4s16xQQQQLL120x', 'VERA', header_format_version,
       minimum_version_to_extract[0], minimum_version_to_extract[1],
@@ -659,8 +666,10 @@ def check_full_dechd(dechd):
   sector_size, = struct.unpack('>L', dechd[128 : 128 + 4])
   check_sector_size(sector_size)
   if dechd[132 : 132 + 120].lstrip('\0'):
+    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding at 132.')
   if dechd[256 + 64 : 512].lstrip('\0'):
+    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding after keytable.')
 
 
