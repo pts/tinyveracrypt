@@ -15,6 +15,7 @@ def test():
 
   raw_device = '7:0'
   decrypted_size = 0x9000
+  decrypted_ofs = 0x20000
   sector_size = 512
   # Any 64 random bytes will do as a keytable.
   keytable = 'a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b'.decode('hex')
@@ -30,8 +31,8 @@ def test():
 
   check_full_dechd(dechd)
   assert build_dechd(SALT, keytable, decrypted_size, sector_size) == dechd
-  assert parse_dechd(dechd) == (keytable, decrypted_size)
-  table = build_table(keytable, decrypted_size, raw_device)
+  assert parse_dechd(dechd) == (keytable, decrypted_size, decrypted_ofs)
+  table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device)
   expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256 1 allow_discards\n'
   assert table == expected_table
   assert encrypt_header(dechd, HEADER_KEY) == enchd
