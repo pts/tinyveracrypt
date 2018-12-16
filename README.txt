@@ -13,32 +13,43 @@ Features and plans
 * tinyveracrypt works offline: it can be run on one machine, and the effect
   (volume creation or volume opening) happens on another machine. The latter
   machine can have less memory.
+* Easy command-line interface for creating encrypted volumes (also
+  compatible with veracrypt-console).
+* Can create encrypted volumes without using extra disk space for some
+  filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs and ocfs2).
+* Can create or use a plaintext FAT12 or FAT16 filesystem in front of the
+  encrypted volume.
 * PLANNED: Easy command-line interface.
 * PLANNED: Optional volume indentification by UUID and label for blkid and
   udev.
-* PLANNED: Implementation in C with only a few dependencies.
+* Nice to have: Implementation in C with only a few dependencies.
 
 FAQ
 ~~~
 Q1. Is tinyveracrypt ready for production use?
 """"""""""""""""""""""""""""""""""""""""""""""
-No, currently it's barely usable and inconvenient. If you need something
+Yes, for encrypted volume creation (init or --create). Othwerise
+no, currently it's barely usable and inconvenient. If you need something
 which works now, use the veracrypt command-line tool to create or open a
 volume, and use the veracrypt or cryptsetup (at least >= 1.6.7) command-line
 tool to open a volume.
 
-Q2. Can tinyveracrypt create and open hidden volumes?
-"""""""""""""""""""""""""""""""""""""""""""""""""
+Q2. Can tinyveracrypt create hidden volumes?
+""""""""""""""""""""""""""""""""""""""""""""
 Not out-of-the-box, but it is easy to add this feature.
 
-Q3. Can tinyveracrypt create and open truecrypt volumes?
+Q3. Can tinyveracrypt create and open TrueCrypt volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
-Not out-of-the-box, but it is easy to add this feature.
+Not out-of-the-box, but it is easy to add this feature provided that the
+ciphers and hashes are added.
 
 Q4. Does tinyveracrypt support multiple hashes and ciphers?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-No, it supports only PBKDF2 with 500000 iterations of SHA-512, and AES in
-XTS mode (i.e. aes-xts-plain64). Support for others is easy to add.
+No, it supports only PBKDF2 of SHA-512, and AES in XTS mode (i.e.
+aes-xts-plain64). Support for others is easy to add.
+
+The number of iterations is confiugrable though (`--pim=...'), the default
+is 500000 iterations (`--pim=485').
 
 Q5. Should I use the VeraCrypt or the LUKS on-disk format?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -49,9 +60,10 @@ those tools. The tool to open LUKS volumes, cryptsetup, is Linux-only.
 
 Q6. Can tinyveracrypt open a volume created by VeraCrypt?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Yes, if the volume was created with the default settings of VeraCrypt 1.17.
-It's possible to open other kinds of volumes as well, some of them is easy
-to add.
+Yes, if the volume was created with the default settings of VeraCrypt 1.17
+(PBKDF2 of SHA-512, and AES in XTS mode (i.e. aes-xts-plain64)). More code
+needs to be written for opening other kinds of volumes as well, some of them
+is easy to add.
 
 Q7. Does tinyveracrypt share any code with VeraCrypt?
 """""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -62,35 +74,105 @@ Q8. VeraCrypt has passed a software security audit. Did it cover tinyveracrypt?
 No, it hasn't. tinyveracrypt isn't audited software. If you need audited
 software for encrypted block devices, use vanilla VeraCrypt.
 
+Q9. Can tinyveracrypt create VeraCrypt encrypted volumes?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Yes, this functionality is available from the command-line:
+
+  $ ./tinyveracrypt.py init RAWDEVICE
+
+It also supports type veracrypt-console syntax, e.g:
+
+  $ veracrypt-console  --create --text --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
+  $ ./tinyveracrypt.py --create --text --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
+
+Q10. Can tinyveracrypt open VeraCrypt encrypted volumes?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Not out-of-the-box, but it is easy to add this feature. The closest
+supported command is get_table, which can be fed to `sudo dmsetup table
+<dev_name>'.
+
+Q11. Can tinyveracrypt create encrypted volumes with a plaintext FAT
+filesystem in front of the encrypted volume?
+""""""""""""""""""""""""""""""""""""""""""""
+Yes, with FAT12 and FAT16 filesystems. (FAT32 is not supported).
+
+If you already have a (plaintext) FAT12 or FAT16 filesystem at the beginning
+of the raw device, run
+
+  $ ./tinyveracrypt.py init --ofs=fat ... RAWDEVICE
+
+to create a VeraCrypt encrypted volume right after the FAT filesystem.
+
+This will make the FAT filesystem unbootable, because it overwrites the
+following bytes in the boot sector:
+
+* 0...2: jump (kept intact with --salt=test)
+* 3..10: OEM ID (kept intact with --salt=test)
+* 63..64: first 2 bytes of boot code
+* 64..509: rest of boot code (kept intact with --salt=test)
+* 510..511: boot sector signature (overwritten with \x55\xaa)
+
+It will keep these intact:
+
+* 11..62: FAT filesystem header excluding the OEM ID
+* contents (files, directories) of the FAT filesystem
+
+If you don't have a plaintext FAT12 or FAT16 yet at the beginning of the raw
+device, but you want to create one, use `--mkfat=SIZE' (e.g `--mkfat=24M')
+instead of `--ofs=fat':
+
+  $ ./tinyveracrypt.py init --mkfat=SIZE ... RAWDEVICE
+
+Useful other flags for --mkfat=...: --fat-uuid=..., --fat-label=...,
+--fat-fstype=..., --fat-rootdir-entry-count=..., --fat-cluster-size=...,
+--fat-count=... .
+
+Q12. Can tinyveracrypt create an encrypted filesystem without using extra
+disk space?
+"""""""""""
+This is possible to initiate with;
+
+  $ ./tinyveracrypt.py init --ofs=0 ... RAWDEVICE
+
+However, finishing it is tricky, because you have to make sure that the
+filesystem on the encrypted volume doesn't overwrite the first 512 bytes of
+the raw device. Filesystems ext2, ext3, ext4, btrfs and reiserfs, jfs, nilfs
+and ocfs2 don't use the first 512 bytes, but their correspoding filesystem
+creation tools (mkfs.*) usually overwrite these first 512 bytes with zeros,
+thus clobbering the VeraCrypt headers, rendering subsequent open
+(`veracrypt-console --mount --filesystem=none') operations impossible.
+
+The solution is to write back those 512 bytes after the mkfs.* tool has
+finished running. This should be automated in tinyveracrypt with som
+scripting.
+
+Q13. Can tinyveracrypt create and encrypted volume with plaintext volume
+label and/or UUID, recognized by blkid?
+"""""""""""""""""""""""""""""""""""""""
+Not out-of-the-box, but it is easy to add this feature using set_jfs_id.py.
+
+As a workaround, you can use
+
+  $ ./tinyveracrypt.py init --mkfat=2K --fat-label=... --fat-uuid=... ... RAWDEVICE
+
+, but the FAT filesystem has only a short (4-byte) UUID.
+
+For filesystems reiserfs and btrfs, adding a volume label (16 bytes maximum)
+and a full-width UUID (16 bytes) will be possible without using extra disk
+space (using set_jfs_id.py in a tricky way). For filesystems ext2, ext3 and
+ext4 extra disk space has to be used (except possibly with a fake 1K FAT
+filesystem).
+
+Q14. What are the dependencies of tinyveracrypt?
+""""""""""""""""""""""""""""""""""""""""""""""""
+It needs Python 2.5, 2.6 or 2.7 (no external package are needed), or Python
+2.4 with hashlib or pycrypto. tinyveracrypt doesn't work with Python 3.
+
+For opening encrypted volumes, a Linux system with the dmsetup(8) tool is
+also needed, with root access (e.g. sudo).
+
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-https://veracrypt.codeplex.com/wikipage?title=VeraCrypt%20Volume%20Format%20Specification
-
-decrypted veracrypt header (512 bytes == 64 bytes salt + 448 bytes decrypted header; numbers are MSBFirst):
-  0 + 64: salt
-  64 + 4: "VERA": 56455241
-  68 + 2: Volume header format version: 0005
-  70 + 2: Minimum program version to open (1.11): 010b
-  72 + 4: CRC-32 of the decrypted bytes 256..511: 5741849c
-  76 + 16: zeros: 00000000000000000000000000000000
-  92 + 8: size of hidden volume (0 for non-hidden): 0000000000000000
-  100 + 8: size of decrypted volume (0x9000): 0000000000009000
-  108 + 8: byte offset of the master key scope (always 0x20000): 0000000000020000
-  116 + 8: size of the encrypted area within the master key scope (same as size of the decrypted volume, 0x9000): 0000000000009000
-  124 + 8: flag bits (0): 00000000
-  128 + 4: sector size (512 -- shouldn't it be 4096?): 00000200
-  132 + 120: zeros: 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-  252 + 4: CRC-32 of the decrypted bytes 64..251: b2df12c0
-  256 + 64: key used in the dmsetup table (concatenated primary and secondary master keys): a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b
-  320 + 192: zeros: 00..00
-  512: end of header
-
-TODO: how to create?
-
-encrypted veracrypt header (512 bytes):
-  0 + 64: salt (random-generated)
-  64 + 448: encrypted header
-
 $ dmsetup table --showkeys rr
 rr: 0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256
 
