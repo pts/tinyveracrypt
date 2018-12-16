@@ -381,7 +381,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   if len(data) < 16:
     raise ValueError('At least one block of 128 bits needs to be supplied.')
   if len(data) >> 27:
-    raise ValueError('Data too long.')  # This is an implementation limitation.
+    raise ValueError('data too long.')  # This is an implementation limitation.
   if ofs:
     if ofs & 15:
       raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
@@ -751,7 +751,7 @@ def decrypt_header(enchd, header_key):
 
 
 # Slow, takes about 6..60 seconds.
-def build_header_key(passphrase, salt_or_enchd):
+def build_header_key(passphrase, salt_or_enchd, pim=None):
   if len(salt_or_enchd) < 64:
     raise ValueError('Salt too short.')
   salt = salt_or_enchd[:64]
@@ -759,9 +759,17 @@ def build_header_key(passphrase, salt_or_enchd):
   if passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume':
     if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
       return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33'
-    if salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
+    elif salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
       return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF'
-  iterations = 500000
+    elif salt == '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
+      return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,'
+  if not pim:  # !! Configure it with coomand-line flage --pim=485.
+    # --pim=485 corresponds to iterations=500000
+    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
+    # for --hash=sha512 iterations == 15000 + 1000 * pim).
+    iterations = 500000
+  else:
+    iterations = 15000 + 1000 * pim
   # We could use a different hash algorithm and a different iteration count.
   header_key_size = 64
   #blocksize = 16  # For MD2
@@ -866,9 +874,10 @@ def get_fat_sizes(fat_header):
   (jmp0, jmp1, jmp2, oem_id, sector_size, sectors_per_cluster,
    reserved_sector_count, fat_count, rootdir_entry_count, sector_count1,
    media_descriptor, sectors_per_fat, sectors_per_track, heads, hidden_count,
-   sector_count, drive_number, bpb_signature, serial_number, label, fstype,
+   sector_count, drive_number, bpb_signature, uuid_bin, label, fstype,
    code0, code1,
-  ) = struct.unpack('<3B8sHBHBHHBHHHLLHBL11s8s2B', data[:64])
+  ) = struct.unpack('<3B8sHBHBHHBHHHLLHB4s11s8s2B', data[:64])
+  # uuid_bin is also serial number.
   if (sector_count1 == 0 and
       reserved_sector_count > 1 and  # fsinfo sector. Typically 32.
       rootdir_entry_count == 0 and
@@ -904,7 +913,154 @@ def get_fat_sizes(fat_header):
   return fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype
 
 
-def build_veracrypt_fat(decrypted_size, passphrase, fat_header=None, do_include_all_header_sectors=False, device_size=None):
+def recommend_fat_parameters(fd_sector_count, fat_count, fstype=None, sectors_per_cluster=None):
+  """fd_sector_count is sector count for FAT and data together."""
+  # * A full FAT12 is: 12 512-byte sectors, 6144 bytes, 6120 used bytes, 4080 entries, 2 dummy entries followed by 4078 cluster entries, smallest value 2, largest value 4079 == 0xfef.
+  #   Thus cluster_count <= 4078.
+  #   Largest data size with cluster_size=512: 2087936 bytes.  dd if=/dev/zero bs=512 count=4092 of=minifat6.img && mkfs.vfat -f 1 -F 12 -i deadbee6 -n minifat6 -r 16 -s 1 minifat6.img
+  #   Largest data size with cluster_size=1024: 4175872 bytes. Doing this with FAT16 cluster_size=512 would add 10240 bytes of overheader.
+  #   Largest data size with cluster_size=2048: 8351744 bytes.
+  #   Largest data size with cluster_size=4096: 16703488 bytes.
+  # * A full FAT16 is: 256 512-byte sectors, 131072 bytes, 131040 used bytes, 65520 entries, 2 dummy entries followed by 65518 cluster entries, smallest value 2, largest value 65519 == 0xffef.
+  #   Thus cluster_count <= 65518.
+  #   Largest data size with cluster_size=512: 33545216 bytes (<32 MiB).  dd if=/dev/zero bs=512 count=65776 of=minifat7.img && mkfs.vfat -f 1 -F 16 -i deadbee7 -n minifat7 -r 16 -s 1 minifat7.img
+  #   Largest data size with cluster_size=65536: 4293787648 bytes (<4 GiB).
+  #assert 0, (fstype, sectors_per_cluster)
+  if fstype is None:
+    fstypes = ('FAT12', 'FAT16')
+  if sectors_per_cluster is None:
+    sectors_per_clusters = (1, 2, 4, 8, 16, 32, 64, 128)
+  options = []
+  for fstype in fstypes:
+    max_cluster_count = (65518, 4078)[fstype == 'FAT12']
+    # Minimum number of clusters for FAT16 is 4087 (based on:
+    # https://github.com/Distrotech/mtools/blob/13058eb225d3e804c8c29a9930df0e414e75b18f/mformat.c#L222).
+    # Otherwise Linux 3.13 vfat fileystem and `mtools -i mdir' both get
+    # confused and assume that the filesystem is FAT12.
+    min_cluster_count = (4087, 1)[fstype == 'FAT12']
+    for sectors_per_cluster in sectors_per_clusters:
+      if sectors_per_cluster > 2 and fstype == 'FAT12':
+        continue  # Heuristic, use FAT16 instead.
+      # 1 is our lower bound for fat_sector_count.
+      cluster_count = (fd_sector_count - 1) / sectors_per_cluster
+      while cluster_count > 0:
+        if fstype == 'FAT12':
+          sectors_per_fat = ((((2 + cluster_count) * 3 + 1) >> 1) + 511) >> 9
+        else:
+          sectors_per_fat = ((2 + (cluster_count << 1)) + 511) >> 9
+        cluster_count2 = (fd_sector_count - sectors_per_fat * fat_count) / sectors_per_cluster
+        if cluster_count == cluster_count2:
+          break
+        cluster_count = cluster_count2
+      is_wasted = cluster_count - max_cluster_count > 9
+      cluster_count = min(cluster_count, max_cluster_count)
+      if cluster_count < min_cluster_count:
+        continue
+      use_data_sector_count = cluster_count * sectors_per_cluster
+      use_fd_sector_count = sectors_per_fat * fat_count + use_data_sector_count
+      options.append((-use_fd_sector_count, sectors_per_cluster, fstype, use_fd_sector_count, sectors_per_fat, is_wasted))
+  if not options:
+    raise ValueError('FAT filesystem would be too small.')
+  _, sectors_per_cluster, fstype, use_fd_sector_count, sectors_per_fat, is_wasted = min(options)
+  if is_wasted:
+    # Typical limits: FAT12 ~2 MiB, FAT16 ~4 GiB.
+    raise ValueError('FAT filesystem cannot be that large.')
+  #assert 0, (fstype, sectors_per_cluster, use_fd_sector_count, sectors_per_fat)
+  return fstype, sectors_per_cluster, use_fd_sector_count, sectors_per_fat
+
+
+def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None):
+  """Builds a 64-byte header for a FAT12 or FAT16 filesystem."""
+  import struct
+  if label is not None:
+    label = label.strip()
+    if len(label) > 11:
+      raise ValueEror('label longer than 11, got: %d' % len(label))
+    if label == 'NO NAME':
+      label = None
+  if label:
+    label += ' ' * (11 - len(label))
+  else:
+    label = None
+  if uuid is None:
+    uuid_bin = get_random_bytes(4)
+  else:
+    uuid = uuid.replace('-', '').lower()
+    try:
+      uuid_bin = uuid.decode('hex')[::-1]
+    except TypeError:
+      raise ValueError('uuid must be hex, got: %s' % uuid)
+  if len(uuid_bin) != 4:
+    raise ValueError('uuid_bin must be 4 bytes, got: %s' % len(uuid_bin))
+  if fat_count is None:
+    fat_count = 1
+  else:
+    fat_count = int(fat_count)
+  if fat_count not in (1, 2):
+    raise ValueError('Expected fat_count 1 or 2, got: %d' % fat_count)
+  if fatfs_size < 2048:
+    raise ValueError('fatfs_size must be at least 2048, got: %d' % fatfs_size)
+  if fatfs_size & 511:
+    raise ValueError('fatfs_size must be a multiple of 512, got: %d' % fatfs_size)
+  if rootdir_entry_count is None:
+    rootdir_entry_count = 1  # !! Better default for larger filesystems.
+  if rootdir_entry_count <= 0:
+    raise ValueError('rootdir_entry_count must be at least 1, got: %d' % rootdir_entry_count)
+  if fstype is not None:
+    fstype = fstype.upper()
+    if fstype not in ('FAT12', 'FAT16'):
+      raise ValueError('fstype must be FAT12 or FAT16, got: %r' % (fstype,))
+  if cluster_size is None:
+    sectors_per_cluster = None
+  else:
+    sectors_per_cluster = int(cluster_size) >> 9
+    if sectors_per_cluster not in (1, 2, 4, 8, 16, 32, 64, 128):
+      raise ValueError('cluster_size must be a power of 2: 512 ... 65536, got: %d' % cluster_size)
+    cluster_size = None
+
+  sector_size = 512
+  sector_count = fatfs_size >> 9
+  rootdir_entry_count = (rootdir_entry_count + 15) & ~15  # Round up.
+  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) / (sector_size >> 5)
+  reserved_sector_count = 1  # Only the boot sector (containing fat_header).
+  fd_sector_count = sector_count - reserved_sector_count - rootdir_sector_count
+  fstype, sectors_per_cluster, fd_sector_count, sectors_per_fat = recommend_fat_parameters(
+      fd_sector_count, fat_count, fstype, sectors_per_cluster)
+  sector_count = fd_sector_count + reserved_sector_count + rootdir_sector_count
+  jmp0, jmp1, jmp2 = 0xeb, 0x3c, 0x90
+  oem_id = 'mkfs.fat'
+  media_descriptor = 0xf8
+  sectors_per_track = 1  # Was 32. 0 indicates LBA, mtools doesn't support it.
+  heads = 1  # Was 64. 0 indicates LBA, mtools doesn't support it.
+  hidden_count = 0
+  drive_number = 0x80
+  bpb_signature = 0x29
+  code0, code1 = 0x0e, 0x1f
+  header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
+  cluster_count = ((fatfs_size >> 9) - header_sector_count) / sectors_per_cluster
+  free_size = (cluster_count * sectors_per_cluster) << 9
+  if header_sector_count > sector_count:
+    raise ValueError(
+        'Too few sectors in FAT filesystem, not even header sectors fit, increase fatfs_size to at least %d, got: %d' %
+        (header_sector_count << 9, fatfs_size))
+  fstype += ' ' * (8 - len(fstype))
+  if sector_count >> 16:
+    sector_count1 = 0
+  else:
+    sector_count1, sector_count = sector_count, 0
+  fat_header = struct.pack(
+      '<3B8sHBHBHHBHHHLLHB4s11s8s2B',
+      jmp0, jmp1, jmp2, oem_id, sector_size, sectors_per_cluster,
+      reserved_sector_count, fat_count, rootdir_entry_count, sector_count1,
+      media_descriptor, sectors_per_fat, sectors_per_track, heads,
+      hidden_count, sector_count, drive_number, bpb_signature, uuid_bin, label,
+      fstype, code0, code1)
+  assert len(fat_header) == 64
+  assert label is None or len(label) == 11
+  return fat_header, label
+
+
+def build_veracrypt_fat(decrypted_size, passphrase, fat_header=None, do_include_all_header_sectors=False, device_size=None, **kwargs):
   # FAT12 filesystem header based on minifat3.
   # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
   # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
@@ -913,9 +1069,17 @@ def build_veracrypt_fat(decrypted_size, passphrase, fat_header=None, do_include_
   # TODO(pts): Have sectors_per_track == 1 to avoid Total number of sectors (342) not a multiple of sectors per track (32)!: `MTOOLS_SKIP_CHECK=1 mtools -c mdir -i minifat2.img'
   #            Use 0 for sectors_per_track and heads.
   # !! TODO(pts): (>=4096) WARNING: Not enough clusters for a 16 bit FAT! The filesystem will be misinterpreted as having a 12 bit FAT without mount option "fat=16".
-  # !! TODO(pts): add support for byte_offset_for_key and iv_offset values different from 0x20000
-  if fat_header is None:  # 128 KiB FAT.
-    fat_header = '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f'
+  if fat_header is None:
+    if 'fatfs_size' not in kwargs:
+      if (not isinstance(device_size, (int, long)) or
+          not isinstance(decrypted_size, (int, long))):
+        raise ValueError('Could not infer fatfs_size, missing device_size or decrypted_size.')
+      kwargs['fatfs_size'] = device_size - decrypted_size
+    fat_header, label = build_fat_header(**kwargs)
+  elif kwargs:
+    raise ValueError('Both fat_header and FAT parameters (%s) specified.' % sorted(kwargs))
+  else:
+    label = None
   if len(fat_header) != 64:
     raise ValueError('fat_header must be 64 bytes, got: %d' % len(fat_header))
   # !! Specify UUID and label (minifat3).
@@ -948,10 +1112,14 @@ def build_veracrypt_fat(decrypted_size, passphrase, fat_header=None, do_include_
   else:
     assert 0, 'Unknown fstype: %s' % (fstype,)
   output.extend(empty_fat for _ in xrange(fat_count))
-  # Volume label in root directory.
-  output.append('minifat3   \x08\0\0\xa7|\x8fM\x8fM\0\0\xa7|\x8fM\0\0\0\0\0\0')
-  # Rest of root directory.
-  output.append('\0' * (rootdir_size - 32))
+  if label:
+    # Volume label in root directory.
+    output.append(label)
+    output.append('\x08\0\0\xa7|\x8fM\x8fM\0\0\xa7|\x8fM\0\0\0\0\0\0')
+    # Rest of root directory.
+    output.append('\0' * (rootdir_size - 32))
+  else:
+    output.append('\0' * rootdir_size)
   data = ''.join(output)
   assert len(data) == reserved_size + fat_size * fat_count + rootdir_size
   assert len(data) <= fatfs_size
@@ -966,7 +1134,18 @@ def main(argv):
   #    LUKS (luks.c) can work, but it has UUID only (no label).
   #    No other good filesystem for ext2, see https://github.com/pts/pts-setfsid/blob/master/README.txt
   #    Maybe with bad blocks: bad block 64, and use jfs.
-  #    !! Needs more checking, is it block 32 for jfs? mkfs.ext4 -b 1024 -l badblocks.lst ext4.img
+  #    Needs more checking, is it block 32 for jfs? mkfs.ext4 -b 1024 -l badblocks.lst ext4.img
+  #    mkfs.reiserfs overwrites the first 0x10000 bytes with '\0', but then we can change it back: perl -e 'print "b"x(1<<16)' | dd bs=64K of=ext4.img conv=notrunc
+  #    0x10	Has reserved GDT blocks for filesystem expansion (COMPAT_RESIZE_INODE). Requires RO_COMPAT_SPARSE_SUPER.
+  #    $ python -c 'open("bigext4.img", "wb").truncate(8 << 30)'
+  #    $ mkfs.ext4 -b 1024 -E nodiscard -F bigext4.img
+  #    $ dumpe2fs bigext4.img >bigext4.dump
+  #    Primary superblock at 1, Group descriptors at 2-33
+  #    Reserved GDT blocks at 34-289  # Always 256, even for smaller filesystems.
+  #    $ mkfs.ext4 -b 1024 -E nodiscard -l badblocks.lst -F bigext4.img
+  #    Block 32 in primary superblock/group descriptor area bad.
+  #    Blocks 1 through 34 must be good in order to build a filesystem.
+  #    (So marking block 32 bad won't work for ext2, ext3, ext4 filesystems of at least about 8 GiB in size.)
   if len(argv) < 2:
     print >>sys.stderr, 'fatal: missing command'
     sys.exit(1)
@@ -980,9 +1159,9 @@ def main(argv):
     # mkinfat and mkfat generate.
     # !! Autodetect possible number of iterations. See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
     # !! Reuse smaller number of iterations when computing bigger.
-    raw_device = '7:0'
     device = argv[2]
-    #device = '../pts-static-cryptsetup/rr.bin'
+    #raw_device = '7:0'
+    raw_device = device
     sys.stdout.write(get_table(device, passphrase, raw_device))
     sys.stdout.flush()
   elif argv[1] == 'mkveracrypt':
@@ -1031,9 +1210,17 @@ def main(argv):
   elif len(argv) > 2 and argv[1] == 'mkfat':
     device = argv[2]
     decrypted_size = 1 << 20  # !! Make it configurable in the command line.
+    fatfs_size = 1 << 17  # !! Make it configurable in the command line.
+    label = 'minifat3'  # !! Make it configurable in the command line.
+    uuid = 'DEAD-BEE3'  # !! Make it configurable in the command line.
+    rootdir_entry_count = None
+    fat_count = None
+    fstype = None
+    cluster_size = None
     # !! Add command-line flag to create FAT16 24 MiB for SSD alignment.
-    fat_header, fatfs_size = build_veracrypt_fat(
-        decrypted_size, passphrase, do_include_all_header_sectors=True)
+    fat_header, fatfs_size2 = build_veracrypt_fat(
+        decrypted_size, passphrase, do_include_all_header_sectors=True, label=label, uuid=uuid, fatfs_size=fatfs_size, rootdir_entry_count=rootdir_entry_count, fat_count=None, fstype=fstype, cluster_size=cluster_size)
+    assert 1536 <= fatfs_size2 <= fatfs_size
     f = open(device, 'wb')
     try:
       f.write(fat_header)
