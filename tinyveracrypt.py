@@ -376,8 +376,18 @@ def check_aes_xts_key(aes_xts_key):
 # slow, but it's not a problem, because we have to encrypt only 512 bytes
 # per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
 # other C crypto libraries with Python bindings don't support AES XTS.
-def crypt_aes_xts(aes_xts_key, data, do_encrypt):
+def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   check_aes_xts_key(aes_xts_key)
+  if len(data) < 16:
+    raise ValueError('At least one block of 128 bits needs to be supplied.')
+  if len(data) >> 27:
+    raise ValueError('Data too long.')  # This is an implementation limitation.
+  if ofs:
+    if ofs & 15:
+      raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
+    if ofs < 0:
+      raise ValueError('ofs must be nonnegative, got: %d' % ofs)
+
   # This would work instead of inlining:
   #
   #   import CryptoPlus.Cipher.python_AES
@@ -388,8 +398,6 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt):
   #   else:
   #     return cipher.decrypt(data)
 
-  assert len(data) > 15, "At least one block of 128 bits needs to be supplied"
-  assert len(data) < (1 << 27)
   do_decrypt = not do_encrypt
   codebook1, codebook2 = rijndael(aes_xts_key[0 : 32]), rijndael(aes_xts_key[32 : 64])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
@@ -412,19 +420,23 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt):
       #T[0] ^= GF_128_FDBK;
       T[0] ^= 0x100000000000000000000000000000087
 
+  while ofs:
+    T_update()
+    ofs -= 16
+
   output = []
   i=0
-  while i < ((len(data) // 16)-1): #Decrypt all the blocks but one last full block and opt one last partial block
+  while i < ((len(data) >> 4)-1): #Decrypt all the blocks but one last full block and opt one last partial block
     # C = E_K1(P xor T) xor T
-    output.append(step(data[i*16:(i+1)*16]))
+    output.append(step(data[i << 4:(i+1) << 4]))
     # T = E_K2(n) mul (a pow i)
     T_update()
     i+=1
 
   # Check if the data supplied is a multiple of 16 bytes -> one last full block and we're done
-  if len(data[i*16:]) == 16:
+  if len(data[i << 4:]) == 16:
     # C = E_K1(P xor T) xor T
-    output.append(step(data[i*16:(i+1)*16]))
+    output.append(step(data[i << 4:(i+1) << 4]))
     # T = E_K2(n) mul (a pow i)
     T_update()
   else:
@@ -435,8 +447,8 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt):
       # Permutation of the last two indexes
       T_temp.reverse()
     # Decrypt/Encrypt the last two blocks when data is not a multiple of 16 bytes
-    Cm1 = data[i*16:(i+1)*16]
-    Cm = data[(i+1)*16:]
+    Cm1 = data[i << 4:(i+1) << 4]
+    Cm = data[(i+1) << 4:]
     T[0] = T_temp[0]
     PP = step(Cm1)
     Cp = PP[len(Cm):]
@@ -560,6 +572,11 @@ def check_keytable(keytable):
     raise ValueError('keytable must be 64 bytes, got: %d' % len(keytable))
 
 
+def check_keytable_or_keytablep(keytable):
+  if len(keytable) not in (64, 256):
+    raise ValueError('keytable must be 64 or 256 bytes, got: %d' % len(keytable))
+
+
 def check_header_key(header_key):
   if len(header_key) != 64:
     raise ValueError('header_key must be 64 bytes, got: %d' % len(header_key))
@@ -575,46 +592,69 @@ def check_sector_size(sector_size):
     raise ValueError('sector_size must be a power of 2 at least 512: %d' % sector_size)
 
 
-def build_dechd(salt, keytable, decrypted_size, sector_size):
-  check_keytable(keytable)
-  check_decrypted_size(decrypted_size)
+def check_salt(salt):
   if len(salt) != 64:
     raise ValueError('salt must be 64 bytes, got: %d' % len(salt))
+
+
+def build_dechd(salt, keytable, decrypted_size, sector_size, decrypted_ofs=None):
+  check_keytable_or_keytablep(keytable)
+  check_decrypted_size(decrypted_size)
+  check_salt(salt)
   check_sector_size(sector_size)
-  version = 5
-  keytablep = keytable + '\0' * 192
+  if decrypted_ofs is None:
+    decrypted_ofs = 0x20000
+  if decrypted_ofs < 0:
+    # The value of 0 works with veracrypt-console.
+    # Typical value is 0x20000 for non-hidden volumes.
+    raise ValueError('decrypted_size must be nonnegative, got: %d' % decrypted_ofs)
+  if decrypted_ofs & 511:
+    # TODO(pts): What does aes_xts require as minimum? 16?
+    raise ValueError('decrypted_ofs must be a multiple of 512, got: %d' % decrypted_ofs)
+  keytablep = keytable + '\0' * (256 - len(keytable))
+  keytable = None  # Unused. keytable[:64]
   keytablep_crc32 = ('%08x' % (binascii.crc32(keytablep) & 0xffffffff)).decode('hex')
   # Constants are based on what veracrypt-1.17 generates.
+  signature = 'VERA'
   header_format_version = 5
   minimum_version_to_extract = (1, 11)
   hidden_volume_size = 0
-  base_offset_for_key = 0x20000
   flag_bits = 0
+  # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
+  # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
   # --- 0: VeraCrypt hd sector starts here
   # 0 + 64: salt
   # --- 64: header starts here
-  # 64 + 4: "VERA": 56455241
-  # 68 + 2: Volume header format version: 0005
-  # 70 + 2: Minimum program version to open (1.11): 010b
-  # 72 + 4: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
-  # 76 + 16: zeros: 00000000000000000000000000000000
-  # 92 + 8: size of hidden volume (0 for non-hidden): 0000000000000000
-  # 100 + 8: size of decrypted volume: ????????????????
-  # 108 + 8: byte offset of the master key scope (always 0x20000): 0000000000020000
-  # 116 + 8: size of the encrypted area within the master key scope (same as size of the decrypted volume): ????????????????
-  # 124 + 4: flag bits (0): 00000000
-  # 128 + 4: sector size (512 -- shouldn't it be 4096?): 00000200
-  # 132 + 120: zeros: 00..00
+  # 64 + 4: signature: "VERA": 56455241
+  # 68 + 2: header_format_version: Volume header format version: 0005
+  # 70 + 2: minimum_version_to_extract: Minimum program version to open (1.11): 010b
+  # 72 + 4: keytablep_crc32: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
+  # 76 + 16: zeros16: 00000000000000000000000000000000
+  # 92 + 8: hidden_volume_size: size of hidden volume (0 for non-hidden): 0000000000000000
+  # 100 + 8: decrypted_size: size of decrypted volume: ????????????????
+  # 108 + 8: decrypted_ofs: offset of encrypted area from 0 (beginning of salt), i.e. byte offset of the master key scope (typically 0x20000): 0000000000020000
+  # 116 + 8: decrypted_size_b: size of the encrypted area within the master key scope (same as size of the decrypted volume): ????????????????
+  # 124 + 4: flag_bits: flag bits (0): 00000000
+  # 128 + 4: sector_size: sector size (512 -- shouldn't it be 4096?): 00000200
+  # 132 + 120: zeros120: 00..00
   # --- 252: header ends here
-  # 252 + 4: CRC-32 of header
+  # 252 + 4: header_crc32: CRC-32 of header
   # 256 + 64: keytable (used as key by `dmsetup table' after hex-encoding)
-  # 320 + 192: keytablep: zeros: 00..00
+  # 320 + 192: keytable_padding: typically zeros, but can be anything: 00..00
   # --- 512: VeraCrypt hd sector ends here
+  #
+  # We can overlap this header with FAT12 and FAT16. FAT12 and FAT16
+  # filesystem headers fit into our salt. See 'mkinfat'.
+  #
+  # We can't overlap this header with XFS (e.g. set_xfs_id.py), because XFS
+  # filesystem headers conflict with this header (decrypted_size vs
+  # xfs.sectsize, byte_offset_for_key vs xfs.label, sector_size vs
+  # xfs.icount, flag_bits vs xfs.blocklog etc.).
   header = struct.pack(
-      '>4sHBB4s16xQQQQLL120x', 'VERA', header_format_version,
+      '>4sHBB4s16xQQQQLL120x', signature, header_format_version,
       minimum_version_to_extract[0], minimum_version_to_extract[1],
       keytablep_crc32, hidden_volume_size, decrypted_size,
-      base_offset_for_key, decrypted_size, flag_bits, sector_size)
+      decrypted_ofs, decrypted_size, flag_bits, sector_size)
   assert len(header) == 188
   header_crc32 = ('%08x' % (binascii.crc32(header) & 0xffffffff)).decode('hex')
   dechd = ''.join((salt, header, header_crc32, keytablep))
@@ -622,7 +662,7 @@ def build_dechd(salt, keytable, decrypted_size, sector_size):
   return dechd
 
 
-def check_full_dechd(dechd):
+def check_full_dechd(dechd, enchd_suffix_size=0):
   """Does a full, after-decryption check on dechd.
 
   This is also used for passphrase: on a wrong passphrase, dechd is 512
@@ -632,6 +672,8 @@ def check_full_dechd(dechd):
   operation of `veracrypt' does. They can be relaxed if the need arises.
   """
   check_dechd(dechd)
+  if enchd_suffix_size > 192:
+    raise ValueError('enchd_suffix_size too large, got: %s' % enchd_suffix_size)
   if dechd[64 : 64 + 4] != 'VERA':  # Or 'TRUE'.
     raise ValueError('Magic mismatch.')
   if dechd[72 : 76] != ('%08x' % (binascii.crc32(dechd[256 : 512]) & 0xffffffff)).decode('hex'):
@@ -654,9 +696,7 @@ def check_full_dechd(dechd):
   decrypted_size, = struct.unpack('>Q', dechd[100 : 100 + 8])
   if decrypted_size >> 50:  # Larger than 1 PB is insecure.
     raise ValueError('Volume too large.')
-  base_offset_for_key, = struct.unpack('>Q', dechd[108 : 108 + 8])
-  if base_offset_for_key != 0x20000:
-    raise ValueError('base_offset_for_key mismatch.')
+  decrypted_ofs, = struct.unpack('>Q', dechd[108 : 108 + 8])
   encrypted_area_size, = struct.unpack('>Q', dechd[116 : 116 + 8])
   if encrypted_area_size != decrypted_size:
     raise ValueError('encrypted_area_size mismatch.')
@@ -668,18 +708,18 @@ def check_full_dechd(dechd):
   if dechd[132 : 132 + 120].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding at 132.')
-  if dechd[256 + 64 : 512].lstrip('\0'):
+  if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding after keytable.')
 
 
-def build_table(keytable, decrypted_size, raw_device):
+def build_table(keytable, decrypted_size, decrypted_ofs, raw_device):
   check_keytable(keytable)
   check_decrypted_size(decrypted_size)
   if isinstance(raw_device, (list, tuple)):
     raw_device = '%d:%s' % tuple(raw_device)
   cipher = 'aes-xts-plain64'
-  iv_offset = offset = 0x20000
+  iv_offset = offset = decrypted_ofs
   start_offset_on_logical = 0
   opt_params = ('allow_discards',)
   if opt_params:
@@ -715,6 +755,12 @@ def build_header_key(passphrase, salt_or_enchd):
   if len(salt_or_enchd) < 64:
     raise ValueError('Salt too short.')
   salt = salt_or_enchd[:64]
+  # Speedup for testing.
+  if passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume':
+    if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
+      return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33'
+    if salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
+      return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF'
   iterations = 500000
   # We could use a different hash algorithm and a different iteration count.
   header_key_size = 64
@@ -722,14 +768,17 @@ def build_header_key(passphrase, salt_or_enchd):
   #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.
   #blocksize = 128  # For SHA384, SHA512.
   sha512_blocksize = 128
+  # TODO(pts): Is kernel-mode crypto (AF_ALG,
+  # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
+  # cryptsetup seems to be doing it.
   return pbkdf2(passphrase, salt, header_key_size, iterations, sha512, sha512_blocksize)
 
 
 def parse_dechd(dechd):
   check_dechd(dechd)
   keytable = dechd[256 : 256 + 64]
-  decrypted_size, = struct.unpack('>Q', dechd[100 : 100 + 8])
-  return keytable, decrypted_size
+  decrypted_size, decrypted_ofs = struct.unpack('>QQ', buffer(dechd, 100, 16))
+  return keytable, decrypted_size, decrypted_ofs
 
 
 def get_table(device, passphrase, raw_device):
@@ -739,24 +788,266 @@ def get_table(device, passphrase, raw_device):
   header_key = build_header_key(passphrase, enchd)  # Slow.
   dechd = decrypt_header(enchd, header_key)
   try:
-    check_full_dechd(dechd)
+    check_full_dechd(dechd, enchd_suffix_size=2)
   except ValueError, e:
     # We may put str(e) to the debug log, if requested.
-    raise ValueError('Incorrect passphrase.')
-  keytable, decrypted_size = parse_dechd(dechd)
-  return build_table(keytable, decrypted_size, raw_device)
+    raise ValueError('Incorrect passphrase (%s).' % e)
+  keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
+  return build_table(keytable, decrypted_size, decrypted_ofs, raw_device)
+
+
+def get_random_bytes(size, _functions=[]):
+  if size == 0:
+    return ''
+  if not _functions:
+    def manual_random(size):
+      return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
+
+    try:
+      import os
+      data = os.urandom(1)
+      if len(data) != 1:
+        raise ValueError
+      _functions.append(os.urandom)
+    except (ImportError, AttributeError, TypeError, ValueError, OSError):
+      _functions.append(manual_random)
+
+  return _functions[0](size)
+
+
+def build_veracrypt_header(decrypted_size, passphrase, enchd_prefix='', enchd_suffix='', decrypted_ofs=None):
+  """Returns 512 bytes.
+
+  Args:
+    decrypted_size: Size of the decrypted block device, this is 0x20000
+        bytes smaller than the encrypted block device.
+  """
+  if len(enchd_prefix) > 64:
+    raise ValueError('enchd_prefix too long, got: %d' % len(enchd_prefix))
+  if len(enchd_suffix) > 192:
+    raise ValueError('enchd_suffix too long, got: %d' % len(enchd_suffix))
+  if decrypted_size < 512:
+    raise ValueError('encrypted_size too small, got: %d' % decrypted_size)
+  salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
+  header_key = build_header_key(passphrase, salt)  # Slow.
+  keytable = get_random_bytes(64)
+  sector_size = 512
+  dechd = build_dechd(salt, keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs)
+  assert len(dechd) == 512
+  check_full_dechd(dechd)
+  enchd = encrypt_header(dechd, header_key)
+  assert len(enchd) == 512
+  do_reenc = not enchd.endswith(enchd_suffix)
+  if do_reenc:
+    keytablep_enc = enchd[256 : -len(enchd_suffix)] + enchd_suffix
+    assert keytablep_enc.endswith(enchd_suffix)
+    keytablep = crypt_aes_xts(header_key, keytablep_enc, do_encrypt=False, ofs=192)
+    assert crypt_aes_xts(header_key, keytablep, do_encrypt=True, ofs=192) == keytablep_enc
+    dechd2 = build_dechd(salt, keytablep, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs)
+    check_full_dechd(dechd2, len(enchd_suffix))
+    assert dechd2.endswith(keytablep)
+    assert len(dechd2) == 512
+    enchd = encrypt_header(dechd2, header_key)
+    assert len(enchd) == 512
+    assert enchd.endswith(keytablep_enc)
+    assert enchd.endswith(enchd_suffix)
+    dechd = dechd2
+  assert decrypt_header(enchd, header_key) == dechd
+  return enchd
+
+
+def get_fat_sizes(fat_header):
+  import struct
+  if len(fat_header) < 64:
+    raise ValueError('FAT header shorter than 64 bytes, got: %d' % len(fat_header))
+  data = fat_header
+  # jmp2, code0, code1 can be random.
+  # oem_id, folume label and fstype ares space-padded.
+  (jmp0, jmp1, jmp2, oem_id, sector_size, sectors_per_cluster,
+   reserved_sector_count, fat_count, rootdir_entry_count, sector_count1,
+   media_descriptor, sectors_per_fat, sectors_per_track, heads, hidden_count,
+   sector_count, drive_number, bpb_signature, serial_number, label, fstype,
+   code0, code1,
+  ) = struct.unpack('<3B8sHBHBHHBHHHLLHBL11s8s2B', data[:64])
+  if (sector_count1 == 0 and
+      reserved_sector_count > 1 and  # fsinfo sector. Typically 32.
+      rootdir_entry_count == 0 and
+      sectors_per_fat == 0):
+    # Also: data[82 : 90] in ('', 'FAT32   ', 'MSWIN4.0', 'MSWIN4.1').
+    # FAT32 is not supported because it has more than 64 bytes of filesystem
+    # headers.
+    raise ValueError('FAT32 detected, but it is not supported.')
+  if sector_count1:
+    sector_count = sector_count1
+  fstype = fstype.rstrip(' ')
+  del sector_count1
+  #assert 0, sorted((k, v) for k, v in locals().iteritems() if k not in ('data', 'struct'))
+  if fstype not in ('FAT12', 'FAT16'):
+    raise ValueError('Expected FAT12 or FAT16 filesystem, got: %r' % fstype)
+  if hidden_count != 0:
+    raise ValueError('Expected hidden_count=0, got: %d' % hidden_count)
+  if bpb_signature != 41:
+    raise ValueError('Expected bpb_signature=41, got: %d' % bpb_signature)
+  if reserved_sector_count < 1:
+    raise ValueError('Expected reserved_sector_count>0, got: %d' % reserved_sector_count)
+  if rootdir_entry_count <= 0:
+    raise ValueError('Expected rootdir_entry_count>0, got: %d' % rootdir_entry_count)
+  if sectors_per_fat <= 0:
+    raise ValueError('Expected sectors_per_fat>0, got: %d' % sectors_per_fat)
+  if fat_count not in (1, 2):
+    raise ValueError('Expected fat_count 1 or 2, got: %d' % fat_count)
+  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) / (sector_size >> 5)
+  header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
+  if header_sector_count > sector_count:
+    raise ValueError('Too few sectors in FAT filesystem, not even header sectors fit.')
+  fatfs_size, fat_count, fat_size, rootdir_size, reserved_size = sector_count * sector_size, fat_count, sectors_per_fat * sector_size, rootdir_sector_count * sector_size, reserved_sector_count * sector_size
+  return fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype
+
+
+def build_veracrypt_fat(decrypted_size, passphrase, fat_header=None, do_include_all_header_sectors=False, device_size=None):
+  # FAT12 filesystem header based on minifat3.
+  # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
+  # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
+  # dd if=/dev/zero bs=1024 count=128 of=minifat3.img && mkfs.vfat -f 1 -F 12 -i deadbee3 -n minifat3 -r 16 -s 1 minifat3.img  # 128 KiB FAT12.
+  # dd if=/dev/zero bs=1K  count=2052 of=minifat5.img && mkfs.vfat -f 1 -F 16 -i deadbee5 -n minifat5 -r 16 -s 1 minifat5.img  # 2052 KiB FAT16.
+  # TODO(pts): Have sectors_per_track == 1 to avoid Total number of sectors (342) not a multiple of sectors per track (32)!: `MTOOLS_SKIP_CHECK=1 mtools -c mdir -i minifat2.img'
+  #            Use 0 for sectors_per_track and heads.
+  # !! TODO(pts): (>=4096) WARNING: Not enough clusters for a 16 bit FAT! The filesystem will be misinterpreted as having a 12 bit FAT without mount option "fat=16".
+  # !! TODO(pts): add support for byte_offset_for_key and iv_offset values different from 0x20000
+  if fat_header is None:  # 128 KiB FAT.
+    fat_header = '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f'
+  if len(fat_header) != 64:
+    raise ValueError('fat_header must be 64 bytes, got: %d' % len(fat_header))
+  # !! Specify UUID and label (minifat3).
+  fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype = get_fat_sizes(fat_header)
+  if decrypted_size is None:
+    if not isinstance(device_size, (int, long)):
+      raise TypeError
+    decrypted_size = device_size - fatfs_size
+    if decrypted_size < 512:
+      raise ValueError('FAT filesystem too large, no room for encrypted volume after it.')
+  if device_size is not None:
+    if decrypted_size != device_size - fatfs_size:
+      raise ValueError('Inconsistent device_size, decrypted_size and fatfs_size.')
+    device_size = None
+  # !! TODO(pts): Randomize same fields in the fat_header (jmp0 = '\xe9', jmp1, jmp2, oem_id only base64, code0, code1) as salt.
+  enchd = build_veracrypt_header(
+      decrypted_size=decrypted_size, passphrase=passphrase,
+      enchd_prefix=fat_header, enchd_suffix='\x55\xaa',
+      decrypted_ofs=fatfs_size)
+  assert len(enchd) == 512
+  assert enchd.startswith(fat_header)
+  if not do_include_all_header_sectors:
+    return enchd, fatfs_size
+  output = [enchd]
+  output.append('\0' * (reserved_size - 512))
+  if fstype == 'FAT12':
+    empty_fat = '\xf8\xff\xff' + '\0' * (fat_size - 3)
+  elif fstype == 'FAT16':
+    empty_fat = '\xf8\xff\xff\xff' + '\0' * (fat_size - 4)
+  else:
+    assert 0, 'Unknown fstype: %s' % (fstype,)
+  output.extend(empty_fat for _ in xrange(fat_count))
+  # Volume label in root directory.
+  output.append('minifat3   \x08\0\0\xa7|\x8fM\x8fM\0\0\xa7|\x8fM\0\0\0\0\0\0')
+  # Rest of root directory.
+  output.append('\0' * (rootdir_size - 32))
+  data = ''.join(output)
+  assert len(data) == reserved_size + fat_size * fat_count + rootdir_size
+  assert len(data) <= fatfs_size
+  return data, fatfs_size
 
 
 def main(argv):
-  raw_device = '7:0'
-
-  device = 'pp.bin'
   passphrase = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
-
-  #device = '../pts-static-cryptsetup/rr.bin'
-
-  sys.stdout.write(get_table(device, passphrase, raw_device))
-  sys.stdout.flush()
+  # !! Experiment with decrypted_ofs=0, encrypted ext2 (first 0x400 bytes are arbitrary) or reiserfs/ btrfs (first 0x10000 bytes are arbitrary) filesystem,
+  #    Can we have a fake non-FAT filesystem with UUID and label? For reiserfs, set_jfs_id.py would work.
+  #    set_xfs_id.py doesn't work, because XFS and VeraCrypt headers conflict.
+  #    LUKS (luks.c) can work, but it has UUID only (no label).
+  #    No other good filesystem for ext2, see https://github.com/pts/pts-setfsid/blob/master/README.txt
+  #    Maybe with bad blocks: bad block 64, and use jfs.
+  #    !! Needs more checking, is it block 32 for jfs? mkfs.ext4 -b 1024 -l badblocks.lst ext4.img
+  if len(argv) < 2:
+    print >>sys.stderr, 'fatal: missing command'
+    sys.exit(1)
+  if len(argv) > 2 and argv[1] == 'get_table':
+    # !! Also add mount with compatible syntax.
+    # * veracrypt --mount --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
+    # * cryptsetup open /dev/sdb e4t --type tcrypt --veracrypt NAME  # Creates /dev/mapper/NAME
+    # Please note that this command is not able to mount all volumes: it
+    # works only with hash sha512 and encryption aes-xts-plain64, the
+    # default for veracrypt-1.17, and the one the commands mkveracrypt,
+    # mkinfat and mkfat generate.
+    # !! Autodetect possible number of iterations. See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
+    # !! Reuse smaller number of iterations when computing bigger.
+    raw_device = '7:0'
+    device = argv[2]
+    #device = '../pts-static-cryptsetup/rr.bin'
+    sys.stdout.write(get_table(device, passphrase, raw_device))
+    sys.stdout.flush()
+  elif argv[1] == 'mkveracrypt':
+    # TODO(pts): Create the backup header at the end of the device by
+    # default, according to:
+    # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+    # 256 KiB smaller than the raw device: VeraCrypt header (64 KiB), hidden volume header (64 KiB), encrypted volume data, backup header (64 KiB), backup hidden volume header (64 KiB)
+    device = argv[2]
+    f = open(device, 'rb')
+    try:
+      f.seek(0, 2)
+      device_size = f.tell()
+    finally:
+      f.close()
+    decrypted_size = None  # 1 << 20  # !! Make it configurable in the command line, default should be autodetect (None).
+    decrypted_ofs = 0x20000  # !! Add command-line flag.
+    #decrypted_ofs = 0  # This also works with veracrypt-console on Linux.
+    # TODO(pts): Use a randomly generated salt by default.
+    salt = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
+    enchd = build_veracrypt_header(
+        decrypted_size=device_size - decrypted_ofs, passphrase=passphrase, decrypted_ofs=decrypted_ofs, enchd_prefix=salt)
+    assert len(enchd) == 512
+    f = open(device, 'rb+')
+    try:
+      f.write(enchd)
+    finally:
+      f.close()
+  elif len(argv) > 2 and argv[1] == 'mkinfat':  # Create an encrypted volume after after an existing FAT12 or FAT16 filesystem.
+    device = argv[2]
+    f = open(device, 'rb')
+    try:
+      fat_header = f.read(64)
+      f.seek(0, 2)
+      device_size = f.tell()
+    finally:
+      f.close()
+    decrypted_size = None  # 1 << 20  # !! Make it configurable in the command line, default should be autodetect (None).
+    enchd, fatfs_size = build_veracrypt_fat(
+        decrypted_size=decrypted_size, passphrase=passphrase, fat_header=fat_header, device_size=device_size)
+    assert len(enchd) == 512
+    f = open(device, 'rb+')
+    try:
+      f.write(enchd)
+    finally:
+      f.close()
+  elif len(argv) > 2 and argv[1] == 'mkfat':
+    device = argv[2]
+    decrypted_size = 1 << 20  # !! Make it configurable in the command line.
+    # !! Add command-line flag to create FAT16 24 MiB for SSD alignment.
+    fat_header, fatfs_size = build_veracrypt_fat(
+        decrypted_size, passphrase, do_include_all_header_sectors=True)
+    f = open(device, 'wb')
+    try:
+      f.write(fat_header)
+      f.truncate(fatfs_size)
+    finally:
+      sys.stdout.flush()
+    # Mount it like this: sudo veracrypt-console --mount --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes fat_disk.img
+    # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
+    # --encryption=aes sems to be ignored, --hash=sha512 is used (because it breaks with --hash=sha256)
+    # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
+    # For --pim=0, --pim=485 is used with --hash=sha512.
+  else:
+    print >>sys.stderr, 'fatal: unknown command: %s' % argv[1]
+    sys.exit(1)
 
 
 if __name__ == '__main__':
