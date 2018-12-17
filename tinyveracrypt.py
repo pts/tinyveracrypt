@@ -1533,7 +1533,13 @@ def main(argv):
   #    $ mkfs.ext4 -b 1024 -E nodiscard -l badblocks.lst -F bigext4.img
   #    Block 32 in primary superblock/group descriptor area bad.
   #    Blocks 1 through 34 must be good in order to build a filesystem.
-  #    (So marking block 32 bad won't work for ext2, ext3, ext4 filesystems of at least about 8 GiB in size.)
+  #    (So marking block 32 bad won't work for ext2, ext3, ext4 filesystems of at least about 8 GiB in size for -b 1024, or 120 GiB for -b 4096)
+  #    also: Warning: the backup superblock/group descriptors at block 32768 contain bad blocks.
+  #    SUXX: `fsck.ext -c ...' clears the badblocks list, so from that point on the exti{2,3,4} filesystem will be able to reuse the previous bad block
+  #    There seems to be no unmovable file in ext2.
+  #    btrfs (superblock at 65536) works for up to 241 GB, block size 4096, Reserved GDT blocks at 16-1024
+  #    ``Reserved GDT blocks'' always finishes before 1050
+  #    btrfs (superblock also at 64 MiB): To put block 32768 (64 MiB) to the ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4 -g ...' (blocks per block group), but it may have a performance penalty on SSDs (if not aligned to 6 MB boundary); example: python -c 'f = open("ext2.img", "wb"); f.truncate(240 << 30)' && mkfs.ext4 -E nodiscard -g 16304 -F ext2.img && dumpe2fs ext2.img >ext4.dump
   if len(argv) < 2:
     raise UsageError('missing command')
   command = argv[1].lstrip('-')
