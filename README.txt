@@ -3,7 +3,7 @@ tinyveracrypt: VeraCrypt-compatible block device encryption setup
 tinyveracrypt is a collection of command-line tools (currently Python
 scripts) for Linux which can be used to create and open (mount) encrypted
 volumes compatible with VeraCrypt (tested with VeraCrypt 1.17) and
-`cryptsetup --type tcrypt --veracrypt' (tested with cryptsetup 1.6.7). It
+`cryptsetup open --type tcrypt --veracrypt' (tested with cryptsetup 1.6.7). It
 has some additional features such as plaintext UUID and volume label.
 
 Features and plans
@@ -170,6 +170,45 @@ It needs Python 2.5, 2.6 or 2.7 (no external package are needed), or Python
 
 For opening encrypted volumes, a Linux system with the dmsetup(8) tool is
 also needed, with root access (e.g. sudo).
+
+Q15. Does a VeraCrypt volume have an unencrypted UUID?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""
+No, by design it's impossible to distinguish an encrypted VeraCrypt volume
+from random garbage without knowing the passphrase.
+
+However, tinyveracrypt can create a VeraCrypt encrypted volume with a fake
+LUKS header containing an unencrypted UUID (recognized by blkid in
+util-linux and Busybox):
+
+  $ ./tinyveracrypt.py init --fake-luks-uuid=random RAWDEVICE
+
+The LUKS (LUKS1) headers don't contain a volume label field, so it's not
+possible to specify one.
+
+The created VeraCrypt encrypted volume will not be a valid LUKS volume
+though, `cryptsetup open' won't be able to open it without a --veracrypt
+flag.
+
+Q16. How to open a VeraCrypt encrypted volume with cryptsetup?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Run this:
+
+  $ sudo cryptsetup open --type tcrypt --veracrypt RAWDEVICE DEVNAME
+
+The decrypted volume will be available as /dev/mapper/DEVNAME
+
+Q17. How to open a VeraCrypt encrypted volume with veracrypt-console?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Run this:
+
+  $ sudo veracrypt-console --mount --text --keyfiles= --protect-hidden=no --pim=0 --filesystem=none RAWDEVICE
+
+If the volume was created by tinyveracrypt, alternatively run this fast
+method:
+
+  $ sudo veracrypt-console --mount --text --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+
+The decrypted volume will be available as /dev/mapper/veracrypt1 (or 2 etc.).
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

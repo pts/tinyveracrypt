@@ -39,7 +39,6 @@ except ImportError:
     return strxor
 
 
-
 # ---  AES XTS crypto code.
 #
 # Code based on from CryptoPlus (2014-11-17): https://github.com/doegox/python-cryptoplus/commit/a5a1f8aecce4ddf476b2d80b586822d9e91eeb7d
@@ -617,7 +616,9 @@ def check_decrypted_size(decrypted_size):
     raise ValueError('decrypted_size must be positive, got: %d' % decrypted_size)
 
 
-def build_dechd(salt, keytable, decrypted_size, sector_size, decrypted_ofs=None):
+def build_dechd(
+    salt, keytable, decrypted_size, sector_size, decrypted_ofs=None,
+    zeros_data=None, zeros_ofs=None):
   check_keytable_or_keytablep(keytable)
   check_decrypted_size(decrypted_size)
   check_salt(salt)
@@ -665,11 +666,19 @@ def build_dechd(salt, keytable, decrypted_size, sector_size, decrypted_ofs=None)
   # filesystem headers conflict with this header (decrypted_size vs
   # xfs.sectsize, byte_offset_for_key vs xfs.label, sector_size vs
   # xfs.icount, flag_bits vs xfs.blocklog etc.).
+  if zeros_data is not None:
+    if zeros_ofs < 132 or zeros_ofs + len(zeros_data) > 252:
+      raise ValueError('zeros_data and zeros_ofs in wrong interval.')
+    zeros120 = ''.join(('\0' * (zeros_ofs - 132), zeros_data))
+  elif zeros_ofs is not None:
+    raise ValueError('zeros_ofs implies zeros_data.')
+  else:
+    zeros120 = ''
   header = struct.pack(
-      '>4sHBB4s16xQQQQLL120x', signature, header_format_version,
+      '>4sHBB4s16xQQQQLL120s', signature, header_format_version,
       minimum_version_to_extract[0], minimum_version_to_extract[1],
       keytablep_crc32, hidden_volume_size, decrypted_size,
-      decrypted_ofs, decrypted_size, flag_bits, sector_size)
+      decrypted_ofs, decrypted_size, flag_bits, sector_size, zeros120)
   assert len(header) == 188
   header_crc32 = ('%08x' % (binascii.crc32(header) & 0xffffffff)).decode('hex')
   dechd = ''.join((salt, header, header_crc32, keytablep))
@@ -722,9 +731,13 @@ def check_full_dechd(dechd, enchd_suffix_size=0):
     raise ValueError('flag_bits mismatch.')
   sector_size, = struct.unpack('>L', dechd[128 : 128 + 4])
   check_sector_size(sector_size)
-  if dechd[132 : 132 + 120].lstrip('\0'):
+  # Length should be 120, but that conflicts with fake_luks_uuid.
+  if dechd[132 : 132 + 28].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding at 132.')
+  if dechd[208 : 208 + 44].lstrip('\0'):
+    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
+    raise ValueError('Missing NUL padding at 208.')
   if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding after keytable.')
@@ -840,12 +853,17 @@ def get_random_bytes(size, _functions=[]):
   return _functions[0](size)
 
 
-def build_veracrypt_header(decrypted_size, passphrase, enchd_prefix='', enchd_suffix='', decrypted_ofs=None, pim=None):
+def build_veracrypt_header(
+    decrypted_size, passphrase, enchd_prefix='', enchd_suffix='',
+    decrypted_ofs=None, pim=None, fake_luks_uuid=None):
   """Returns 512 bytes.
 
   Args:
     decrypted_size: Size of the decrypted block device, this is 0x20000
         bytes smaller than the encrypted block device.
+  Returns:
+    enchd, the encrypted 512-byte header to be saved to the beginning
+    of the raw device.
   """
   if len(enchd_prefix) > 64:
     raise ValueError('enchd_prefix too long, got: %d' % len(enchd_prefix))
@@ -853,11 +871,35 @@ def build_veracrypt_header(decrypted_size, passphrase, enchd_prefix='', enchd_su
     raise ValueError('enchd_suffix too long, got: %d' % len(enchd_suffix))
   check_decrypted_size(decrypted_size)
   check_decrypted_ofs(decrypted_ofs)
+  if fake_luks_uuid is not None:
+    if len(fake_luks_uuid) > 36:
+      raise ValueError(
+          'fake_luks_uuid must be at most 36 bytes, got: %d' %
+          len(fake_luks_uuid))
+    fake_luks_uuid += '\0' * (36 - len(fake_luks_uuid))
+    # LUKS1 header with (invalid) empty hash name.
+    luks_header = 'LUKS\xba\xbe\0\1\0'
+    if not luks_header.startswith(buffer(enchd_prefix, 0, len(luks_header))):
+      raise ValueError('enchd_prefix value conflicts with with luks_header.')
+    enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
+    assert len(enchd_prefix) <= 64
   salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
   header_key = build_header_key(passphrase, salt, pim=pim)  # Slow.
+  if fake_luks_uuid is not None:
+    zeros_ofs = 160  # Must be divisible by 16 for crypt_aes_xts.
+    # util-linux blkid supports 40 bytes, busybox blkid supports 36 bytes.
+    zeros_data = ''.join((
+        get_random_bytes(8), fake_luks_uuid, '\0', get_random_bytes(3)))
+    assert len(zeros_data) == 48
+    zeros_data = crypt_aes_xts(
+        header_key, zeros_data, do_encrypt=False, ofs=zeros_ofs - 64)
+  else:
+    zeros_ofs = zeros_data = None
   keytable = get_random_bytes(64)
   sector_size = 512
-  dechd = build_dechd(salt, keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs)
+  dechd = build_dechd(
+      salt, keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs,
+      zeros_ofs=zeros_ofs, zeros_data=zeros_data)
   assert len(dechd) == 512
   check_full_dechd(dechd)
   enchd = encrypt_header(dechd, header_key)
@@ -1192,7 +1234,8 @@ def cmd_create(args):
   is_quick = False
   do_passphrase_twice = True
   salt = ''
-  decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  is_any_luks_uuid = False
+  fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
 
   i = 0
@@ -1236,8 +1279,16 @@ def cmd_create(args):
       try:
         value = value.decode('hex')
       except (TypeError, ValueError):
-        raise ValueError('uuid must be hex: %s' % arg)
+        raise UsageError('FAT uuid must be hex: %s' % arg)
       fat_uuid = value.encode('hex')
+      if len(fat_uuid) != 4:
+        raise UsageError('FAT uuid must be 4 bytes: %s' % arg)
+    elif arg.startswith('--fake-luks-uuid'):
+      fake_luks_uuid = arg[arg.find('=') + 1:]
+    elif arg == '--any-luks-uuid':
+      is_any_luks_uuid = True
+    elif arg == '--no-any-luks-uuid':
+      is_any_luks_uuid = False
     elif arg.startswith('--fat-rootdir-entry-count='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -1390,6 +1441,36 @@ def cmd_create(args):
     decrypted_ofs = 'mkfat'
   elif decrypted_ofs is None:
     decrypted_ofs = 0x20000
+  if fake_luks_uuid is not None:
+    if decrypted_ofs == 'fat':
+      raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
+    if decrypted_ofs == 'mkfat':
+      raise UsageError('--fake-luks-uuid=... conflicts with --mkfat=...')
+    if is_any_luks_uuid:
+      # Any bytes can be used (not only hex), blkid recognizes them as UUID.
+      if '\0' in fake_luks_uuid:
+        raise UsageError('NUL not allowed in LUKS uuid: %r' % fake_luks_uuid)
+      if len(fake_luks_uuid) > 36:
+        raise UsageError(
+            'LUKS uuid must be at most 36 bytes: %r' % fake_luks_uuid)
+    else:
+      if fake_luks_uuid in ('random', 'new', 'rnd'):
+        fake_luks_uuid = ''
+      else:
+        fake_luks_uuid = fake_luks_uuid.replace('-', '').lower()
+        try:
+          fake_luks_uuid = fake_luks_uuid.decode('hex')
+        except (TypeError, ValueError):
+          raise UsageError('LUKS uuid must be hex: %s' % arg)
+      if not fake_luks_uuid:
+        fake_luks_uuid = get_random_bytes(16)
+      if len(fake_luks_uuid) != 16:
+        raise UsageError(
+            'LUKS uuid must be 16 bytes, got: %d' % len(fake_luks_uuid))
+      fake_luks_uuid = fake_luks_uuid.encode('hex')
+      fake_luks_uuid = '-'.join((  # Add the dashes.
+          fake_luks_uuid[:8], fake_luks_uuid[8 : 12], fake_luks_uuid[12 : 16],
+          fake_luks_uuid[16 : 20], fake_luks_uuid[20:]))
   if do_add_full_header is None:
     do_add_full_header = decrypted_ofs not in ('fat', 'mkfat', 0)
   if do_add_backup is None:
@@ -1462,22 +1543,20 @@ def cmd_create(args):
     assert 2048 <= fatfs_size2 <= fatfs_size
     assert len(enchd) >= 1536
   else:
-    enchd_prefix = salt + get_random_bytes(64 - len(salt))
     enchd = build_veracrypt_header(
         decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=enchd_prefix, pim=pim)
+        enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid)
     assert len(enchd) == 512
   if do_add_full_header:
     enchd += get_random_bytes(decrypted_ofs - 512)
     assert len(enchd) == decrypted_ofs
   if do_add_backup:
     # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
-    enchd_backup_prefix = salt + get_random_bytes(64 - len(salt))
     enchd_backup = build_veracrypt_header(
         decrypted_size=device_size - (decrypted_ofs << 1),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=enchd_backup_prefix, pim=pim)
+        enchd_prefix=salt, pim=pim)
     enchd_backup += get_random_bytes(decrypted_ofs - 512)
     assert len(enchd_backup) == decrypted_ofs
   else:
@@ -1546,7 +1625,7 @@ def main(argv):
 
   if len(argv) > 2 and command == 'get_table':  # !! Use `table' as an alias, also --showkeys.
     # !! Also add mount with compatible syntax.
-    # * veracrypt --mount --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
+    # * veracrypt --mount --text --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
     # * cryptsetup open /dev/sdb e4t --type tcrypt --veracrypt NAME  # Creates /dev/mapper/NAME
     # Please note that this command is not able to mount all volumes: it
     # works only with hash sha512 and encryption aes-xts-plain64, the
@@ -1599,6 +1678,7 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     # !! Add --label=... and --uuid=... from set_jfs_id.py.
     # !! Consider using UUID onnly with luks.c and ext2, implement the UUID functionality so that blkid recognizes it.
+    # !! (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
     args = argv[2:]
     args[:0] = ('--quick', '--volume-type=normal', '--size=auto',
                 '--encryption=aes', '--hash=sha512', '--filesystem=none',
