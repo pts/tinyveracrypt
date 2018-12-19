@@ -196,8 +196,9 @@ with OpenSSL bindings (the _ssl module). (OpenSSL's SHA-512 implementation
 has key derivation from passphrase much faster than the default SHA-512 in
 Python.) tinyveracrypt doesn't work with Python 3.
 
-For opening encrypted volumes, a Linux system with the dmsetup(8) tool is
-also needed, with root access (e.g. sudo).
+For opening encrypted volumes, a Linux system with the dmsetup(8) tool (and
+also the losetup(8) tool for disk images) is also needed, with root access
+(e.g. sudo).
 
 Q16. Does a VeraCrypt volume have an unencrypted UUID?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -309,6 +310,15 @@ The decrypted volume will be available as /dev/mapper/truecrypt1 (or 2 etc.).
 
 The recommended TrueCrypt version is 7.1a (released on 2012-02-07). The latest
 release, 7.2 can also open encrypted volumes.
+
+Q23. Which command-line VeraCrypt features are missing from tinyveracrypt?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+* hidden volume
+* system volume
+* keyfile
+* encryption other than AES
+* hash other than SHA-512
+* mounting the filesystem at open time
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

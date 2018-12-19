@@ -602,7 +602,7 @@ def check_salt(salt):
 
 def check_decrypted_ofs(decrypted_ofs):
   if decrypted_ofs < 0:
-    # The value of 0 works with veracrypt-console.
+    # The value of 0 works with veracrypt.
     # Typical value is 0x20000 for non-hidden volumes.
     raise ValueError('decrypted_size must be nonnegative, got: %d' % decrypted_ofs)
   if decrypted_ofs & 511:
@@ -614,6 +614,11 @@ def check_decrypted_size(decrypted_size):
     raise ValueError('decrypted_size must be a multiple of 512, got: %d' % decrypted_size)
   if decrypted_size <= 0:
     raise ValueError('decrypted_size must be positive, got: %d' % decrypted_size)
+
+
+def check_table_name(name):
+  if '/' in name or '\0' in name or not name or name.startswith('-'):
+    raise UsageError('invalid dmsetup table name: %r' % name)
 
 
 def build_dechd(
@@ -1277,6 +1282,68 @@ def prompt_passphrase(do_passphrase_twice):
   return passphrase
 
 
+def run_and_read_stdout(cmd, is_dmsetup=False):
+  import subprocess
+
+  if not isinstance(cmd, (list, tuple)):
+    raise TypeError
+  try:
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+  except OSError, e:
+    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
+  try:
+    return p.stdout.read()
+  finally:
+    p.stdout.close()
+    if p.wait():
+      if is_dmsetup:
+        try:
+          open('/dev/mapper/control', 'r+b').close()
+        except IOError:
+          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
+      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
+
+
+def run_and_write_stdin(cmd, data, is_dmsetup=False):
+  import subprocess
+
+  if not isinstance(cmd, (list, tuple)):
+    raise TypeError
+  try:
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+  except OSError, e:
+    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
+  try:
+    p.stdin.write(data)
+  finally:
+    p.stdin.close()
+    if p.wait():
+      if is_dmsetup:
+        try:
+          open('/dev/mapper/control', 'r+b').close()
+        except IOError:
+          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
+      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
+
+
+def yield_dm_devices():
+  value = [run_and_read_stdout(('dmsetup', 'ls'), is_dmsetup=True)]
+  for line in value.pop().splitlines():
+    i = line.rfind('\t')
+    if i < 0:
+      raise ValueError('Bad dmsetup ls line: %r' % line)
+    name2, dev2 = line[:i], line[i + 1:].replace(', ', ':')
+    try:
+      if not dev2.startswith('(') or not dev2.endswith(')'):
+        raise ValueError
+      major, minor = map(int, dev2[1 : -1].split(':'))
+      if not (1 <= major <= 255 and 0 <= minor <= 255):
+        raise ValueError
+    except ValueError:
+      raise ValueError('Bad dmsetup ls dev: %r' % dev2)
+    yield name2, (major, minor)
+
+
 class UsageError(SystemExit):
   """Raised when there is a problem in the command-line."""
 
@@ -1286,9 +1353,9 @@ TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce
 
 
 def cmd_get_table(args):
-  device = passphrase = None
   truecrypt_mode = 1
   pim = 0
+  device = passphrase = None
 
   i, value = 0, None
   while i < len(args):
@@ -1302,7 +1369,7 @@ def cmd_get_table(args):
       pim = parse_pim_arg(arg)
     elif arg in '--no-truecrypt':
       truecrypt_mode = 0
-    elif arg == ('--maybe-truecrypt', '--veracrypt'):  # --veracrypt compatible with `cryptsetup open' and `cryptsetup tcryptDump'.
+    elif arg in ('--maybe-truecrypt', '--veracrypt'):  # --veracrypt compatible with `cryptsetup open' and `cryptsetup tcryptDump'.
       truecrypt_mode = 1
     elif arg == '--truecrypt':
       truecrypt_mode = 2
@@ -1313,14 +1380,16 @@ def cmd_get_table(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    else:
+      raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume.')
+      raise UsageError('missing <device> hosting the encrypted volume')
     device = args[i]
-  i += 1
+    i += 1
   if i != len(args):
-    raise UsageError('too many command-line arguments.')
+    raise UsageError('too many command-line arguments')
 
   if passphrase is None:
     passphrase = prompt_passphrase(do_passphrase_twice=False)
@@ -1329,6 +1398,200 @@ def cmd_get_table(args):
   device_id = device  # TODO(pts): Option to display major:minor.
   sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode))
   sys.stdout.flush()
+
+
+def cmd_mount(args):
+  # This function is Linux-only.
+  import os
+  import stat
+  import subprocess
+
+  is_custom_name = False
+  pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = type_arg = name = None
+
+  i, value = 0, None
+  while i < len(args):
+    arg = args[i]
+    if arg == '-' or not arg.startswith('-'):
+      break
+    i += 1
+    if arg == '--':
+      break
+    elif arg.startswith('--pim=') or arg.startswith('--veracrypt-pim='):
+      pim = parse_pim_arg(arg)
+      if truecrypt_mode == 2:
+        truecrypt_mode = 1
+    elif arg in '--no-truecrypt':
+      truecrypt_mode = 0
+    elif arg in ('--maybe-truecrypt', '--veracrypt'):  # --veracrypt compatible with `cryptsetup open' and `cryptsetup tcryptDump'.
+      truecrypt_mode = 1
+    elif arg == '--truecrypt':
+      truecrypt_mode = 2
+    elif arg.startswith('--password='):
+      # Unsafe, ps(1) can read it.
+      passphrase = parse_passphrase(arg)
+    elif arg in ('--test-passphrase', '--test-password'):
+      # With --test-passphase --salt=test it's faster, because
+      # build_header_key is much faster.
+      passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--keyfiles='):
+      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      if value != '':
+        raise UsageError('unsupported flag value: %s' % arg)
+      keyfiles = value
+    elif arg.startswith('--protect-hidden='):
+      protect_hidden = arg[arg.find('=') + 1:].lower()
+    elif arg == '--custom-name':
+      is_custom_name = True
+    elif arg == '--no-custom-name':
+      is_custom_name = False
+    elif arg in ('--type', '-M') and i < len(args):
+      type_arg = args[i]
+      i += 1
+      if type_arg != 'tcrypt':
+        raise UsageError('unsupported flag value: %s' % arg)
+      if truecrypt_mode is None:
+        truecrypt_mode = 2  # --truecrypt.
+    elif arg.startswith('--type='):
+      type_arg = arg[arg.find('=') + 1:].lower()
+      if type_arg != 'tcrypt':
+        raise UsageError('unsupported flag value: %s' % arg)
+      if truecrypt_mode is None:
+        truecrypt_mode = 2  # --truecrypt.
+    elif arg.startswith('--slot='):
+      value = arg[arg.find('=') + 1:]
+      try:
+        slot = int(value)
+      except ValueError:
+        raise UsageError('unsupported flag value: %s' % arg)
+      if slot <= 0:
+        raise UsageError('slot must be positive, got: %s' % arg)
+    elif arg.startswith('--encryption='):
+      value = arg[arg.find('=') + 1:].lower()
+      if value != 'aes':
+        raise UsageError('unsupported flag value: %s' % arg)
+      encryption = value
+    elif arg.startswith('--hash='):
+      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      if value != 'sha512':
+        raise UsageError('unsupported flag value: %s' % arg)
+      hash = value
+    elif arg.startswith('--filesystem='):
+      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      if value != 'none':
+        raise UsageError('unsupported flag value: %s' % arg)
+      filesystem = value
+    elif arg.startswith('--keyfiles='):
+      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      if value != '':
+        raise UsageError('unsupported flag value: %s' % arg)
+      keyfiles = value
+    elif arg.startswith('--pim='):
+      pim = parse_pim_arg(arg)
+    else:
+      raise UsageError('unknown flag: %s' % arg)
+  del value  # Save memory.
+  if device is None:
+    if i >= len(args):
+      raise UsageError('missing <device> hosting the encrypted volume')
+    device = args[i]
+    i += 1
+  if name is None and is_custom_name:
+    if i >= len(args):
+      raise UsageError('missing dmsetup table <name> for the encrypted volume')
+    name = args[i]
+    i += 1
+    check_table_name(name)
+  if i != len(args):
+    raise UsageError('too many command-line arguments')
+  if truecrypt_mode is None:
+    truecrypt_mode = 1
+  if i != len(args):
+    raise UsageError('too many command-line arguments')
+  if encryption != 'aes':
+    raise UsageError('missing flag: --encryption=aes')
+  if hash != 'sha512':
+    raise UsageError('missing flag: --hash=sha512')
+  if filesystem != 'none':
+    raise UsageError('missing flag: --filesystem=none')
+  if protect_hidden != 'no':
+    raise UsageError('missing flag: --protect-hidden=no')
+  if keyfiles != '':
+    raise UsageError('missing flag: --keyfiles=')
+  if pim is None:
+    raise UsageError('missing flag --pim=..., recommended: --pim=0')
+  if name is not None and slot is not None:
+    raise UsageError('<name> conflicts with --slot=')
+
+  # For /sbin/dmsetup.
+  os.environ['PATH'] = os.getenv('PATH', '/bin:/usr/bin') + ':/sbin'
+  had_dmsetup = False
+
+  if name is None:
+    if slot is None:
+      slots = set()
+      hd_dmsetup = True
+      for name2, (major, minor) in yield_dm_devices():
+        if not name2.startswith('veracrypt'):
+          continue
+        try:
+          slot2 = int(names2[8:])
+        except ValueError:
+          continue
+        if slot2 > 0:
+          slots.add(slot2)
+      slot = 1
+      while slot in slots:
+        slot += 1
+    name = 'veracrypt%d' % slot
+    print >>sys.stderr, 'info: using dmsetup table name: %s' % name
+
+  try:
+    stat_obj = os.stat(device)
+  except OSError, e:
+    raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
+  losetup_cleanup_device = None
+  try:
+    if stat.S_ISREG(stat_obj.st_mode):  # Disk image.
+      if device.startswith('-'):
+        raise UsageError('raw device must not start with dash: %s' % device)
+      # Alternative, without race conditions, but doesn't work with busybox:
+      # sudo losetup --show -f RAWDEVICE
+      data = run_and_read_stdout(('losetup', '-f'))
+      if not data or data.startswith('-'):
+        raise ValueError('Expected loopback device name.')
+      data = data.rstrip('\n')
+      if '\n' in data or not data:
+        raise ValueError('Expected single loopback device name.')
+      losetup_cleanup_device = data
+      # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
+      # remove' is run then the loop device gets deleted automatically.
+      # Make the automatic deletion happen for tinyveracrypt as well.
+      # Can losetup do this?
+      run_and_write_stdin(('losetup', data, device), '', is_dmsetup=True)
+      stat_obj = os.stat(data)
+      if not stat.S_ISBLK(stat_obj.st_mode):
+        raise RuntimeError('Block device expected: %s' % data)
+      # Major is typically 7 for /dev/loop...
+    elif not stat.S_ISBLK(stat_obj.st_mode):
+      raise SystemExit('not a block device or image: %s' % device)
+    device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
+
+    if passphrase is None:
+      if not had_dmsetup:
+        yield_dm_devices()  # Get a possible error about sudo before prompting.
+      passphrase = prompt_passphrase(do_passphrase_twice=False)
+
+    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode)  # Slow.
+    run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
+    losetup_cleanup_device = None
+  finally:
+    if losetup_cleanup_device is not None:
+      import subprocess
+      try:  # Ignore errors.
+        subprocess.call(('losetup', '-d', losetup_cleanup_device))
+      except OSError:
+        pass
 
 
 def cmd_create(args):
@@ -1507,15 +1770,15 @@ def cmd_create(args):
     elif arg in ('--no-truecrypt', '--veracrypt'):
       is_truecrypt = False
     else:
-      raise UsageError('unknwon flag: %s' % arg)
+      raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume.')
+      raise UsageError('missing <device> hosting the encrypted volume')
     device = args[i]
-  i += 1
+    i += 1
   if i != len(args):
-    raise UsageError('too many command-line arguments.')
+    raise UsageError('too many command-line arguments')
   if volume_type != 'normal':
     raise UsageError('missing flag: --volume-type=normal')
   if encryption != 'aes':
@@ -1680,12 +1943,6 @@ def cmd_create(args):
 
 
 def main(argv):
-  try:
-    import signal
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-  except (ImportError, OSError, AttributeError):
-    pass
-
   passphrase = TEST_PASSPHRASE
   # !! Experiment with decrypted_ofs=0, encrypted ext2 (first 0x400 bytes are arbitrary) or reiserfs/ btrfs (first 0x10000 bytes are arbitrary) filesystem,
   #    Can we have a fake non-FAT filesystem with UUID and label? For reiserfs, set_jfs_id.py would work.
@@ -1738,35 +1995,43 @@ def main(argv):
     argv[1 : 3] = argv[2 : 0 : -1]
 
   command = argv[1].lstrip('-')
-
   if len(argv) > 2 and command == 'get_table':  # !! Use `table' as an alias, also --showkeys.
     # !! Also add mount with compatible syntax.
     # * veracrypt --mount --text --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
-    # * cryptsetup open /dev/sdb e4t --type tcrypt --veracrypt NAME  # Creates /dev/mapper/NAME
+    # * cryptsetup open --type tcrypt --veracrypt /dev/sdb e4t  # Creates /dev/mapper/NAME
     # Please note that this command is not able to mount all volumes: it
     # works only with hash sha512 and encryption aes-xts-plain64, the
     # default for veracrypt-1.17, and the one the commands mkveracrypt,
     # mkinfat and mkfat generate.
     # No need to autodetect possible number of iterations (--pim=0 is good). See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
     cmd_get_table(argv[2:])
+  elif len(argv) > 2 and command == 'mount':
+    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+    # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
+    #
+    # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
+    cmd_mount(argv[2:])
+  elif len(argv) > 2 and command == 'open':
+    # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME
+    args = argv[2:]
+    args[:0] = ('--keyfiles=', '--protect-hidden=no', '--pim=0',
+                '--filesystem=none', '--hash=sha512', '--encryption=aes',
+                '--custom-name')
+    cmd_mount(args)
+  # !! add 'close' and 'remove' (`cryptsetup close' and `dmsetup remove')
+  # !! add `tcryptDump' (`cryptsetup tcryptDump')
   elif command == 'create':  # For compatibility with `veracrypt --create'.
-    # Emulate: veracrypt-console --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
+    # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Difference; --quick is also respected for disk images (not only actual block devices).
     # Difference: --size=auto can be used to detect the size. (--size=... contains the value of the device size).
-    # Difference: --ofs=<size>, --salt=... is not supported by veracrypt-console.
-    # Difference: --ofs=fat (autodetecting FAT filessyem at the beginning of the device) is not supported by veracrypt-console.
-    # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt-console.
-    # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt-console.
+    # Difference: --ofs=<size>, --salt=... is not supported by veracrypt.
+    # Difference: --ofs=fat (autodetecting FAT filessyem at the beginning of the device) is not supported by veracrypt.
+    # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt.
+    # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt.
     # Difference: --truecrypt is respected.
-    #
-    # !! Add our --mount command (with both `dmsetup create' and `veracrypt-consoel --mount).
-    # Mount it like this: sudo veracrypt-console --mount --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes fat_disk.img
-    # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
-    # --encryption=aes sems to be ignored, --hash=sha512 is used (because it breaks with --hash=sha256)
     # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
     # For --pim=0, --pim=485 is used with --hash=sha512.
-    # sudo umount /tmp/.veracrypt_aux_mnt1
     cmd_create(argv[2:])
   elif command == 'init':  # Like create, but with better (shorter) defaults.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
@@ -1774,8 +2039,7 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     # !! Add --label=... and --uuid=... from set_jfs_id.py.
-    # !! Consider using UUID onnly with luks.c and ext2, implement the UUID functionality so that blkid recognizes it.
-    # !! (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
+    # !! init --opened (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
     args = argv[2:]
     args[:0] = ('--quick', '--volume-type=normal', '--size=auto',
                 '--encryption=aes', '--hash=sha512', '--filesystem=none',
@@ -1789,6 +2053,16 @@ def main(argv):
 if __name__ == '__main__':
   try:
     sys.exit(main(sys.argv))
+  except KeyboardInterrupt, e:
+    try:  # Convert KeyboardInterrupt to SIGINT. Cleanups in main done.
+      import os
+      import signal
+      os.kill
+      os.getpid
+      signal.signal(signal.SIGINT, signal.SIG_DFL)
+    except (ImportError, OSError, AttributeError):
+      raise e
+    os.kill(os.getpid(), signal.SIGINT)
   except UsageError, e:
     print >>sys.stderr, 'fatal: usage: %s' % e
     sys.exit(1)
