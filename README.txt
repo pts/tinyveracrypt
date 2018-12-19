@@ -264,11 +264,11 @@ Alternatively, if you have VeraCrypt installed, run this:
 If the volume was created by tinyveracrypt, alternatively run this faster
 method:
 
-  $ sudo veracrypt       --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+  $ sudo veracrypt          --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
 
 For compatibility, tinyveracrypt supports the same syntax:
 
-  $ sudo ./tinyveracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+  $ sudo ./tinyveracrypt.py --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
 
 The decrypted volume will be available as /dev/mapper/veracrypt1 (or 2 etc.,
 specify --slot=...).
@@ -278,11 +278,11 @@ encrypted volumes.
 
 Alternatively, if you have cryptsetup >= 1.6.7 installed, run this:
 
-  $ sudo cryptsetup      open --type tcrypt --veracrypt RAWDEVICE NAME
+  $ sudo cryptsetup         open --type tcrypt --veracrypt RAWDEVICE NAME
 
 For compatibility, tinyveracrypt supports the same syntax:
 
-  $ sudo ./tinyveracrypt open --type tcrypt --veracrypt RAWDEVICE NAME
+  $ sudo ./tinyveracrypt.py open --type tcrypt --veracrypt RAWDEVICE NAME
 
 The decrypted volume will be available as /dev/mapper/DEVNAME .
 
@@ -302,11 +302,11 @@ Alternateivel, if you have VeraCrypt installed, run this:
 If the volume was created by tinyveracrypt, alternatively run this faster
 method:
 
-  $ sudo veracrypt       --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+  $ sudo veracrypt          --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
 
 For compatibility, tinyveracrypt supports the same syntax:
 
-  $ sudo ./tinyveracrypt --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+  $ sudo ./tinyveracrypt.py --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
 
 Alternatively, if you have TrueCrypt installed, run this:
 
@@ -325,11 +325,11 @@ release, 7.2 can also open encrypted volumes.
 
 Alternatively, if you have cryptsetup >= 1.6.7 installed, run this:
 
-  $ sudo cryptsetup      open --type tcrypt RAWDEVICE NAME
+  $ sudo cryptsetup         open --type tcrypt RAWDEVICE NAME
 
 For compatibility, tinyveracrypt supports the same syntax:
 
-  $ sudo ./tinyveracrypt open --type tcrypt RAWDEVICE NAME
+  $ sudo ./tinyveracrypt.py open --type tcrypt RAWDEVICE NAME
 
 The decrypted volume will be available as /dev/mapper/DEVNAME .
 
@@ -345,6 +345,20 @@ Q23. Which command-line VeraCrypt features are missing from tinyveracrypt?
 * hash other than SHA-512
 * mounting the filesystem at open time
 * opening volumes on non-Linux systems (e.g. macOS or Windows)
+
+Q24. Can tinyveracrypt convert between VeraCrypt and TrueCrypt headers, or
+from LUKS?
+""""""""""
+Yes. To regenerate the TrueCrypt/VeraCrypt headers, open the encrypted
+volume (as NAME), and then run:
+
+  $ sudo ./tinyveracrypt.py init --opened /dev/mapper/NAME
+
+Pass flag `--truecrypt' to `init' if you want to generate a TrueCrypt header.
+Pass any flags (e.g. --mkfat=...), specify any password.
+
+Please note that the hidden volume, if any, will be destroyed as part of
+this.
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

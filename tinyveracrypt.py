@@ -619,6 +619,8 @@ def check_decrypted_size(decrypted_size):
 def check_table_name(name):
   if '/' in name or '\0' in name or not name or name.startswith('-'):
     raise UsageError('invalid dmsetup table name: %r' % name)
+  if name == 'control':
+    raise UsageError('disallowed dmsetup table name: %r' % name)
 
 
 def build_dechd(
@@ -881,7 +883,7 @@ def get_random_bytes(size, _functions=[]):
 def build_veracrypt_header(
     decrypted_size, passphrase, enchd_prefix='', enchd_suffix='',
     decrypted_ofs=None, pim=None, fake_luks_uuid=None,
-    is_truecrypt=False):
+    is_truecrypt=False, keytable=None):
   """Returns 512 bytes.
 
   Args:
@@ -921,7 +923,9 @@ def build_veracrypt_header(
         header_key, zeros_data, do_encrypt=False, ofs=zeros_ofs - 64)
   else:
     zeros_ofs = zeros_data = None
-  keytable = get_random_bytes(64)
+  if keytable is None:
+    keytable = get_random_bytes(64)
+  check_keytable(keytable)
   sector_size = 512
   dechd = build_dechd(
       salt, keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs,
@@ -1167,7 +1171,7 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   return fat_header, label
 
 
-def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None, device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False, **kwargs):
+def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None, device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False, keytable=None, **kwargs):
   # FAT12 filesystem header based on minifat3.
   # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
   # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
@@ -1206,7 +1210,8 @@ def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sector
   enchd = build_veracrypt_header(
       decrypted_size=decrypted_size, passphrase=passphrase,
       enchd_prefix=fat_header, enchd_suffix='\x55\xaa',
-      decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt)
+      decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt,
+      keytable=keytable)
   assert len(enchd) == 512
   assert enchd.startswith(fat_header)
   if not do_include_all_header_sectors:
@@ -1326,6 +1331,16 @@ def run_and_write_stdin(cmd, data, is_dmsetup=False):
       raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
 
 
+def parse_device_id(device_id):
+  try:
+    major, minor = map(int, device_id.split(':'))
+  except ValueError:
+    raise ValueError('Bad device_id syntax: %r' % device_id)
+  if not (1 <= major <= 255 and 0 <= minor <= 255):
+    raise ValueError('Bad device_id: %r' % device_id)
+  return major, minor
+
+
 def yield_dm_devices():
   value = [run_and_read_stdout(('dmsetup', 'ls'), is_dmsetup=True)]
   for line in value.pop().splitlines():
@@ -1336,12 +1351,36 @@ def yield_dm_devices():
     try:
       if not dev2.startswith('(') or not dev2.endswith(')'):
         raise ValueError
-      major, minor = map(int, dev2[1 : -1].split(':'))
-      if not (1 <= major <= 255 and 0 <= minor <= 255):
-        raise ValueError
+      device_id = dev2[1 : -1]
     except ValueError:
       raise ValueError('Bad dmsetup ls dev: %r' % dev2)
-    yield name2, (major, minor)
+    yield name2, parse_device_id(device_id)
+
+
+def setup_path_for_dmsetup():
+  import os
+  # For /sbin/dmsetup.
+  os.environ['PATH'] = os.getenv('PATH', '/bin:/usr/bin') + ':/sbin'
+
+
+def fsync_loop_device(f):
+  import os
+  import stat
+
+  try:
+    os.fsync
+  except AttributeError:
+    return
+  try:
+    stat_obj = os.fstat(f.fileno())
+    if stat.S_ISBLK(stat_obj.st_mode) and (stat_obj.st_rdev >> 8) == 7:
+      f.flush()
+      os.fsync(f.fileno())
+  except (OSError, IOError):
+    pass
+
+
+# ---
 
 
 class UsageError(SystemExit):
@@ -1523,8 +1562,7 @@ def cmd_mount(args):
   if name is not None and slot is not None:
     raise UsageError('<name> conflicts with --slot=')
 
-  # For /sbin/dmsetup.
-  os.environ['PATH'] = os.getenv('PATH', '/bin:/usr/bin') + ':/sbin'
+  setup_path_for_dmsetup()
   had_dmsetup = False
 
   if name is None:
@@ -1600,7 +1638,8 @@ def cmd_create(args):
   salt = ''
   is_any_luks_uuid = False
   is_truecrypt = False
-  fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  is_opened = False
+  keytable = fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
 
   i, value = 0, None
@@ -1617,6 +1656,14 @@ def cmd_create(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--keytable='):
+      value = arg[arg.find('=') + 1:]
+      try:
+        salt = value.decode('hex')
+      except (TypeError, ValueError):
+        raise UsageError('keytable value must be hex: %s' % arg)
+      if len(keytable) != 64:
+        raise UsageError('salt must be 64 bytes: %s' % arg)
     elif arg.startswith('--salt='):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
@@ -1761,6 +1808,10 @@ def cmd_create(args):
       do_add_backup = True
     elif arg == '--no-add-backup':
       do_add_backup = False
+    elif arg == '--opened':
+      is_opened = True
+    elif arg == '--no-opened':
+      is_opened = False
     elif arg == '--passphrase-twice':
       do_passphrase_twice = True
     elif arg == '--passphrase-once':
@@ -1798,6 +1849,122 @@ def cmd_create(args):
       pim = 0
     else:
       raise UsageError('missing flag --pim=..., recommended: --pim=0')
+
+  if is_opened:  # RAWDEVICE is a dm device pathname. Needs root access.
+    # !! Add support for changing the passphrase without root.
+    if decrypted_ofs is not None:
+      raise UsageError('--opened conflicts with --ofs=...')
+    if keytable is not None:
+      raise UsageError('--opened conflicts with --keytable=...')
+
+    import os
+    import stat
+
+    if device.startswith('/dev/mapper/'):
+      name = device.split('/', 3)[3]
+    else:
+      stat_obj = os.stat(device)
+      if stat.S_ISDIR(stat_obj.st_mode):
+        major_minor = stat_obj.st_dev >> 8, stat_obj.st_dev & 255
+      elif stat.S_ISBLK(stat_obj.st_mode):
+        major_minor = stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255
+      else:
+        raise UsageError(
+            '--opened device must be a directory or a dm device, got: %r' %
+            device)
+      setup_path_for_dmsetup()
+      for name2, major_minor2 in yield_dm_devices():
+        if major_minor == major_minor2:
+          name = name2
+          break
+      else:
+        raise ValueError('Not a dm device: %r' % device)
+    check_table_name(name)
+
+    setup_path_for_dmsetup()
+    data = run_and_read_stdout(('dmsetup', 'table', '--showkeys', name), is_dmsetup=True)
+    if not data:
+      raise ValueError('Empty dmsetup table.')
+    data = data.rstrip('\n')
+    if '\n' in data or not data:
+      raise ValueError('Expected single dmsetup table line.')
+    try:
+      (start_sector, sector_count, target_type, sector_format, keytable,
+       iv_offset, device_id, sector_offset) = data.split(' ')[:8]
+      if start_sector != '0' or target_type != 'crypt':
+        raise ValueError
+    except ValueError:
+      # Don't print data, it may contain the keytable.
+      raise ValueError('Not a crypt dmsetup table line.')
+    try:
+      sector_count = int(sector_count)
+    except ValueError:
+      raise ValueError('sector_count must be an integer, got: %r' % sector_count)
+    if sector_count <= 0:
+      raise ValueError('sector count must be positive, got: %d' % sector_count)
+    if sector_format != 'aes-xts-plain64':
+      raise ValueError('sector_format must be aes-xts-plain64, got: %r' % target_type)
+    try:
+      keytable = keytable.decode('hex')
+    except (TypeError, ValueError):
+      raise ValueError('keytable must be hex, got: %s' % keytable)
+    try:
+      iv_offset = int(iv_offset)
+    except ValueError:
+      raise ValueError('iv_offset must be an integer, got: %r' % iv_offset)
+    if iv_offset < 0:
+      raise ValueError('sector count must be nonnegative, got: %d' % iv_offset)
+    device_id = parse_device_id(device_id)  # (major, minor)
+    try:
+      sector_offset = int(sector_offset)
+    except ValueError:
+      raise ValueError('sector_offset must be an integer, got: %r' % sector_offset)
+    if sector_offset < 0:
+      raise ValueError('sector count must be nonnegative, got: %d' % sector_offset)
+    if iv_offset != sector_offset:
+      raise ValueError('offset mismatch: iv_offset=%d sector_offset=%d' % (iv_offset, sector_offset))
+    device_int = device_id[0] << 8 | device_id[1]
+
+    device = None
+    for entry in sorted(os.listdir('/dev')):
+      device2 = '/dev/' + entry
+      try:
+        stat_obj = os.stat(device2)
+      except OSError, e:
+        continue
+      if not stat.S_ISBLK(stat_obj.st_mode):
+        continue
+      if stat_obj.st_rdev != device_int:
+        continue
+      device = device2
+      break
+    else:
+      raise RuntimeError('Raw device %s not found in /dev.' % device_id)
+
+    decrypted_ofs = sector_offset << 9
+    if device_size == 'auto':
+      do_append = True
+      f = open(device, 'rb')
+      try:
+        f.seek(0, 2)
+        device_size = f.tell()
+      finally:
+        f.close()
+    if (device_size >> 9) < sector_offset + sector_count:
+      raise ValueError('Raw device too small for encrypted volume: %r' % device)
+    if (do_add_backup is None and
+        (device_size >> 9) < sector_offset + sector_count + 256):
+      do_add_backup = False
+    if sector_offset < 256:
+      do_add_full_header = False
+    if fatfs_size == decrypted_ofs:
+      # TODO(pts): Allow fatfs_size < decrypted_ofs.
+      decrypted_ofs = None
+      if do_add_full_header is None:
+        do_add_full_header = True
+    elif fatfs_size is not None:
+      raise UsageError('--mkfat=... value conflicts with --opened, should be: %d' % decrypted_ofs)
+
   if fatfs_size is not None:
     if decrypted_ofs is not None:
       raise UsageError('--mkfat=... conflicts with --ofs=...')
@@ -1880,7 +2047,7 @@ def cmd_create(args):
         decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
         fat_header=fat_header, device_size=device_size, pim=pim,
         do_include_all_header_sectors=False,
-        do_randomize_salt=do_randomize_salt)
+        do_randomize_salt=do_randomize_salt, keytable=keytable)
     assert len(enchd) == 512
   elif decrypted_ofs == 'mkfat':
     if not do_randomize_salt:
@@ -1889,11 +2056,12 @@ def cmd_create(args):
       if fat_uuid is None:
         fat_uuid = 'DEAD-BEE3'
     enchd, fatfs_size2 = build_veracrypt_fat(
-        decrypted_size=None, passphrase=passphrase,
-        do_include_all_header_sectors=True, device_size=device_size,
+        decrypted_size=device_size - (fatfs_size << bool(do_add_backup)),
+        passphrase=passphrase, do_include_all_header_sectors=True,
         label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
         rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
-        cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt)
+        cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
+        keytable=keytable)
     assert 2048 <= fatfs_size2 <= fatfs_size
     assert len(enchd) >= 1536
   else:
@@ -1901,19 +2069,29 @@ def cmd_create(args):
         decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
         enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
-        is_truecrypt=is_truecrypt)
+        is_truecrypt=is_truecrypt, keytable=keytable)
     assert len(enchd) == 512
   if do_add_full_header:
-    enchd += get_random_bytes(decrypted_ofs - 512)
-    assert len(enchd) == decrypted_ofs
+    if decrypted_ofs == 'mkfat':
+      xofs = fatfs_size
+    else:
+      xofs = decrypted_ofs
+    assert xofs >= len(enchd)
+    enchd += get_random_bytes(xofs - len(enchd))
+    assert len(enchd) == xofs
   if do_add_backup:
+    if decrypted_ofs == 'mkfat':
+      xofs = fatfs_size
+    else:
+      xofs = decrypted_ofs
     # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
     enchd_backup = build_veracrypt_header(
-        decrypted_size=device_size - (decrypted_ofs << 1),
-        passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt)
-    enchd_backup += get_random_bytes(decrypted_ofs - 512)
-    assert len(enchd_backup) == decrypted_ofs
+        decrypted_size=device_size - (xofs << 1),
+        passphrase=passphrase, decrypted_ofs=xofs,
+        enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt,
+        keytable=keytable)
+    enchd_backup += get_random_bytes(xofs - 512)
+    assert len(enchd_backup) == xofs
   else:
     enchd_backup = ''
   if do_append:
@@ -1938,6 +2116,8 @@ def cmd_create(args):
       f.truncate(device_size)
     except IOError:
       pass
+    # This is useful so that changes in /dev/loop0 are copied back to DEVICE.img.
+    fsync_loop_device(f)
   finally:
     f.close()
 
