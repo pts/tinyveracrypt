@@ -636,8 +636,10 @@ def build_dechd(
   minimum_version_to_extract = (1, 11)
   hidden_volume_size = 0
   flag_bits = 0
-  # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
+  # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat (contains all encryption, hash, count etc. for TrueCrypt, but not for VeraCrypt)
   # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+  # https://www.veracrypt.fr/en/Encryption%20Algorithms.html
+  # TODO(pts): Add TrueCrypt support: signature: "TRUE", --pim=-14 (iterations == 1000), --encryption=aes, --hash=sha512, introduced in TrueCrypt 5.0.
   # --- 0: VeraCrypt hd sector starts here
   # 0 + 64: salt
   # --- 64: header starts here
@@ -1653,7 +1655,7 @@ def main(argv):
     # ioctl(3, DM_DEV_CREATE, 0x146e310)      = 0
     # ioctl(3, DM_TABLE_LOAD, 0x146e240)      = 0
     # ioctl(3, DM_DEV_SUSPEND, 0x146e240)     = 0
-  elif command == 'create':
+  elif command == 'create':  # For compatibility with `veracrypt --create'.
     # Emulate: veracrypt-console --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Difference; --quick is also respected for disk images (not only actual block devices).
