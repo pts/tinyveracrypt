@@ -618,7 +618,7 @@ def check_decrypted_size(decrypted_size):
 
 def build_dechd(
     salt, keytable, decrypted_size, sector_size, decrypted_ofs=None,
-    zeros_data=None, zeros_ofs=None):
+    zeros_data=None, zeros_ofs=None, is_truecrypt=False):
   check_keytable_or_keytablep(keytable)
   check_decrypted_size(decrypted_size)
   check_salt(salt)
@@ -631,9 +631,9 @@ def build_dechd(
   keytable = None  # Unused. keytable[:64]
   keytablep_crc32 = ('%08x' % (binascii.crc32(keytablep) & 0xffffffff)).decode('hex')
   # Constants are based on what veracrypt-1.17 generates.
-  signature = 'VERA'
+  signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
   header_format_version = 5
-  minimum_version_to_extract = (1, 11)
+  minimum_version_to_extract = ((1, 11), (5, 0))[bool(is_truecrypt)]
   hidden_volume_size = 0
   flag_bits = 0
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat (contains all encryption, hash, count etc. for TrueCrypt, but not for VeraCrypt)
@@ -688,7 +688,7 @@ def build_dechd(
   return dechd
 
 
-def check_full_dechd(dechd, enchd_suffix_size=0):
+def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
   """Does a full, after-decryption check on dechd.
 
   This is also used for passphrase: on a wrong passphrase, dechd is 512
@@ -700,8 +700,9 @@ def check_full_dechd(dechd, enchd_suffix_size=0):
   check_dechd(dechd)
   if enchd_suffix_size > 192:
     raise ValueError('enchd_suffix_size too large, got: %s' % enchd_suffix_size)
-  if dechd[64 : 64 + 4] != 'VERA':  # Or 'TRUE'.
-    raise ValueError('Magic mismatch.')
+  signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
+  if dechd[64 : 64 + 4] != signature:  # Or 'TRUE'.
+    raise ValueError('Signature mismatch.')
   if dechd[72 : 76] != ('%08x' % (binascii.crc32(dechd[256 : 512]) & 0xffffffff)).decode('hex'):
     raise ValueError('keytablep_crc32 mismatch.')
   if dechd[252 : 256] != ('%08x' % (binascii.crc32(dechd[64 : 252]) & 0xffffffff)).decode('hex'):
@@ -710,7 +711,9 @@ def check_full_dechd(dechd, enchd_suffix_size=0):
   if not (5 <= header_format_version <= 9):
     raise ValueError('header_format_version mismatch.')
   minimum_version_to_extract = struct.unpack('>BB', dechd[70 : 70 + 2])
-  if minimum_version_to_extract != (1, 11):
+  #if minimum_version_to_extract != (1, 11):
+  if ((not is_truecrypt and minimum_version_to_extract[0] != 1) or
+      (is_truecrypt and minimum_version_to_extract[0] not in (5, 6, 7))):
     raise ValueError('minimum_version_to_extract mismatch.')
   if dechd[76 : 76 + 16].lstrip('\0'):
     raise ValueError('Missing NUL padding at 76.')
@@ -783,25 +786,29 @@ def decrypt_header(enchd, header_key):
 
 
 # Slow, takes about 6..60 seconds.
-def build_header_key(passphrase, salt_or_enchd, pim=None):
+def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False):
   if len(salt_or_enchd) < 64:
     raise ValueError('Salt too short.')
   salt = salt_or_enchd[:64]
+  if pim:
+    iterations = 15000 + 1000 * pim
+  elif is_truecrypt:
+    # TrueCrypt 5.0 SHA-512 has 1000 iterations (corresponding to --pim=-14),
+    # see: https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
+    iterations = 1000
+  else:
+    # --pim=485 corresponds to iterations=500000
+    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
+    # for --hash=sha512 iterations == 15000 + 1000 * pim).
+    iterations = 500000
   # Speedup for testing.
-  if passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and pim in (None, 0, 485):
+  if passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and iterations == 500000:
     if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
       return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33'
     elif salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
       return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF'
     elif salt == '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
       return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,'
-  if not pim:
-    # --pim=485 corresponds to iterations=500000
-    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
-    # for --hash=sha512 iterations == 15000 + 1000 * pim).
-    iterations = 500000
-  else:
-    iterations = 15000 + 1000 * pim
   # We could use a different hash algorithm and a different iteration count.
   header_key_size = 64
   #blocksize = 16  # For MD2
@@ -821,19 +828,30 @@ def parse_dechd(dechd):
   return keytable, decrypted_size, decrypted_ofs
 
 
-def get_table(device, passphrase, raw_device, pim=None):
+def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
   enchd = open(device).read(512)
   if len(enchd) != 512:
     raise ValueError('Raw device too short for VeraCrypt header.')
-  header_key = build_header_key(passphrase, enchd, pim=pim)  # Slow.
-  dechd = decrypt_header(enchd, header_key)
-  try:
-    check_full_dechd(dechd, enchd_suffix_size=2)
-  except ValueError, e:
-    # We may put str(e) to the debug log, if requested.
-    raise ValueError('Incorrect passphrase (%s).' % e)
+  dechd = None
+  if truecrypt_mode == 1:  # Try TrueCrypt, then VeraCrypt.
+    # TODO(pts): Reuse the partial output of the smaller iterations.
+    #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
+    header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=True)  # A bit slow.
+    dechd = decrypt_header(enchd, header_key)
+    try:
+      check_full_dechd(dechd, enchd_suffix_size=2, is_truecrypt=True)
+    except ValueError, e:
+      dechd, truecrypt_mode = None, 0
+  if dechd is None:
+    header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=bool(truecrypt_mode))  # Slow for is_truecrypt=False.
+    dechd = decrypt_header(enchd, header_key)
+    try:
+      check_full_dechd(dechd, enchd_suffix_size=2, is_truecrypt=bool(truecrypt_mode))
+    except ValueError, e:
+      # We may put str(e) to the debug log, if requested.
+      raise ValueError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
   keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
-  return build_table(keytable, decrypted_size, decrypted_ofs, raw_device)
+  return build_table(keytable, decrypted_size, decrypted_ofs, device_id)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -857,7 +875,8 @@ def get_random_bytes(size, _functions=[]):
 
 def build_veracrypt_header(
     decrypted_size, passphrase, enchd_prefix='', enchd_suffix='',
-    decrypted_ofs=None, pim=None, fake_luks_uuid=None):
+    decrypted_ofs=None, pim=None, fake_luks_uuid=None,
+    is_truecrypt=False):
   """Returns 512 bytes.
 
   Args:
@@ -886,7 +905,7 @@ def build_veracrypt_header(
     enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
     assert len(enchd_prefix) <= 64
   salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
-  header_key = build_header_key(passphrase, salt, pim=pim)  # Slow.
+  header_key = build_header_key(passphrase, salt, pim=pim, is_truecrypt=is_truecrypt)  # Slow.
   if fake_luks_uuid is not None:
     zeros_ofs = 160  # Must be divisible by 16 for crypt_aes_xts.
     # util-linux blkid supports 40 bytes, busybox blkid supports 36 bytes.
@@ -901,9 +920,9 @@ def build_veracrypt_header(
   sector_size = 512
   dechd = build_dechd(
       salt, keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs,
-      zeros_ofs=zeros_ofs, zeros_data=zeros_data)
+      zeros_ofs=zeros_ofs, zeros_data=zeros_data, is_truecrypt=is_truecrypt)
   assert len(dechd) == 512
-  check_full_dechd(dechd)
+  check_full_dechd(dechd, is_truecrypt=is_truecrypt)
   enchd = encrypt_header(dechd, header_key)
   assert len(enchd) == 512
   do_reenc = not enchd.endswith(enchd_suffix)
@@ -912,8 +931,10 @@ def build_veracrypt_header(
     assert keytablep_enc.endswith(enchd_suffix)
     keytablep = crypt_aes_xts(header_key, keytablep_enc, do_encrypt=False, ofs=192)
     assert crypt_aes_xts(header_key, keytablep, do_encrypt=True, ofs=192) == keytablep_enc
-    dechd2 = build_dechd(salt, keytablep, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs)
-    check_full_dechd(dechd2, len(enchd_suffix))
+    dechd2 = build_dechd(
+        salt, keytablep, decrypted_size, sector_size,
+        decrypted_ofs=decrypted_ofs, is_truecrypt=is_truecrypt)
+    check_full_dechd(dechd2, len(enchd_suffix), is_truecrypt=is_truecrypt)
     assert dechd2.endswith(keytablep)
     assert len(dechd2) == 512
     enchd = encrypt_header(dechd2, header_key)
@@ -1141,7 +1162,7 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   return fat_header, label
 
 
-def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None, device_size=None, pim=None, do_randomize_salt=False, **kwargs):
+def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None, device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False, **kwargs):
   # FAT12 filesystem header based on minifat3.
   # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
   # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
@@ -1180,7 +1201,7 @@ def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sector
   enchd = build_veracrypt_header(
       decrypted_size=decrypted_size, passphrase=passphrase,
       enchd_prefix=fat_header, enchd_suffix='\x55\xaa',
-      decrypted_ofs=fatfs_size, pim=pim)
+      decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt)
   assert len(enchd) == 512
   assert enchd.startswith(fat_header)
   if not do_include_all_header_sectors:
@@ -1224,6 +1245,38 @@ def parse_byte_size(size_str):
     return int(size_str)
 
 
+def parse_pim_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  try:
+    value = int(value)
+  except ValueError:
+    raise UsageError('unsupported pim value: %s' % arg)
+  if value < -14:
+    raise UsageError('pim must be at least -14, got: %s' % arg)
+  return value
+
+
+def parse_passphrase(arg):
+  value = arg[arg.find('=') + 1:]
+  if not value:
+    raise UsageError('empty flag value: %s' % arg)
+  return value
+
+
+def prompt_passphrase(do_passphrase_twice):
+  sys.stderr.flush()
+  sys.stdout.flush()
+  import getpass
+  passphrase = getpass.getpass('Enter passphrase: ')
+  if not passphrase:
+    raise SystemExit('empty passphrase')
+  if do_passphrase_twice:
+    passphrase2 = getpass.getpass('Re-enter passphrase: ')
+    if passphrase != passphrase2:
+      raise SystemExit('passphrases do not match')
+  return passphrase
+
+
 class UsageError(SystemExit):
   """Raised when there is a problem in the command-line."""
 
@@ -1232,15 +1285,62 @@ TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
 TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
 
 
+def cmd_get_table(args):
+  device = passphrase = None
+  truecrypt_mode = 1
+  pim = 0
+
+  i, value = 0, None
+  while i < len(args):
+    arg = args[i]
+    if arg == '-' or not arg.startswith('-'):
+      break
+    i += 1
+    if arg == '--':
+      break
+    elif arg.startswith('--pim='):
+      pim = parse_pim_arg(arg)
+    elif arg in '--no-truecrypt':
+      truecrypt_mode = 0
+    elif arg == ('--maybe-truecrypt', '--veracrypt'):  # --veracrypt compatible with `cryptsetup open' and `cryptsetup tcryptDump'.
+      truecrypt_mode = 1
+    elif arg == '--truecrypt':
+      truecrypt_mode = 2
+    elif arg.startswith('--password='):
+      # Unsafe, ps(1) can read it.
+      passphrase = parse_passphrase(arg)
+    elif arg in ('--test-passphrase', '--test-password'):
+      # With --test-passphase --salt=test it's faster, because
+      # build_header_key is much faster.
+      passphrase = TEST_PASSPHRASE
+  del value  # Save memory.
+  if device is None:
+    if i >= len(args):
+      raise UsageError('missing <device> hosting the encrypted volume.')
+    device = args[i]
+  i += 1
+  if i != len(args):
+    raise UsageError('too many command-line arguments.')
+
+  if passphrase is None:
+    passphrase = prompt_passphrase(do_passphrase_twice=False)
+
+  #device_id = '7:0'
+  device_id = device  # TODO(pts): Option to display major:minor.
+  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode))
+  sys.stdout.flush()
+
+
 def cmd_create(args):
   is_quick = False
   do_passphrase_twice = True
   salt = ''
   is_any_luks_uuid = False
+  is_truecrypt = False
   fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
 
-  i = 0
+  i, value = 0, None
   while i < len(args):
     arg = args[i]
     if arg == '-' or not arg.startswith('-'):
@@ -1249,10 +1349,11 @@ def cmd_create(args):
     if arg == '--':
       break
     elif arg.startswith('--password='):
-      value = arg[arg.find('=') + 1:]
-      if not value:
-        raise UsageError('empty flag value: %s' % arg)
-      passphrase = value
+      passphrase = parse_passphrase(arg)
+    elif arg in ('--test-passphrase', '--test-password'):
+      # With --test-passphase --salt=test it's faster, because
+      # build_header_key is much faster.
+      passphrase = TEST_PASSPHRASE
     elif arg.startswith('--salt='):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
@@ -1382,13 +1483,7 @@ def cmd_create(args):
       if fatfs_size & 511:
         raise UsageError('FAT fs size must be a multiple of 512, got: %s' % arg)
     elif arg.startswith('--pim='):
-      value = arg[arg.find('=') + 1:]
-      try:
-        pim = int(value)
-      except ValueError:
-        raise UsageError('unsupported byte size value: %s' % arg)
-      if pim < 0:
-        raise UsageError('device size must be nonnegative, got: %s' % arg)
+      pim = parse_pim_arg(arg)
     elif arg == '--text':
       pass  # Ignored for compatibility with the veracrypt binary.
     elif arg == '--quick':
@@ -1407,10 +1502,10 @@ def cmd_create(args):
       do_passphrase_twice = True
     elif arg == '--passphrase-once':
       do_passphrase_twice = False
-    elif arg in ('--test-passphrase', '--test-password'):
-      # With --test-passphase --salt=test it's faster, because
-      # build_header_key is much faster.
-      passphrase = TEST_PASSPHRASE
+    elif arg == '--truecrypt':
+      is_truecrypt = True
+    elif arg in ('--no-truecrypt', '--veracrypt'):
+      is_truecrypt = False
     else:
       raise UsageError('unknwon flag: %s' % arg)
   del value  # Save memory.
@@ -1436,7 +1531,10 @@ def cmd_create(args):
   if device_size is None:
     raise UsageError('missing flag: --size=...')
   if pim is None:
-    raise UsageError('missing flag --pim=..., recommended: --pim=0')
+    if is_truecrypt:
+      pim = 0
+    else:
+      raise UsageError('missing flag --pim=..., recommended: --pim=0')
   if fatfs_size is not None:
     if decrypted_ofs is not None:
       raise UsageError('--mkfat=... conflicts with --ofs=...')
@@ -1511,21 +1609,12 @@ def cmd_create(args):
 
   if passphrase is None:
     sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
-    sys.stderr.flush()
-    sys.stdout.flush()
-    import getpass
-    passphrase = getpass.getpass('Enter passphrase: ')
-    if not passphrase:
-      raise SystemExit('empty passphrase')
-    if do_passphrase_twice:
-      passphrase2 = getpass.getpass('Re-enter passphrase: ')
-      if passphrase != passphrase2:
-        raise SystemExit('passphrases do not match')
+    passphrase = prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
   if decrypted_ofs == 'fat':
     # Usage --salt=test to keep the oem_id etc. intact.
     enchd, fatfs_size = build_veracrypt_fat(
-        decrypted_size=None, passphrase=passphrase,
+        decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
         fat_header=fat_header, device_size=device_size, pim=pim,
         do_include_all_header_sectors=False,
         do_randomize_salt=do_randomize_salt)
@@ -1548,7 +1637,8 @@ def cmd_create(args):
     enchd = build_veracrypt_header(
         decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid)
+        enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
+        is_truecrypt=is_truecrypt)
     assert len(enchd) == 512
   if do_add_full_header:
     enchd += get_random_bytes(decrypted_ofs - 512)
@@ -1558,7 +1648,7 @@ def cmd_create(args):
     enchd_backup = build_veracrypt_header(
         decrypted_size=device_size - (decrypted_ofs << 1),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=salt, pim=pim)
+        enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt)
     enchd_backup += get_random_bytes(decrypted_ofs - 512)
     assert len(enchd_backup) == decrypted_ofs
   else:
@@ -1621,8 +1711,32 @@ def main(argv):
   #    btrfs (superblock at 65536) works for up to 241 GB, block size 4096, Reserved GDT blocks at 16-1024
   #    ``Reserved GDT blocks'' always finishes before 1050
   #    btrfs (superblock also at 64 MiB): To put block 32768 (64 MiB) to the ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4 -g ...' (blocks per block group), but it may have a performance penalty on SSDs (if not aligned to 6 MB boundary); example: python -c 'f = open("ext2.img", "wb"); f.truncate(240 << 30)' && mkfs.ext4 -E nodiscard -g 16304 -F ext2.img && dumpe2fs ext2.img >ext4.dump
+
+  # !! use fcntl.ioctl etc. instead of dmsetup (strace on Debian Buster is helpful)
+  # --- dmsetup remove:
+  # grep  ' device-mapper' /proc/devices (misc?)
+  # stat("/dev/mapper/control", {st_mode=S_IFCHR|0600, st_rdev=makedev(10, 236), ...}) = 0
+  # open("/dev/mapper/control", O_RDWR)     = 3
+  # ioctl(3, DM_VERSION, 0x21d10f0)         = 0
+  # ioctl(3, DM_DEV_REMOVE, 0x21d1020)      = 0
+  # !! Do we need to call udev manually to update /dev/disk/... ? (/run/udev/queue.bin)
+  # !! Do we need to create the device nodes in /dev/mapper ?
+  # --- dmsetup table:
+  # ioctl(3, DM_VERSION, 0x13110f0)         = 0
+  # ioctl(3, DM_TABLE_STATUS, 0x1311020)    = 0
+  # --- dmsetup create:
+  # ioctl(3, DM_DEV_CREATE, 0x146e310)      = 0
+  # ioctl(3, DM_TABLE_LOAD, 0x146e240)      = 0
+  # ioctl(3, DM_DEV_SUSPEND, 0x146e240)     = 0
   if len(argv) < 2:
     raise UsageError('missing command')
+  if len(argv) > 1 and argv[1] == '--text':
+    del argv[1]
+  elif len(argv) > 2 and argv[1] == '--truecrypt' and argv[2] == '--text':
+    del argv[2]
+  if len(argv) > 2 and argv[1] == '--truecrypt' and argv[2] == '--create':
+    argv[1 : 3] = argv[2 : 0 : -1]
+
   command = argv[1].lstrip('-')
 
   if len(argv) > 2 and command == 'get_table':  # !! Use `table' as an alias, also --showkeys.
@@ -1634,27 +1748,7 @@ def main(argv):
     # default for veracrypt-1.17, and the one the commands mkveracrypt,
     # mkinfat and mkfat generate.
     # No need to autodetect possible number of iterations (--pim=0 is good). See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
-    device = argv[2]
-    #raw_device = '7:0'
-    raw_device = device
-    sys.stdout.write(get_table(device, passphrase, raw_device))
-    sys.stdout.flush()
-    # use fcntl.ioctl etc.
-    # --- dmsetup remove:
-    # grep  ' device-mapper' /proc/devices (misc?)
-    # stat("/dev/mapper/control", {st_mode=S_IFCHR|0600, st_rdev=makedev(10, 236), ...}) = 0
-    # open("/dev/mapper/control", O_RDWR)     = 3
-    # ioctl(3, DM_VERSION, 0x21d10f0)         = 0
-    # ioctl(3, DM_DEV_REMOVE, 0x21d1020)      = 0
-    # !! Do we need to call udev manually to update /dev/disk/... ? (/run/udev/queue.bin)
-    # !! Do we need to create the device nodes in /dev/mapper ?
-    # --- dmsetup table:
-    # ioctl(3, DM_VERSION, 0x13110f0)         = 0
-    # ioctl(3, DM_TABLE_STATUS, 0x1311020)    = 0
-    # --- dmsetup create:
-    # ioctl(3, DM_DEV_CREATE, 0x146e310)      = 0
-    # ioctl(3, DM_TABLE_LOAD, 0x146e240)      = 0
-    # ioctl(3, DM_DEV_SUSPEND, 0x146e240)     = 0
+    cmd_get_table(argv[2:])
   elif command == 'create':  # For compatibility with `veracrypt --create'.
     # Emulate: veracrypt-console --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
@@ -1663,7 +1757,8 @@ def main(argv):
     # Difference: --ofs=<size>, --salt=... is not supported by veracrypt-console.
     # Difference: --ofs=fat (autodetecting FAT filessyem at the beginning of the device) is not supported by veracrypt-console.
     # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt-console.
-    # Difference: --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are  not supported by veracrypt-console.
+    # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt-console.
+    # Difference: --truecrypt is respected.
     #
     # !! Add our --mount command (with both `dmsetup create' and `veracrypt-consoel --mount).
     # Mount it like this: sudo veracrypt-console --mount --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes fat_disk.img

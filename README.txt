@@ -14,7 +14,7 @@ Features and plans
   (volume creation or volume opening) happens on another machine. The latter
   machine can have less memory.
 * Easy command-line interface for creating encrypted volumes (also
-  compatible with veracrypt-console).
+  compatible with the `veracrypt' command).
 * Can create encrypted volumes without using extra disk space for some
   filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs and ocfs2).
 * Can create or use a plaintext FAT12 or FAT16 filesystem in front of the
@@ -40,8 +40,8 @@ Not out-of-the-box, but it is easy to add this feature.
 
 Q3. Can tinyveracrypt create and open TrueCrypt volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
-Not out-of-the-box, but it is easy to add this feature provided that the
-ciphers and hashes are added.
+Yes, just specify the `--truecrypt' flag for the `init', `create',
+`get_table' etc. commands.
 
 Q4. Does tinyveracrypt support multiple hashes and ciphers?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -49,7 +49,8 @@ No, it supports only PBKDF2 of SHA-512, and AES in XTS mode (i.e.
 aes-xts-plain64). Support for others is easy to add.
 
 The number of iterations is confiugrable though (`--pim=...'), the default
-is 500000 iterations (`--pim=485').
+is 500000 iterations (`--pim=485') for VeraCrypt and 1000 iterations
+(`--pim=-14') for TrueCrypt (`--truecrypt').
 
 Q5. Should I use the VeraCrypt or the LUKS on-disk format?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -74,24 +75,45 @@ Q8. VeraCrypt has passed a software security audit. Did it cover tinyveracrypt?
 No, it hasn't. tinyveracrypt isn't audited software. If you need audited
 software for encrypted block devices, use vanilla VeraCrypt.
 
-Q9. Can tinyveracrypt create VeraCrypt encrypted volumes?
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Yes, this functionality is available from the command-line:
+Q9. How to create a VeraCrypt encrypted volume?
+"""""""""""""""""""""""""""""""""""""""""""""""
+This functionality is available from the command-line:
 
   $ ./tinyveracrypt.py init RAWDEVICE
 
-It also supports type veracrypt-console syntax, e.g:
+It also supports the veracrypt syntax, e.g:
 
-  $ veracrypt-console  --create --text --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
-  $ ./tinyveracrypt.py --create --text --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
+  $ ./tinyveracrypt.py --text --create --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
+  $ veracrypt          --text --create --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom RAWDEVICE
 
-Q10. Can tinyveracrypt open VeraCrypt encrypted volumes?
+Please note that truecrypt is not able to create a VeraCrypt encrypted
+volume.
+
+Q10. How to create TrueCrypt encrypted volume?
+""""""""""""""""""""""""""""""""""""""""""""""
+This functionality is available from the command-line:
+
+  $ ./tinyveracrypt.py init --truecrypt RAWDEVICE
+
+It also supports the truecrypt syntax, e.g:
+
+  $ ./tinyveracrypt.py --truecrypt --text --create --quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha-512 --filesystem=none --keyfiles= --random-source=/dev/urandom RAWDEVICE
+  $ truecrypt                      --text --create  -quick --volume-type=normal --size=BYTESIZE --encryption=aes --hash=sha-512 --filesystem=none --keyfiles= --random-source=/dev/urandom RAWDEVICE
+
+Please note that veracrypt is not able to create a TrueCrypt encrypted
+volume, it ignores the `--truecrypt' flag in `--create' mode. It will create
+a VeraCrypt encrypted volume instead.
+
+The last working version of truecrypt containing the `--create' command is
+7.1a, which was released on 2012-02-07.
+
+Q11. Can tinyveracrypt open VeraCrypt encrypted volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
 Not out-of-the-box, but it is easy to add this feature. The closest
 supported command is get_table, which can be fed to `sudo dmsetup table
 <dev_name>'.
 
-Q11. Can tinyveracrypt create encrypted volumes with a plaintext FAT
+Q12. Can tinyveracrypt create encrypted volumes with a plaintext FAT
 filesystem in front of the encrypted volume?
 """"""""""""""""""""""""""""""""""""""""""""
 Yes, with FAT12 and FAT16 filesystems. (FAT32 is not supported).
@@ -127,7 +149,7 @@ Useful other flags for --mkfat=...: --fat-uuid=..., --fat-label=...,
 --fat-fstype=..., --fat-rootdir-entry-count=..., --fat-cluster-size=...,
 --fat-count=... .
 
-Q12. Can tinyveracrypt create an encrypted filesystem without using extra
+Q13. Can tinyveracrypt create an encrypted filesystem without using extra
 disk space?
 """""""""""
 This is possible to initiate with;
@@ -140,13 +162,13 @@ the raw device. Filesystems ext2, ext3, ext4, btrfs and reiserfs, jfs, nilfs
 and ocfs2 don't use the first 512 bytes, but their correspoding filesystem
 creation tools (mkfs.*) usually overwrite these first 512 bytes with zeros,
 thus clobbering the VeraCrypt headers, rendering subsequent open
-(`veracrypt-console --mount --filesystem=none') operations impossible.
+(`veracrypt --mount --filesystem=none') operations impossible.
 
 The solution is to write back those 512 bytes after the mkfs.* tool has
 finished running. This should be automated in tinyveracrypt with som
 scripting.
 
-Q13. Can tinyveracrypt create and encrypted volume with plaintext volume
+Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?
 """""""""""""""""""""""""""""""""""""""
 Not out-of-the-box, but it is easy to add this feature using set_jfs_id.py.
@@ -163,15 +185,21 @@ space (using set_jfs_id.py in a tricky way). For filesystems ext2, ext3 and
 ext4 extra disk space has to be used (except possibly with a fake 1K FAT
 filesystem).
 
-Q14. What are the dependencies of tinyveracrypt?
+Q15. What are the dependencies of tinyveracrypt?
 """"""""""""""""""""""""""""""""""""""""""""""""
-It needs Python 2.5, 2.6 or 2.7 (no external package are needed), or Python
-2.4 with hashlib or pycrypto. tinyveracrypt doesn't work with Python 3.
+For creating and examining encrypted volumes, only Python 2.x is needed.
+
+More specific info about the Python versions: tinyveracrypt needs Python
+2.5, 2.6 or 2.7 (no external package are needed), or Python 2.4 with hashlib
+or pycrypto. The recommended Python version is Python 2.7 (2.7.8 or later)
+with OpenSSL bindings (the _ssl module). (OpenSSL's SHA-512 implementation
+has key derivation from passphrase much faster than the default SHA-512 in
+Python.) tinyveracrypt doesn't work with Python 3.
 
 For opening encrypted volumes, a Linux system with the dmsetup(8) tool is
 also needed, with root access (e.g. sudo).
 
-Q15. Does a VeraCrypt volume have an unencrypted UUID?
+Q16. Does a VeraCrypt volume have an unencrypted UUID?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""
 No, by design it's impossible to distinguish an encrypted VeraCrypt volume
 from random garbage without knowing the passphrase.
@@ -186,29 +214,101 @@ The LUKS (LUKS1) headers don't contain a volume label field, so it's not
 possible to specify one.
 
 The created VeraCrypt encrypted volume will not be a valid LUKS volume
-though, `cryptsetup open' won't be able to open it without a --veracrypt
+though, `cryptsetup open' won't be able to open it without a `--veracrypt'
 flag.
 
-Q16. How to open a VeraCrypt encrypted volume with cryptsetup?
+Q17. How to open a VeraCrypt encrypted volume with cryptsetup?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Run this:
+You need cryptsetup 1.6.7 or later.
+
+If you know the passphrase, run this:
 
   $ sudo cryptsetup open --type tcrypt --veracrypt RAWDEVICE DEVNAME
 
 The decrypted volume will be available as /dev/mapper/DEVNAME
 
-Q17. How to open a VeraCrypt encrypted volume with veracrypt-console?
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Run this:
+Please note that this (including `--veracrypt') also works for TrueCrypt
+encrypted volumes.
 
-  $ sudo veracrypt-console --mount --text --keyfiles= --protect-hidden=no --pim=0 --filesystem=none RAWDEVICE
+Q18. How to open a TrueCrypt encrypted volume with cryptsetup?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+You need cryptsetup 1.6.7 or later.
 
-If the volume was created by tinyveracrypt, alternatively run this fast
+If you know the passphrase, run this:
+
+  $ sudo cryptsetup open --type tcrypt RAWDEVICE DEVNAME
+
+The decrypted volume will be available as /dev/mapper/DEVNAME
+
+Please note that for VeraCrypt encrypted volumes you'd need to specify
+`--veracrypt'.
+
+Q19. How to detect a VeraCrypt encrypted volume with cryptsetup?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+You need cryptsetup 1.6.7 or later.
+
+If you know the passphrase, run this:
+
+  $ cryptsetup tcryptDump --veracrypt RAWDEVICE
+
+Please note that this (including `--veracrypt') also works for TrueCrypt
+encrypted volumes.
+
+Q20. How to detect a TrueCrypt encrypted volume with cryptsetup?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+You need cryptsetup 1.6.7 or later.
+
+If you know the passphrase, run this:
+
+  $ cryptsetup tcryptDump RAWDEVICE
+
+Please note that for VeraCrypt encrypted volumes you'd need to specify
+`--veracrypt'.
+
+Q21. How to open a VeraCrypt encrypted volume on Linux?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+As of now, tinyveracrypt is not able to open VeraCrypt encrypted volumes.
+
+If you have VeraCrypt installed, run this:
+
+  $ sudo veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none RAWDEVICE
+
+If the volume was created by tinyveracrypt, alternatively run this faster
 method:
 
-  $ sudo veracrypt-console --mount --text --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+  $ sudo veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
 
 The decrypted volume will be available as /dev/mapper/veracrypt1 (or 2 etc.).
+
+TrueCrypt (i.e. the truecrypt command) is not able to open VeraCrypt
+encrypted volumes.
+
+Q22. How to open a TrueCrypt encrypted volume on Linux?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+As of now, tinyveracrypt is not able to open TrueCrypt encrypted volumes.
+
+If you have VeraCrypt installed, run this:
+
+  $ sudo veracrypt --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none RAWDEVICE
+
+If the volume was created by tinyveracrypt, alternatively run this faster
+method:
+
+  $ sudo veracrypt --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+
+Alternatively, if you have TrueCrypt installed, run this:
+
+  $ sudo truecrypt --text --mount --keyfiles= --protect-hidden=no --filesystem=none RAWDEVICE
+
+If the volume was created by tinyveracrypt, alternatively run this faster
+method:
+
+  $ sudo truecrypt --text --mount --keyfiles= --protect-hidden=no --filesystem=none --hash=sha-512 --encryption=aes RAWDEVICE
+
+The decrypted volume will be available as /dev/mapper/truecrypt1 (or 2 etc.).
+
+The recommended TrueCrypt version is 7.1a (released on 2012-02-07). The latest
+release, 7.2 can also open encrypted volumes.
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
