@@ -1380,6 +1380,49 @@ def fsync_loop_device(f):
     pass
 
 
+def parse_device_size_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  if value in ('auto', 'max'):
+    value = 'auto'
+  else:
+    try:
+      value = parse_byte_size(value)
+    except ValueError:
+      raise UsageError('unsupported byte size value: %s' % arg)
+    if value <= 0:
+      raise UsageError('device size must be positive, got: %s' % arg)
+    if value & 511:
+      raise UsageError('device size must be a multiple of 512, got: %s' % arg)
+  return value
+
+
+def parse_decrypted_ofs_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  try:
+    value = parse_byte_size(value)
+  except ValueError:
+    raise UsageError('unsupported byte size value: %s' % arg)
+  if value < 0:
+    raise UsageError('offset must be nonnegative, got: %s' % arg)
+  if value & 511:
+    raise UsageError('offset must be a multiple of 512, got: %s' % arg)
+  return value
+
+
+def parse_keytable_arg(arg):
+  value = arg[arg.find('=') + 1:].lower()
+  if value in ('random', 'new', 'rnd'):
+    value = get_random_bytes(64)
+  else:
+    try:
+      value = value.decode('hex')
+    except (TypeError, ValueError):
+      raise UsageError('keytable value must be hex: %s' % arg)
+  if len(value) != 64:
+    raise UsageError('keytable must be 64 bytes: %s' % arg)
+  return value
+
+
 # ---
 
 
@@ -1632,6 +1675,111 @@ def cmd_mount(args):
         pass
 
 
+def cmd_open_table(args):
+  # This function is Linux-only.
+  import os
+  import stat
+  import subprocess
+
+  device_size = 'auto'
+  keytable = device = name = decrypted_ofs = end_ofs = None
+
+  i, value = 0, None
+  while i < len(args):
+    arg = args[i]
+    if arg == '-' or not arg.startswith('-'):
+      break
+    i += 1
+    if arg == '--':
+      break
+    elif arg.startswith('--size='):
+      device_size = parse_device_size_arg(arg)
+    elif arg.startswith('--ofs='):
+      value = arg[arg.find('=') + 1:]
+      decrypted_ofs = parse_decrypted_ofs_arg(arg)
+    elif arg.startswith('--end-ofs='):
+      value = arg[arg.find('=') + 1:]
+      end_ofs = parse_decrypted_ofs_arg(arg)
+    elif arg.startswith('--keytable='):
+      keytable = parse_keytable_arg(arg)
+    else:
+      raise UsageError('unknown flag: %s' % arg)
+  del value  # Save memory.
+  if device is None:
+    if i >= len(args):
+      raise UsageError('missing <device> hosting the encrypted volume')
+    device = args[i]
+    i += 1
+  if name is None:
+    if i >= len(args):
+      raise UsageError('missing dmsetup table <name> for the encrypted volume')
+    name = args[i]
+    i += 1
+    check_table_name(name)
+  if i != len(args):
+    raise UsageError('too many command-line arguments')
+  if keytable is None:
+    raise UsageError('missing flag: --keytable=...')
+  if decrypted_ofs is None:
+    raise UsageError('missing flag: --ofs=...')
+  if end_ofs is None:
+    raise UsageError('missing flag: --end-ofs=...')
+
+  if device_size == 'auto':
+    f = open(device, 'rb')
+    try:
+      f.seek(0, 2)
+      device_size = f.tell()
+    finally:
+      f.close()
+  if device_size < decrypted_ofs + end_ofs:
+    raise UsageError('raw device too small for dmsetup table, size: %d' % device_size)
+
+  try:
+    stat_obj = os.stat(device)
+  except OSError, e:
+    raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
+  losetup_cleanup_device = None
+  try:
+    # !! Get rid of code duplication below with cmd_mount.
+    if stat.S_ISREG(stat_obj.st_mode):  # Disk image.
+      if device.startswith('-'):
+        raise UsageError('raw device must not start with dash: %s' % device)
+      # Alternative, without race conditions, but doesn't work with busybox:
+      # sudo losetup --show -f RAWDEVICE
+      data = run_and_read_stdout(('losetup', '-f'))
+      if not data or data.startswith('-'):
+        raise ValueError('Expected loopback device name.')
+      data = data.rstrip('\n')
+      if '\n' in data or not data:
+        raise ValueError('Expected single loopback device name.')
+      losetup_cleanup_device = data
+      # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
+      # remove' is run then the loop device gets deleted automatically.
+      # Make the automatic deletion happen for tinyveracrypt as well.
+      # Can losetup do this?
+      run_and_write_stdin(('losetup', data, device), '', is_dmsetup=True)
+      stat_obj = os.stat(data)
+      if not stat.S_ISBLK(stat_obj.st_mode):
+        raise RuntimeError('Block device expected: %s' % data)
+      # Major is typically 7 for /dev/loop...
+    elif not stat.S_ISBLK(stat_obj.st_mode):
+      raise SystemExit('not a block device or image: %s' % device)
+    device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
+
+    decrypted_size = device_size - decrypted_ofs - end_ofs
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id)
+    run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
+    losetup_cleanup_device = None
+  finally:
+    if losetup_cleanup_device is not None:
+      import subprocess
+      try:  # Ignore errors.
+        subprocess.call(('losetup', '-d', losetup_cleanup_device))
+      except OSError:
+        pass
+
+
 def cmd_create(args):
   is_quick = False
   do_passphrase_twice = True
@@ -1657,13 +1805,7 @@ def cmd_create(args):
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--keytable='):
-      value = arg[arg.find('=') + 1:]
-      try:
-        salt = value.decode('hex')
-      except (TypeError, ValueError):
-        raise UsageError('keytable value must be hex: %s' % arg)
-      if len(keytable) != 64:
-        raise UsageError('salt must be 64 bytes: %s' % arg)
+      keytable = parse_keytable_arg(arg)
     elif arg.startswith('--salt='):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
@@ -1757,31 +1899,13 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       random_source = value
     elif arg.startswith('--size='):
-      value = arg[arg.find('=') + 1:]
-      if value in ('auto', 'max'):
-        device_size = 'auto'
-      else:
-        try:
-          device_size = parse_byte_size(value)
-        except ValueError:
-          raise UsageError('unsupported byte size value: %s' % arg)
-        if device_size <= 0:
-          raise UsageError('device size must be positive, got: %s' % arg)
-        if device_size & 511:
-          raise UsageError('device size must be a multiple of 512, got: %s' % arg)
+      device_size = parse_device_size_arg(arg)
     elif arg.startswith('--ofs='):
       value = arg[arg.find('=') + 1:]
       if value == 'fat':
         decrypted_ofs = value
       else:
-        try:
-          decrypted_ofs = parse_byte_size(value)
-        except ValueError:
-          raise UsageError('unsupported byte size value: %s' % arg)
-        if decrypted_ofs < 0:
-          raise UsageError('offset must be nonnegative, got: %s' % arg)
-        if decrypted_ofs & 511:
-          raise UsageError('offset must be a multiple of 512, got: %s' % arg)
+        decrypted_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--mkfat='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -1951,7 +2075,7 @@ def cmd_create(args):
       finally:
         f.close()
     if (device_size >> 9) < sector_offset + sector_count:
-      raise ValueError('Raw device too small for encrypted volume: %r' % device)
+      raise ValueError('Raw device too small for encrypted volume, size: %d' % device_size)
     if (do_add_backup is None and
         (device_size >> 9) < sector_offset + sector_count + 256):
       do_add_backup = False
@@ -2035,7 +2159,7 @@ def cmd_create(args):
   else:
     if (do_add_full_header and
         device_size <= (decrypted_ofs << bool(do_add_backup))):
-      raise UsageError('device too small for VeraCrypt volume, size: %d' % device_size)
+      raise UsageError('raw device too small for VeraCrypt volume, size: %d' % device_size)
 
   if passphrase is None:
     sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
@@ -2198,6 +2322,8 @@ def main(argv):
                 '--filesystem=none', '--hash=sha512', '--encryption=aes',
                 '--custom-name')
     cmd_mount(args)
+  elif len(argv) > 2 and command == 'open-table':
+    cmd_open_table(argv[2:])
   # !! add 'close' and 'remove' (`cryptsetup close' and `dmsetup remove')
   # !! add `tcryptDump' (`cryptsetup tcryptDump')
   elif command == 'create':  # For compatibility with `veracrypt --create'.

@@ -1,39 +1,46 @@
 tinyveracrypt: VeraCrypt-compatible block device encryption setup
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinyveracrypt is a collection of command-line tools (currently Python
-scripts) for Linux which can be used to create and open (mount) encrypted
-volumes compatible with VeraCrypt (tested with VeraCrypt 1.17) and
-`cryptsetup open --type tcrypt --veracrypt' (tested with cryptsetup 1.6.7). It
-has some additional features such as plaintext UUID and volume label.
+tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt
+and TrueCrypt encrypted volumes, and to open (mount) them on Linux. It's a
+drop-in replacement for the cryptsetup, veracrypt and truecrypt tools for
+the subset of commands and flags it understands. It's implemented in Python
+2 with only standard Python modules as dependencies. It has some additional
+features such as plaintext UUID or plaintext FAT filesystem in front of the
+encrypted volume.
 
-Features and plans
-~~~~~~~~~~~~~~~~~~
+Features
+~~~~~~~~
 * tinyveracrypt is easier to install from source than VeraCrypt or
   cryptsetup.
 * tinyveracrypt works offline: it can be run on one machine, and the effect
   (volume creation or volume opening) happens on another machine. The latter
   machine can have less memory.
-* Easy command-line interface for creating encrypted volumes (also
-  compatible with the `veracrypt' command).
-* Can create encrypted volumes without using extra disk space for some
-  filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs and ocfs2).
-* Can create or use a plaintext FAT12 or FAT16 filesystem in front of the
-  encrypted volume.
-* PLANNED: Easy command-line interface.
-* PLANNED: Optional volume indentification by UUID and label for blkid and
-  udev.
-* Nice to have: Implementation in C with only a few dependencies.
+* tinyveracrypt has an easy command-line interface for creating encrypted
+  volumes (also compatible with the `veracrypt' and `cryptsetup' commands).
+* tinyveracrypt create encrypted volumes without using extra disk space for
+  some filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs, hfsplus,
+  iso9660, udf and ocfs2).
+* tinyveracrypt create or use a plaintext FAT12 or FAT16 filesystem in front
+  of the encrypted volume.
+* tinyveracrypt has an easy command-line interface.
+* tinyveracrypt has some commands and flags compatible with `veracrypt' and
+  `cryptsetup', so tinyveracrypt can be used as a drop-in replacement for
+  these tools.
+* tinyveracrypt is implemented in less than 3000 lines of Python 2 code,
+  using only standard Python modules. It uses `dmsetup' for opening
+  encrypted volumes, and no other tools for creating encrypted volumes.
+* tinyveracrypt interoperates with veracrypt, truecrypt and cryptsetup:
+  other tools can open encrypted volumes created by tinyveracrypt, and,
+  if AES encryption and SHA-512 hash is used, then tinyveracrypt can also
+  open encrypted encrypted volumes created by the other tools.
 
 FAQ
 ~~~
 Q1. Is tinyveracrypt ready for production use?
 """"""""""""""""""""""""""""""""""""""""""""""
-Yes, for encrypted volume creation (init or --create) and opening encrypted
-volumes (open or --mount) on Linux. Othwerise no, currently it's barely
-usable and inconvenient. If you need something which works now, use the
-veracrypt command-line tool to create or open a volume, and use the
-veracrypt or cryptsetup (at least >= 1.6.7) command-line tool to open a
-volume.
+Yes, for encrypted volume creation (init or --create), getting the keytable
+(get-table) and opening encrypted volumes (open, --mount or open-table) on
+Linux. Other features are experimental.
 
 Q2. Can tinyveracrypt create hidden volumes?
 """"""""""""""""""""""""""""""""""""""""""""
@@ -158,23 +165,47 @@ Q13. Can tinyveracrypt create an encrypted filesystem without using extra
 disk space?
 """""""""""
 Don't do this unless you know what you are doing and you are ready to lose
-data in case you are wrong.
+data in case you were wrong.
 
-This is possible to initiate with;
+This can be done safely with the following filesystems: ext2, ext3, ext4,
+btrfs and reiserfs, jfs, nilfs, hfsplus, iso9660, udf, and ocfs2, because
+they don't use the first 512 bytes. Some other filesystems and data
+structures which don't work safely (because they use the first 512 bytes)
+include vfat, ntfs, xfs, exfat, Linux swap, Linux RAID, LUKS.
 
-  $ ./tinyveracrypt.py init --ofs=0 ... RAWDEVICE
+Create the encrypted filesytem like this:
 
-However, finishing it is tricky, because you have to make sure that the
-filesystem on the encrypted volume doesn't overwrite the first 512 bytes of
-the raw device. Filesystems ext2, ext3, ext4, btrfs and reiserfs, jfs, nilfs
-and ocfs2 don't use the first 512 bytes, but their correspoding filesystem
-creation tools (mkfs.*) usually overwrite these first 512 bytes with zeros,
-thus clobbering the VeraCrypt headers, rendering subsequent open
-(`veracrypt --mount --filesystem=none') operations impossible.
+  $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
+  $ sudo ./tinyveracrypt.py open-table --keytable=random --ofs=0 --end-ofs=0 DEVICE.img NAME
+  $ sudo mkfs.ext2 /dev/mapper/NAME
+  $ sudo ./tinyveracrypt.py init --opened --fake-luks-uuid=random /dev/mapper/NAME
+  warning: abort now, otherwise all data on /dev/loop0 will be lost
+  Enter passphrase:
+  $ sudo fsck.ext2 /dev/mapper/NAME
+  $ /sbin/blkid DEVICE.img
+  DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
 
-The solution is to write back those 512 bytes after the mkfs.* tool has
-finished running. This should be automated in tinyveracrypt with som
-scripting.
+The advantage of this is that the UUID above is detectable without opening
+the encrypted volume.
+
+The reason why mkfs was run before `tinyveracrypt.py init' is that mkfs
+would otherwise overwrite the first 512 bytes, and we want to keep there
+the VeraCrypt header written by tinyveracrypt.py writes.
+
+If you have an mkfs command which doesn't modify the first 512 bytes of the
+device (it doesn't work with mkfs.ext2), you can do it the other way around:
+
+  $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
+  $ ./tinyveracrypt.py init --ofs=0 --fake-luks-uuid=random DEVICE.img
+  warning: abort now, otherwise all data on /dev/loop0 will be lost
+  Enter passphrase:
+  $ /sbin/blkid DEVICE.img
+  DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
+  $ sudo ./tinyveracrypt.py open DEVICE.img NAME
+  Enter passphrase:
+  $ sudo mkfs.MYFS /dev/mapper/NAME
+  $ /sbin/blkid DEVICE.img
+  DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
 
 Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?
@@ -359,6 +390,35 @@ Pass any flags (e.g. --mkfat=...), specify any password.
 
 Please note that the hidden volume, if any, will be destroyed as part of
 this.
+
+Q25. Which other tools is tinyveracrypt compatible with?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+* truecrypt (tested with 7.1a): common `--create' and `--mount' syntax subset.
+
+* veracrypt (tested with 1.17): common `--create' and `--mount' syntax subset.
+
+* cryptsetup (>= 1.6.7, tested with 1.6.7 and 2.0.2): common `open' syntax
+  subset.
+
+* Encrypted TrueCrypt volumes created by tinyveracrypt can be opened with
+  tinyveracrypt, truecrypt, veracrypt and cryptetup.
+
+* Encrypted VeraCrypt volumes created by tinyveracrypt can be opened with
+  tinyveracrypt, veracrypt and cryptetup.
+
+* Encrypted TrueCrypt volumes created by truecrypt or veracrypt can be
+  opened with tinyveracrypt if the encrypted volume was created with AES
+  encryption and SHA-512 hash.
+
+* Encrypted VeraCrypt volumes created by veracrypt can be
+  opened with tinyveracrypt if the encrypted volume was created with AES
+  encryption and SHA-512 hash.
+
+Q26. Is there a similarly compact tool like tinyveracrypt implemented in C?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+The author of tinyveracrypt knows only these tools implemented in C:
+truecrypt, veracrypt and cryptsetup. None of them are as compact (small
+size, few depencencies) as tinyveracrypt.
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
