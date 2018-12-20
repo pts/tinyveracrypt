@@ -33,6 +33,8 @@ Features
   other tools can open encrypted volumes created by tinyveracrypt, and,
   if AES encryption and SHA-512 hash is used, then tinyveracrypt can also
   open encrypted encrypted volumes created by the other tools.
+* tinyveracrypt can create encrypted volumes with custom header values
+  (e.g. the encrypted volume starting at any offset within the raw device).
 
 FAQ
 ~~~
