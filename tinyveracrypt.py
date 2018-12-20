@@ -2175,7 +2175,7 @@ def main(argv):
     argv[1 : 3] = argv[2 : 0 : -1]
 
   command = argv[1].lstrip('-')
-  if len(argv) > 2 and command == 'get_table':  # !! Use `table' as an alias, also --showkeys.
+  if len(argv) > 2 and command == 'get-table':  # !! Use `table' as an alias, also --showkeys.
     # !! Also add mount with compatible syntax.
     # * veracrypt --mount --text --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
     # * cryptsetup open --type tcrypt --veracrypt /dev/sdb e4t  # Creates /dev/mapper/NAME

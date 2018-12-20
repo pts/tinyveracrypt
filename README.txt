@@ -42,7 +42,7 @@ Not out-of-the-box, but it is easy to add this feature.
 Q3. Can tinyveracrypt create and open TrueCrypt volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
 Yes, just specify the `--truecrypt' flag for the `init', `--create',
-`open', `--mount', `get_table' etc. commands.
+`open', `--mount', `get-table' etc. commands.
 
 Q4. Does tinyveracrypt support multiple hashes and ciphers?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""
