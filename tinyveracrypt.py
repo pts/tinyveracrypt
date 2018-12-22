@@ -743,13 +743,18 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
     raise ValueError('flag_bits mismatch.')
   sector_size, = struct.unpack('>L', dechd[128 : 128 + 4])
   check_sector_size(sector_size)
-  # Length should be 120, but that conflicts with fake_luks_uuid.
+  # `veracrypt' and `cryptsetup --mode tcrypt --veracrypt' don't check these
+  # bytes.
+  #
+  # * dechd[160 : 208] is used by --fake-luks=uuid=... .
+  # * dechd[380 : 512] is used by --mkfat=... , but that's covered by
+  #   enchd_suffix_size=132.
+  #if dechd[132 : 132 + 120].lstrip('\0'):
+  #  # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
+  #  raise ValueError('Missing NUL padding at 132.')
   if dechd[132 : 132 + 28].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding at 132.')
-  if dechd[208 : 208 + 44].lstrip('\0'):
-    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
-    raise ValueError('Missing NUL padding at 208.')
   if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding after keytable.')
@@ -846,14 +851,15 @@ def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
     header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=True)  # A bit slow.
     dechd = decrypt_header(enchd, header_key)
     try:
-      check_full_dechd(dechd, enchd_suffix_size=2, is_truecrypt=True)
+      # enchd_suffix_size=132 is for --mkfat=... .
+      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=True)
     except ValueError, e:
       dechd, truecrypt_mode = None, 0
   if dechd is None:
     header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=bool(truecrypt_mode))  # Slow for is_truecrypt=False.
     dechd = decrypt_header(enchd, header_key)
     try:
-      check_full_dechd(dechd, enchd_suffix_size=2, is_truecrypt=bool(truecrypt_mode))
+      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=bool(truecrypt_mode))
     except ValueError, e:
       # We may put str(e) to the debug log, if requested.
       raise ValueError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
@@ -943,7 +949,7 @@ def build_veracrypt_header(
     dechd2 = build_dechd(
         salt, keytablep, decrypted_size, sector_size,
         decrypted_ofs=decrypted_ofs, is_truecrypt=is_truecrypt)
-    check_full_dechd(dechd2, len(enchd_suffix), is_truecrypt=is_truecrypt)
+    check_full_dechd(dechd2, enchd_suffix_size=len(enchd_suffix), is_truecrypt=is_truecrypt)
     assert dechd2.endswith(keytablep)
     assert len(dechd2) == 512
     enchd = encrypt_header(dechd2, header_key)
@@ -1067,11 +1073,10 @@ def recommend_fat_parameters(fd_sector_count, fat_count, fstype=None, sectors_pe
 
 def get_random_fat_salt():
   import base64
-  # TODO(pts): Make it safe to boot? (Don'trandomize jmp1 and jmp2.)
-  jmp0 = 0xe9
-  jmp1, jmp2, code0, code1 = map(ord, get_random_bytes(4))
-  oem_id = base64.b64encode(get_random_bytes(6))
-  return jmp0, jmp1, jmp2, oem_id, code0, code1
+  data = get_random_bytes(8)
+  code0, code1 = ord(data[6]), ord(data[7])
+  oem_id = base64.b64encode(data[:6])
+  return oem_id, code0, code1
 
 
 def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None):
@@ -1132,6 +1137,8 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   sector_count = fatfs_size >> 9
   rootdir_entry_count = (rootdir_entry_count + 15) & ~15  # Round up.
   rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) / (sector_size >> 5)
+  # TODO(pts): Add alignment so that first cluster starts at sectors_per_cluster
+  # boundary.
   reserved_sector_count = 1  # Only the boot sector (containing fat_header).
   fd_sector_count = sector_count - reserved_sector_count - rootdir_sector_count
   fstype, sectors_per_cluster, fd_sector_count, sectors_per_fat = recommend_fat_parameters(
@@ -1191,10 +1198,10 @@ def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sector
   if len(fat_header) != 64:
     raise ValueError('fat_header must be 64 bytes, got: %d' % len(fat_header))
   if do_randomize_salt:
-    jmp0, jmp1, jmp2, oem_id, code0, code1 = get_random_fat_salt()
+    oem_id, code0, code1 = get_random_fat_salt()
     fat_header = ''.join((
-        chr(jmp0), chr(jmp1), chr(jmp2), oem_id,
-        fat_header[11 : 62], chr(code0), chr(code1)))
+        '\xe9\x79\x01',  # jmp strict near boot_code, to offset 0x71c.
+        oem_id, fat_header[11 : 62], chr(code0), chr(code1)))
   fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype = get_fat_sizes(fat_header)
   if decrypted_size is None:
     if not isinstance(device_size, (int, long)):
@@ -1206,10 +1213,13 @@ def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sector
     if decrypted_size != device_size - fatfs_size:
       raise ValueError('Inconsistent device_size, decrypted_size and fatfs_size.')
     device_size = None
-  # TODO(pts): Mark it as nonbootable by using a different enchd_suffix.
   enchd = build_veracrypt_header(
       decrypted_size=decrypted_size, passphrase=passphrase,
-      enchd_prefix=fat_header, enchd_suffix='\x55\xaa',
+      enchd_prefix=fat_header,
+      # Position-independent boot code starting at 0x17c (memory 0x7d1c) to
+      # display an error message, wait for a keypress and reboot.
+      # Based on fat16_boot_tvc.nasm.
+      enchd_suffix='\x0e\x1f\xe8d\x00This is not a bootable disk.  Please insert a bootable floppy and\r\npress any key to try again ...\r\n\x00^\xac"\xc0t\x0bV\xb4\x0e\xbb\x07\x00\xcd\x10^\xeb\xf02\xe4\xcd\x16\xcd\x19\xeb\xfeU\xaa',
       decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt,
       keytable=keytable)
   assert len(enchd) == 512
