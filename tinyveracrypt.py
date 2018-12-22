@@ -1154,12 +1154,24 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   bpb_signature = 0x29
   code0, code1 = 0x0e, 0x1f
   header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
-  cluster_count = ((fatfs_size >> 9) - header_sector_count) / sectors_per_cluster
+  cluster_count, wasted_sector_count = divmod(((fatfs_size >> 9) - header_sector_count), sectors_per_cluster)
   free_size = (cluster_count * sectors_per_cluster) << 9
   if header_sector_count > sector_count:
     raise ValueError(
         'Too few sectors in FAT filesystem, not even header sectors fit, increase fatfs_size to at least %d, got: %d' %
         (header_sector_count << 9, fatfs_size))
+  # For FAT filesystems it's OK that the clusters are not aligned to the
+  # sectors_per_cluster boundary. However, for performance, we want to align
+  # them if possible (i.e. if it would still fit to fatfs_size). We do it so
+  # by making the root directory a bit larger, or, if it's too large already,
+  # adding reserved sectors.
+  alignment_sector_count_to_add = -header_sector_count % sectors_per_cluster
+  if wasted_sector_count and alignment_sector_count_to_add <= wasted_sector_count:
+    # Add the extra sectors to the root directory.
+    rootdir_entry_count += alignment_sector_count_to_add << 4
+    if rootdir_entry_count > 65520:
+      reserved_sector_count += ((rootdir_entry_count - 65520) >> 4)
+      rootdir_entry_count = 65520
   fstype += ' ' * (8 - len(fstype))
   if sector_count >> 16:
     sector_count1 = 0
