@@ -19,7 +19,7 @@ Features
   volumes (also compatible with the `veracrypt' and `cryptsetup' commands).
 * tinyveracrypt create encrypted volumes without using extra disk space for
   some filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs, hfsplus,
-  iso9660, udf and ocfs2).
+  iso9660, udf, minux and ocfs2).
 * tinyveracrypt create or use a plaintext FAT12 or FAT16 filesystem in front
   of the encrypted volume.
 * tinyveracrypt has an easy command-line interface.
@@ -130,7 +130,7 @@ The last working version of truecrypt containing the `--create' command is
 Q12. Can tinyveracrypt create encrypted volumes with a plaintext FAT
 filesystem in front of the encrypted volume?
 """"""""""""""""""""""""""""""""""""""""""""
-Yes, with FAT12 and FAT16 filesystems. (FAT32 is not supported).
+Yes, with FAT12 and FAT16 filesystems. (FAT32 and NTFS are not supported).
 
 If you already have a (plaintext) FAT12 or FAT16 filesystem at the beginning
 of the raw device, run
@@ -163,6 +163,11 @@ Useful other flags for --mkfat=...: --fat-uuid=..., --fat-label=...,
 --fat-fstype=..., --fat-rootdir-entry-count=..., --fat-cluster-size=...,
 --fat-count=... .
 
+FAT32 (header size 90 bytes) and NTFS (header size 84 bytes) filesystems are
+not supported by --ofs=fat and --mkfat=... , because they filesystems have a
+header at the beginning longer than 64 bytes, thus this header would overlap
+with the VeraCrypt header (encd and dechd) at offset 64.
+
 Q13. Can tinyveracrypt create an encrypted filesystem without using extra
 disk space?
 """""""""""
@@ -170,8 +175,8 @@ Don't do this unless you know what you are doing and you are ready to lose
 data in case you were wrong.
 
 This can be done safely with the following filesystems: ext2, ext3, ext4,
-btrfs and reiserfs, jfs, nilfs, hfsplus, iso9660, udf, and ocfs2, because
-they don't use the first 512 bytes. Some other filesystems and data
+btrfs and reiserfs, jfs, nilfs, hfsplus, iso9660, udf, minix and ocfs2,
+because they don't use the first 512 bytes. Some other filesystems and data
 structures which don't work safely (because they use the first 512 bytes)
 include vfat, ntfs, xfs, exfat, Linux swap, Linux RAID, LUKS.
 
