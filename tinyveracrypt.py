@@ -451,15 +451,14 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   #     return cipher.decrypt(data)
 
   pack, do_decrypt = struct.pack, not do_encrypt
-  codebook1, codebook2 = new_aes(aes_xts_key[:32]), new_aes(aes_xts_key[32 : 64])
+  codebook1 = new_aes(aes_xts_key[:32])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
   # sector_idx is LSB-first for aes-xts-plain64, see
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
-  t0, t1 = struct.unpack('<QQ', codebook2.encrypt(pack(
+  t0, t1 = struct.unpack('<QQ', new_aes(aes_xts_key[32 : 64]).encrypt(pack(
       '<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 8)))
   t = (t1 << 64) | t0
-  del codebook2  # Save memory.
   for i in xrange(ofs >> 4):
     t <<= 1
     if t >= 0x100000000000000000000000000000000:  # (1 << 128).
