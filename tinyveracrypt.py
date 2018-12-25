@@ -378,7 +378,7 @@ def check_aes_xts_key(aes_xts_key):
 # slow, but it's not a problem, because we have to encrypt only 512 bytes
 # per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
 # other C crypto libraries with Python bindings don't support AES XTS.
-def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
+def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   check_aes_xts_key(aes_xts_key)
   if len(data) < 16 and len(data) > 0:
     # TODO(pts): Is there a meaningful result for these short inputs?
@@ -390,6 +390,8 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
       raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
     if ofs < 0:
       raise ValueError('ofs must be nonnegative, got: %d' % ofs)
+  if sector_idx < 0:
+    raise ValueError('sector_idx must be nonnegative, got: %d' % ofs)
   if ofs >= len(data):
     return ''
 
@@ -403,12 +405,14 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   #   else:
   #     return cipher.decrypt(data)
 
-  do_decrypt = not do_encrypt
+  pack, do_decrypt = struct.pack, not do_encrypt
   codebook1, codebook2 = rijndael(aes_xts_key[:32]), rijndael(aes_xts_key[32 : 64])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
-  # TODO(pts): Configure sector_idx.
-  t0, t1 = struct.unpack('<QQ', codebook2.encrypt('\0' * 16))
+  # sector_idx is LSB-first for aes-xts-plain64, see
+  # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
+  t0, t1 = struct.unpack('<QQ', codebook2.encrypt(pack(
+      '<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 8)))
   t = (t1 << 64) | t0
   del codebook2  # Save memory.
   for i in xrange(ofs >> 4):
@@ -416,7 +420,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
     if t >= 0x100000000000000000000000000000000:  # (1 << 128).
       t ^=  0x100000000000000000000000000000087
 
-  pack, output = struct.pack, []
+  output = []
   for i in xrange(0, len(data) - 31, 16):
     # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
     t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)

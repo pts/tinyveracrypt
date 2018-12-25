@@ -15,6 +15,7 @@ def test_crypt_aes_xts():
   decstr2, encstr2 = 'y' * 35, 'bb0ffec89c76220c0fa23c2f7a6ecfac304ee39a4a386ba1cd0135750d43c5331a98db'.decode('hex')
   decstr3, encstr3 = 'abcde' * 20, '08121025ff1c3e2bfa0d63310443c97441f9526dfe8339f191cdedce1b88380b9615c066c97e159f4d8c4cf8d143b30ad9b64120f4097352df44730a78c850ccd5733cc6409df94be7e2fc80b37eaa5718d372763c9f8d6795514010d1ba565b23e8b3b3'.decode('hex')
   decstr4, encstr4 = 'abcdef' * 5 + 'x', '900fb0b4eb5751d04f4141c59c1f4b0563dc58441d957bec7696f1a1a71ceb'.decode('hex')
+  decstr5, encstr5 = 'abcdef' * 5 + 'x', '47523f8d4ff93e87495e6155b5bd3c74f8b97ce03b0c203172a99628995df1'.decode('hex')
   assert crypt_aes_xts(HEADER_KEY, '', True ) == ''
   assert crypt_aes_xts(HEADER_KEY, '', False) == ''
   assert crypt_aes_xts(HEADER_KEY, decstr1, True ) == encstr1
@@ -28,6 +29,8 @@ def test_crypt_aes_xts():
   assert crypt_aes_xts(HEADER_KEY, encstr3[48:], False, ofs=48) == decstr3[48:]
   assert crypt_aes_xts(HEADER_KEY, decstr4, True ) == encstr4
   assert crypt_aes_xts(HEADER_KEY, encstr4, False) == decstr4
+  assert crypt_aes_xts(HEADER_KEY, decstr5, True , sector_idx=(1 << 70) - 42) == encstr5
+  assert crypt_aes_xts(HEADER_KEY, encstr5, False, sector_idx=(1 << 70) - 42) == decstr5
 
 
 def test():
