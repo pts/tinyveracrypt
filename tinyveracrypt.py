@@ -46,11 +46,18 @@ except ImportError:
 # Uses make_strxor above.
 #
 
-class rijndael(object):
-    """Helper class used by crypt_aes_xts."""
+class SlowAes(object):
+    """AES cipher. Slow, but compatible with Crypto.Cipher.AES.new and
+    aes.Keysetup.
+
+    Usage:
+
+      ao = SlowAes('key1' * 8)
+      assert len(ao.encrypt('plaintext_______')) == 16
+      assert len(ao.decrypt('ciphertext______')) == 16
+    """
 
     # TODO(pts): Make this faster, at least the indexes (<<), inlining BC=4 etc.
-    # TODO(pts): Use some C implementation in pycrypto instead.
 
     # --- Initialize the following constants: [S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, num_rounds, rcon, shifts.
 
@@ -366,6 +373,44 @@ class rijndael(object):
         return ''.join(result)
 
 
+def get_best_new_aes(_cache=[]):
+  """Returns the fastest new_aes implementation available, falling back to
+  SlowAes."""
+  if _cache:
+    return _cache[0]
+  new_aes = None
+  if new_aes is None:
+    try:
+      import Crypto.Cipher._AES
+      if type(Crypto.Cipher._AES.new) != type(map):
+        raise ImportError
+      new_aes = Crypto.Cipher._AES.new
+    except (ImportError, AttributeError):
+      pass
+  if new_aes is None:
+    try:
+      import Crypto.Cipher.AES
+      if type(Crypto.Cipher.AES.new) != type(map):
+        raise ImportError
+      new_aes = Crypto.Cipher.AES.new
+    except (ImportError, AttributeError):
+      pass
+  if new_aes is None:
+    try:
+      import aes
+      if type(aes.Keysetup.__new__) != type(map):
+        raise ImportError
+      new_aes = aes.Keysetup
+    except (ImportError, AttributeError):
+      pass
+  if new_aes is None:
+    new_aes = SlowAes
+  _cache.append(new_aes)
+  return new_aes
+
+
+new_aes = get_best_new_aes()
+
 strxor_16 = make_strxor(16)
 
 
@@ -406,7 +451,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   #     return cipher.decrypt(data)
 
   pack, do_decrypt = struct.pack, not do_encrypt
-  codebook1, codebook2 = rijndael(aes_xts_key[:32]), rijndael(aes_xts_key[32 : 64])
+  codebook1, codebook2 = new_aes(aes_xts_key[:32]), new_aes(aes_xts_key[32 : 64])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
   # sector_idx is LSB-first for aes-xts-plain64, see
