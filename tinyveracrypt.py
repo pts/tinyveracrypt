@@ -49,6 +49,9 @@ except ImportError:
 class rijndael(object):
     """Helper class used by crypt_aes_xts."""
 
+    # TODO(pts): Make this faster, at least the indexes (<<), inlining BC=4 etc.
+    # TODO(pts): Use some C implementation in pycrypto instead.
+
     # --- Initialize the following constants: [S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, num_rounds, rcon, shifts.
 
     shifts = [[[0, 0], [1, 3], [2, 2], [3, 1]],
@@ -378,6 +381,7 @@ def check_aes_xts_key(aes_xts_key):
 def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   check_aes_xts_key(aes_xts_key)
   if len(data) < 16 and len(data) > 0:
+    # TODO(pts): Is there a meaningful result for these short inputs?
     raise ValueError('At least one block of 128 bits needs to be supplied.')
   if len(data) >> 27:
     raise ValueError('data too long.')  # This is an implementation limitation.
@@ -392,7 +396,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   # This would work instead of inlining:
   #
   #   import CryptoPlus.Cipher.python_AES
-  #   new_aes_xts = lambda aes_xts_key: CryptoPlus.Cipher.python_AES.new((aes_xts_key[0 : 32], aes_xts_key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
+  #   new_aes_xts = lambda aes_xts_key: CryptoPlus.Cipher.python_AES.new((aes_xts_key[:32], aes_xts_key[32 : 64]), CryptoPlus.Cipher.python_AES.MODE_XTS)
   #   cipher = new_aes_xts(aes_xts_key)
   #   if do_encrypt:
   #     return cipher.encrypt(data)
@@ -400,65 +404,39 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   #     return cipher.decrypt(data)
 
   do_decrypt = not do_encrypt
-  codebook1, codebook2 = rijndael(aes_xts_key[0 : 32]), rijndael(aes_xts_key[32 : 64])
+  codebook1, codebook2 = rijndael(aes_xts_key[:32]), rijndael(aes_xts_key[32 : 64])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
-  # initializing T
-  # e_k2_n = E_K2(tweak)
-  e_k2_n = codebook2.encrypt('\0' * 16)[::-1]
-  T = [int(e_k2_n.encode('hex'), 16)]
-
-  def step(tocrypt):
-    T_string = ('%032x' % T[0]).decode('hex')[::-1]
-    # C = E_K1(P xor T) xor T
-    return strxor_16(T_string, codebook1_crypt(strxor_16(T_string, tocrypt)))
-
-  def T_update():
-    # Used for calculating T for a certain step using the T value from the previous step
-    T[0] <<= 1
-    # if (Cout)
-    if T[0] >> (8*16):
-      #T[0] ^= GF_128_FDBK;
-      T[0] ^= 0x100000000000000000000000000000087
-
-  while ofs:
-    T_update()
-    ofs -= 16
+  t = int(codebook2.encrypt('\0' * 16)[::-1].encode('hex'), 16)  # TODO(pts): Configure sector_idx.
+  del codebook2  # Save memory.
+  for i in xrange(ofs >> 4):
+    t <<= 1
+    if t >= 0x100000000000000000000000000000000:  # (1 << 128).
+      t ^=  0x100000000000000000000000000000087
 
   output = []
-  i=0
-  while i < ((len(data) >> 4)-1): #Decrypt all the blocks but one last full block and opt one last partial block
-    # C = E_K1(P xor T) xor T
-    output.append(step(data[i << 4:(i+1) << 4]))
-    # T = E_K2(n) mul (a pow i)
-    T_update()
-    i+=1
+  for i in xrange(0, len(data) - 31, 16):
+    t_str = ('%032x' % t).decode('hex')[::-1]
+    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i : i + 16]))))
+    t <<= 1
+    if t >= 0x100000000000000000000000000000000:
+      t ^=  0x100000000000000000000000000000087
 
-  # Check if the data supplied is a multiple of 16 bytes -> one last full block and we're done
-  if len(data[i << 4:]) == 16:
-    # C = E_K1(P xor T) xor T
-    output.append(step(data[i << 4:(i+1) << 4]))
-    # T = E_K2(n) mul (a pow i)
-    T_update()
-  else:
-    T_temp = [T[0]]
-    T_update()
-    T_temp.append(T[0])
+  lm15 = len(data) & 15
+  if lm15:  # Process last 2 blocks if len is not a multiple of 16 bytes.
+    i, t0, t1 = len(data) & ~15, t, t << 1
+    if t1 >= 0x100000000000000000000000000000000:
+      t1 ^=  0x100000000000000000000000000000087
     if do_decrypt:
-      # Permutation of the last two indexes
-      T_temp.reverse()
-    # Decrypt/Encrypt the last two blocks when data is not a multiple of 16 bytes
-    Cm1 = data[i << 4:(i+1) << 4]
-    Cm = data[(i+1) << 4:]
-    T[0] = T_temp[0]
-    PP = step(Cm1)
-    Cp = PP[len(Cm):]
-    Pm = PP[:len(Cm)]
-    CC = Cm+Cp
-    T[0] = T_temp[1]
-    Pm1 = step(CC)
-    output.append(Pm1)
-    output.append(Pm)
+      t0, t1 = t1, t0
+    t_str = ('%032x' % t0).decode('hex')[::-1]
+    pp = strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i - 16 : i])))
+    t_str = ('%032x' % t1).decode('hex')[::-1]
+    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i:] + pp[lm15:]))))
+    output.append(pp[:lm15])
+  else:
+    t_str = ('%032x' % t).decode('hex')[::-1]
+    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[-16:]))))
   return ''.join(output)
 
 
