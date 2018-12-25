@@ -420,31 +420,33 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
     if t >= 0x100000000000000000000000000000000:  # (1 << 128).
       t ^=  0x100000000000000000000000000000087
 
-  output = []
-  for i in xrange(0, len(data) - 31, 16):
-    # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
-    t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i : i + 16]))))
-    t <<= 1
-    if t >= 0x100000000000000000000000000000000:
-      t ^=  0x100000000000000000000000000000087
+  def yield_crypt_blocks(t):
+    for i in xrange(0, len(data) - 31, 16):
+      # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
+      t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
+      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i : i + 16])))
+      t <<= 1
+      if t >= 0x100000000000000000000000000000000:
+        t ^=  0x100000000000000000000000000000087
 
-  lm15 = len(data) & 15
-  if lm15:  # Process last 2 blocks if len is not a multiple of 16 bytes.
-    i, t0, t1 = len(data) & ~15, t, t << 1
-    if t1 >= 0x100000000000000000000000000000000:
-      t1 ^=  0x100000000000000000000000000000087
-    if do_decrypt:
-      t0, t1 = t1, t0
-    t_str = struct.pack('<QQ', t0 & 0xffffffffffffffff, t0 >> 64)
-    pp = strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i - 16 : i])))
-    t_str = struct.pack('<QQ', t1 & 0xffffffffffffffff, t1 >> 64)
-    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i:] + pp[lm15:]))))
-    output.append(pp[:lm15])
-  else:
-    t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-    output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[-16:]))))
-  return ''.join(output)
+    lm15 = len(data) & 15
+    if lm15:  # Process last 2 blocks if len is not a multiple of 16 bytes.
+      i, t0, t1 = len(data) & ~15, t, t << 1
+      if t1 >= 0x100000000000000000000000000000000:
+        t1 ^=  0x100000000000000000000000000000087
+      if do_decrypt:
+        t0, t1 = t1, t0
+      t_str = struct.pack('<QQ', t0 & 0xffffffffffffffff, t0 >> 64)
+      pp = strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i - 16 : i])))
+      t_str = struct.pack('<QQ', t1 & 0xffffffffffffffff, t1 >> 64)
+      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i:] + pp[lm15:])))
+      yield pp[:lm15]
+    else:
+      t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
+      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[-16:])))
+
+  # TODO(pts): Use even less memory by using an array.array('B', ...).
+  return ''.join(yield_crypt_blocks(t))
 
 
 # ---
