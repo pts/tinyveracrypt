@@ -1,6 +1,6 @@
 #! /usr/bin/python
 
-from tinyveracrypt import *
+import tinyveracrypt
 
 import sys
 
@@ -9,9 +9,33 @@ SALT = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d0394
 HEADER_KEY = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
 
 
+def test_crypt_aes_xts():
+  crypt_aes_xts = tinyveracrypt.crypt_aes_xts
+  decstr1, encstr1 = 'y' * 32, 'bb0ffec89c76220c0fa23c2f7a6ecfac1a98db623e5dab4517675d3d4206f05b'.decode('hex')
+  decstr2, encstr2 = 'y' * 35, 'bb0ffec89c76220c0fa23c2f7a6ecfac304ee39a4a386ba1cd0135750d43c5331a98db'.decode('hex')
+  decstr3, encstr3 = 'abcde' * 20, '08121025ff1c3e2bfa0d63310443c97441f9526dfe8339f191cdedce1b88380b9615c066c97e159f4d8c4cf8d143b30ad9b64120f4097352df44730a78c850ccd5733cc6409df94be7e2fc80b37eaa5718d372763c9f8d6795514010d1ba565b23e8b3b3'.decode('hex')
+  #assert crypt_aes_xts(HEADER_KEY, '', True ) == ''
+  #assert crypt_aes_xts(HEADER_KEY, '', False) == ''
+  assert crypt_aes_xts(HEADER_KEY, decstr1, True ) == encstr1
+  assert crypt_aes_xts(HEADER_KEY, decstr1, False) != encstr1
+  assert crypt_aes_xts(HEADER_KEY, encstr1, False) == decstr1
+  assert crypt_aes_xts(HEADER_KEY, buffer(decstr2), True ) == encstr2
+  assert crypt_aes_xts(HEADER_KEY, buffer(encstr2), False) == decstr2
+  assert crypt_aes_xts(HEADER_KEY, decstr3, True ) == encstr3
+  assert crypt_aes_xts(HEADER_KEY, encstr3, False) == decstr3
+  assert crypt_aes_xts(HEADER_KEY, decstr3[32:], True , ofs=32) == encstr3[32:]
+  assert crypt_aes_xts(HEADER_KEY, encstr3[48:], False, ofs=48) == decstr3[48:]
+
+
 def test():
-  assert crypt_aes_xts('x' * 64, 'y' * 32, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fe6926943919e0fc5385306027a473c58'
-  assert crypt_aes_xts('x' * 64, 'y' * 35, True).encode('hex') == '622de15539f9ebe251c97183c1618b2fa1289ef677ad71945095f99a59d7c366e69269'
+  test_crypt_aes_xts()
+
+  check_full_dechd = tinyveracrypt.check_full_dechd
+  build_dechd = tinyveracrypt.build_dechd
+  parse_dechd = tinyveracrypt.parse_dechd
+  build_table = tinyveracrypt.build_table
+  encrypt_header = tinyveracrypt.encrypt_header
+  decrypt_header = tinyveracrypt.decrypt_header
 
   raw_device = '7:0'
   decrypted_size = 0x9000
