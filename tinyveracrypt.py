@@ -407,16 +407,19 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   codebook1, codebook2 = rijndael(aes_xts_key[:32]), rijndael(aes_xts_key[32 : 64])
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
 
-  t = int(codebook2.encrypt('\0' * 16)[::-1].encode('hex'), 16)  # TODO(pts): Configure sector_idx.
+  # TODO(pts): Configure sector_idx.
+  t0, t1 = struct.unpack('<QQ', codebook2.encrypt('\0' * 16))
+  t = (t1 << 64) | t0
   del codebook2  # Save memory.
   for i in xrange(ofs >> 4):
     t <<= 1
     if t >= 0x100000000000000000000000000000000:  # (1 << 128).
       t ^=  0x100000000000000000000000000000087
 
-  output = []
+  pack, output = struct.pack, []
   for i in xrange(0, len(data) - 31, 16):
-    t_str = ('%032x' % t).decode('hex')[::-1]
+    # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
+    t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
     output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i : i + 16]))))
     t <<= 1
     if t >= 0x100000000000000000000000000000000:
@@ -429,13 +432,13 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
       t1 ^=  0x100000000000000000000000000000087
     if do_decrypt:
       t0, t1 = t1, t0
-    t_str = ('%032x' % t0).decode('hex')[::-1]
+    t_str = struct.pack('<QQ', t0 & 0xffffffffffffffff, t0 >> 64)
     pp = strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i - 16 : i])))
-    t_str = ('%032x' % t1).decode('hex')[::-1]
+    t_str = struct.pack('<QQ', t1 & 0xffffffffffffffff, t1 >> 64)
     output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i:] + pp[lm15:]))))
     output.append(pp[:lm15])
   else:
-    t_str = ('%032x' % t).decode('hex')[::-1]
+    t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
     output.append(strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[-16:]))))
   return ''.join(output)
 
