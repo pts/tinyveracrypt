@@ -377,7 +377,7 @@ def check_aes_xts_key(aes_xts_key):
 # other C crypto libraries with Python bindings don't support AES XTS.
 def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
   check_aes_xts_key(aes_xts_key)
-  if len(data) < 16:
+  if len(data) < 16 and len(data) > 0:
     raise ValueError('At least one block of 128 bits needs to be supplied.')
   if len(data) >> 27:
     raise ValueError('data too long.')  # This is an implementation limitation.
@@ -386,6 +386,8 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0):
       raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
     if ofs < 0:
       raise ValueError('ofs must be nonnegative, got: %d' % ofs)
+  if ofs >= len(data):
+    return ''
 
   # This would work instead of inlining:
   #
