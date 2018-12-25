@@ -427,6 +427,39 @@ The author of tinyveracrypt knows only these tools implemented in C:
 truecrypt, veracrypt and cryptsetup. None of them are as compact (small
 size, few depencencies) as tinyveracrypt.
 
+Q27. Is it possible to use LUKS and VeraCrypt on the same raw device?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Practically no, because they use a conflicting iv_offset value: LUKS1 and
+LUKS2 use iv_offset == 0, VeraCrypt and TrueCrypt use iv_offset ==
+data_offset (--ofs=).
+
+Options considered (and failed) to make it work:
+
+* --ofs=0, VeraCrypt backup header at the end of the device (between offsets
+  -131072 and -130560), LUKS1 PHDR between offsets 0 and 592, LUKS1 key
+  material between 512 and 576 (overlapping the LUKS1 PHDR), using a
+  filesystem which ignores the first 1024 bytes (e.g. ext2).
+
+  This is practical only if `cryptsetup open --type tcrypt' and `veracrypt
+  --mount' read the backup header by default. Unfortunately this is not the
+  case, because cryptsetup needs the `--tcrypt-backup' command-line flag,
+  and veracrypt doesn't have a command-line flag to read the backup header.
+
+* --ofs=0, VeraCrypt header between offsets 0 and 512 overlapping LUKS1 PHDR
+  between offsets 0 and 592.
+
+  This doesn't work, because the VeraCrypt header and the LUKS1 PHDR overlap
+  and conflict, e.g. the LUKS1 PHDR stores payload_offset between 104 and
+  108, and the VeraCrypt header stores decrypted_size between 100 and 108.
+
+* --ofs=0, VeraCrypt hidden volume header between offsets 65536 and 66048,
+  LUKS1 PHDR between offsets 0 and 592, LUKS1 key material between 512 and
+  576 (overlapping the LUKS1 PHDR), using a filesystem which ignores the
+  first 1024 bytes (e.g. ext2).
+
+  This works only if the user manually ignores the first 66048 bytes of the
+  decrypted device, which is impractical.
+
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 $ dmsetup table --showkeys rr
