@@ -9,6 +9,28 @@ SALT = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d0394
 HEADER_KEY = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
 
 
+def benchmark_aes(new_aes):
+  aes_obj = new_aes('Noob' * 8)  # AES-256.
+  for _ in xrange(50000):
+    assert aes_obj.encrypt('FooBarBa' * 2) == ';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5'
+    assert aes_obj.decrypt(';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5') == 'FooBarBa' * 2
+
+
+def test_aes():
+  aes_obj = tinyveracrypt.new_aes('Noob' * 4)  # AES-128.
+  assert aes_obj.encrypt('FooBarBa' * 2) == '9h\x82\xfd\x846\x0b\xb6(\x9a1\xe1~\x1ar\xcd'
+  assert aes_obj.decrypt('9h\x82\xfd\x846\x0b\xb6(\x9a1\xe1~\x1ar\xcd') == 'FooBarBa' * 2
+
+  aes_obj = tinyveracrypt.new_aes('Noob' * 6)  # AES-192.
+  assert aes_obj.encrypt('FooBarBa' * 2) == '(\xfa\x90\xb4\xd2\x1e:\x84\xddw\xe4.\x19\x85\x1a\x93'
+  assert aes_obj.decrypt('(\xfa\x90\xb4\xd2\x1e:\x84\xddw\xe4.\x19\x85\x1a\x93') == 'FooBarBa' * 2
+
+  aes_obj = tinyveracrypt.new_aes('Noob' * 8)  # AES-256.
+  assert aes_obj.encrypt('FooBarBa' * 2) == ';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5'
+  assert aes_obj.decrypt(';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5') == 'FooBarBa' * 2
+
+
+
 def test_crypt_aes_xts():
   crypt_aes_xts = tinyveracrypt.crypt_aes_xts
   decstr1, encstr1 = 'y' * 32, 'bb0ffec89c76220c0fa23c2f7a6ecfac1a98db623e5dab4517675d3d4206f05b'.decode('hex')
@@ -34,6 +56,7 @@ def test_crypt_aes_xts():
 
 
 def test():
+  test_aes()
   test_crypt_aes_xts()
 
   check_full_dechd = tinyveracrypt.check_full_dechd
@@ -79,11 +102,16 @@ def test_slow():
   print 'SLOW'
   sys.stdout.flush()
   passphrase = 'foo'
-  assert build_header_key(passphrase, SALT) == HEADER_KEY  # Takes about 6..60 seconds.
+  assert tinyveracrypt.build_header_key(passphrase, SALT) == HEADER_KEY  # Takes about 6..60 seconds.
 
 
 if __name__ == '__main__':
-  test()
-  if len(sys.argv) > 1:
-    test_slow()
-  print __file__, ' OK.'
+  if sys.argv and sys.argv[1] == '--benchmark-slow-aes':
+    benchmark_aes(new_aes=tinyveracrypt.SlowAes)
+  elif sys.argv and sys.argv[1] == '--benchmark-aes':
+    benchmark_aes(new_aes=tinyveracrypt.new_aes)
+  else:
+    test()
+    if len(sys.argv) > 1:
+      test_slow()
+    print __file__, ' OK.'
