@@ -71,9 +71,8 @@ class SlowAes(object):
 
     # --- Initialize the following constants: [S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, num_rounds, rcon, shifts.
 
-    shifts = [[[0, 0], [1, 3], [2, 2], [3, 1]],
-              [[0, 0], [1, 5], [2, 4], [3, 3]],
-              [[0, 0], [1, 7], [3, 5], [4, 4]]]
+    SHIFTS_ENCRYPT = [[1, 2, 3], [1, 2, 3], [1, 3, 4]]
+    SHIFTS_DECRYPT = [[3, 2, 1], [5, 4, 3], [7, 5, 4]]
 
     # [keysize][block_size]
     num_rounds = {16: {16: 10, 24: 12, 32: 14}, 24: {16: 12, 24: 12, 32: 14}, 32: {16: 14, 24: 14, 32: 14}}
@@ -224,15 +223,17 @@ class SlowAes(object):
 
     # --- End of constant initialization.
 
+    __slots__ = ('BC', 'format', 'Ke', 'Kd')
+
     def __init__(self, key):
         block_size = 16
         if len(key) != 16 and len(key) != 24 and len(key) != 32:
             raise ValueError('Invalid key size: ' + str(len(key)))
-        self.block_size = block_size
         rcon, S, U1, U2, U3, U4 = self.rcon, self.S, self.U1, self.U2, self.U3, self.U4
 
         ROUNDS = self.num_rounds[len(key)][block_size]
-        BC = block_size / 4
+        self.BC = BC = block_size / 4
+        self.format = '>' + 'L' * BC
         # encryption round keys
         Ke = [[0] * BC for i in xrange(ROUNDS + 1)]
         # decryption round keys
@@ -259,11 +260,11 @@ class SlowAes(object):
         while t < ROUND_KEY_COUNT:
             # extrapolate using phi (the round key evolution function)
             tt = tk[KC - 1]
-            tk[0] ^= (S[(tt >> 16) & 0xFF] & 0xFF) << 24 ^  \
-                     (S[(tt >>  8) & 0xFF] & 0xFF) << 16 ^  \
-                     (S[ tt        & 0xFF] & 0xFF) <<  8 ^  \
-                     (S[(tt >> 24) & 0xFF] & 0xFF)       ^  \
-                     (rcon[rconpointer]    & 0xFF) << 24
+            tk[0] ^= ((S[(tt >> 16) & 0xFF] & 0xFF) << 24 ^
+                      (S[(tt >>  8) & 0xFF] & 0xFF) << 16 ^
+                      (S[ tt        & 0xFF] & 0xFF) <<  8 ^
+                      (S[(tt >> 24) & 0xFF] & 0xFF)       ^
+                      (rcon[rconpointer]    & 0xFF) << 24)
             rconpointer += 1
             if KC != 8:
                 for i in xrange(1, KC):
@@ -272,10 +273,10 @@ class SlowAes(object):
                 for i in xrange(1, KC / 2):
                     tk[i] ^= tk[i-1]
                 tt = tk[KC / 2 - 1]
-                tk[KC / 2] ^= (S[ tt        & 0xFF] & 0xFF)       ^ \
-                              (S[(tt >>  8) & 0xFF] & 0xFF) <<  8 ^ \
-                              (S[(tt >> 16) & 0xFF] & 0xFF) << 16 ^ \
-                              (S[(tt >> 24) & 0xFF] & 0xFF) << 24
+                tk[KC / 2] ^= ((S[ tt        & 0xFF] & 0xFF)       ^
+                               (S[(tt >>  8) & 0xFF] & 0xFF) <<  8 ^
+                               (S[(tt >> 16) & 0xFF] & 0xFF) << 16 ^
+                               (S[(tt >> 24) & 0xFF] & 0xFF) << 24)
                 for i in xrange(KC / 2 + 1, KC):
                     tk[i] ^= tk[i-1]
             # copy values into round key arrays
@@ -289,98 +290,52 @@ class SlowAes(object):
         for r in xrange(1, ROUNDS):
             for j in xrange(BC):
                 tt = Kd[r][j]
-                Kd[r][j] = U1[(tt >> 24) & 0xFF] ^ \
-                           U2[(tt >> 16) & 0xFF] ^ \
-                           U3[(tt >>  8) & 0xFF] ^ \
-                           U4[ tt        & 0xFF]
+                Kd[r][j] = (U1[(tt >> 24) & 0xFF] ^
+                            U2[(tt >> 16) & 0xFF] ^
+                            U3[(tt >>  8) & 0xFF] ^
+                            U4[ tt        & 0xFF])
         self.Ke = Ke
         self.Kd = Kd
 
     def encrypt(self, plaintext):
-        if len(plaintext) != self.block_size:
-            raise ValueError('wrong block length, expected ' + str(self.block_size) + ' got ' + str(len(plaintext)))
-        Ke, shifts, S, T1, T2, T3, T4 = self.Ke, self.shifts, self.S, self.T1, self.T2, self.T3, self.T4
-
-        BC = self.block_size / 4
-        ROUNDS = len(Ke) - 1
-        if BC == 4:
-            SC = 0
-        elif BC == 6:
-            SC = 1
-        else:
-            SC = 2
-        s1 = shifts[SC][1][0]
-        s2 = shifts[SC][2][0]
-        s3 = shifts[SC][3][0]
-        a = [0] * BC
-        # temporary work array
-        t = []
-        # plaintext to ints + key
-        for i in xrange(BC):
-            t.append((ord(plaintext[i * 4    ]) << 24 |
-                      ord(plaintext[i * 4 + 1]) << 16 |
-                      ord(plaintext[i * 4 + 2]) <<  8 |
-                      ord(plaintext[i * 4 + 3])        ) ^ Ke[0][i])
-        # apply round transforms
-        for r in xrange(1, ROUNDS):
-            for i in xrange(BC):
-                a[i] = (T1[(t[ i           ] >> 24) & 0xFF] ^
-                        T2[(t[(i + s1) % BC] >> 16) & 0xFF] ^
-                        T3[(t[(i + s2) % BC] >>  8) & 0xFF] ^
-                        T4[ t[(i + s3) % BC]        & 0xFF]  ) ^ Ke[r][i]
-            t = a[:]
-        # last round is special
-        result = []
-        for i in xrange(BC):
-            tt = Ke[ROUNDS][i]
-            result.append(chr((S[(t[ i           ] >> 24) & 0xFF] ^ (tt >> 24)) & 0xFF))
-            result.append(chr((S[(t[(i + s1) % BC] >> 16) & 0xFF] ^ (tt >> 16)) & 0xFF))
-            result.append(chr((S[(t[(i + s2) % BC] >>  8) & 0xFF] ^ (tt >>  8)) & 0xFF))
-            result.append(chr((S[ t[(i + s3) % BC]        & 0xFF] ^  tt       ) & 0xFF))
-        return ''.join(result)
+      Ke, S, T1, T2, T3, T4, BC, format = self.Ke, self.S, self.T1, self.T2, self.T3, self.T4, self.BC, self.format
+      if len(plaintext) != (BC << 2):
+        raise ValueError('wrong block length, expected ' + str(BC << 2) + ' got ' + str(len(plaintext)))
+      ROUNDS = len(Ke) - 1
+      if BC == 4:
+        s1, s2, s3 = self.SHIFTS_ENCRYPT[0]
+      elif BC == 6:
+        s1, s2, s3 = self.SHIFTS_ENCRYPT[1]
+      else:
+        s1, s2, s3 = self.SHIFTS_ENCRYPT[2]
+      t = struct.unpack(format, plaintext)
+      Ker = Ke[0]
+      t = [t[i] ^ Ker[i] for i in xrange(BC)] * 2
+      for r in xrange(1, ROUNDS):  # Apply round transforms.
+        Ker = Ke[r]
+        t = [T1[(t[i] >> 24) & 0xFF] ^ T2[(t[i + s1] >> 16) & 0xFF] ^ T3[(t[i + s2] >> 8) & 0xFF] ^ T4[ t[i + s3] & 0xFF] ^ Ker[i] for i in xrange(BC)] * 2
+      Ker = Ke[ROUNDS]
+      return struct.pack(format, *((S[(t[i] >> 24) & 0xFF] << 24 | S[(t[i + s1] >> 16) & 0xFF] << 16 | S[(t[i + s2] >> 8) & 0xFF] << 8 | S[t[i + s3] & 0xFF]) ^ Ker[i] for i in xrange(BC)))
 
     def decrypt(self, ciphertext):
-        if len(ciphertext) != self.block_size:
-            raise ValueError('wrong block length, expected ' + str(self.block_size) + ' got ' + str(len(plaintext)))
-        Kd, shifts, Si, T5, T6, T7, T8 = self.Kd, self.shifts, self.Si, self.T5, self.T6, self.T7, self.T8
-
-        BC = self.block_size / 4
-        ROUNDS = len(Kd) - 1
-        if BC == 4:
-            SC = 0
-        elif BC == 6:
-            SC = 1
-        else:
-            SC = 2
-        s1 = shifts[SC][1][1]
-        s2 = shifts[SC][2][1]
-        s3 = shifts[SC][3][1]
-        a = [0] * BC
-        # temporary work array
-        t = [0] * BC
-        # ciphertext to ints + key
-        for i in xrange(BC):
-            t[i] = (ord(ciphertext[i * 4    ]) << 24 |
-                    ord(ciphertext[i * 4 + 1]) << 16 |
-                    ord(ciphertext[i * 4 + 2]) <<  8 |
-                    ord(ciphertext[i * 4 + 3])        ) ^ Kd[0][i]
-        # apply round transforms
-        for r in xrange(1, ROUNDS):
-            for i in xrange(BC):
-                a[i] = (T5[(t[ i           ] >> 24) & 0xFF] ^
-                        T6[(t[(i + s1) % BC] >> 16) & 0xFF] ^
-                        T7[(t[(i + s2) % BC] >>  8) & 0xFF] ^
-                        T8[ t[(i + s3) % BC]        & 0xFF]  ) ^ Kd[r][i]
-            t = a[:]
-        # last round is special
-        result = []
-        for i in xrange(BC):
-            tt = Kd[ROUNDS][i]
-            result.append(chr((Si[(t[ i           ] >> 24) & 0xFF] ^ (tt >> 24)) & 0xFF))
-            result.append(chr((Si[(t[(i + s1) % BC] >> 16) & 0xFF] ^ (tt >> 16)) & 0xFF))
-            result.append(chr((Si[(t[(i + s2) % BC] >>  8) & 0xFF] ^ (tt >>  8)) & 0xFF))
-            result.append(chr((Si[ t[(i + s3) % BC]        & 0xFF] ^  tt       ) & 0xFF))
-        return ''.join(result)
+      Kd, Si, T5, T6, T7, T8, BC, format = self.Kd, self.Si, self.T5, self.T6, self.T7, self.T8, self.BC, self.format
+      if len(ciphertext) != (BC << 2):
+        raise ValueError('wrong block length, expected ' + str(BC << 2) + ' got ' + str(len(plaintext)))
+      ROUNDS = len(Kd) - 1
+      if BC == 4:
+        s1, s2, s3 = self.SHIFTS_DECRYPT[0]
+      elif BC == 6:
+        s1, s2, s3 = self.SHIFTS_DECRYPT[1]
+      else:
+        s1, s2, s3 = self.SHIFTS_DECRYPT[2]
+      t = struct.unpack(format, ciphertext)
+      Kdr = Kd[0]
+      t = [t[i] ^ Kdr[i] for i in xrange(BC)] * 2
+      for r in xrange(1, ROUNDS):  # Apply round transforms.
+        Kdr = Kd[r]
+        t = [T5[(t[i] >> 24) & 0xFF] ^ T6[(t[i + s1] >> 16) & 0xFF] ^ T7[(t[i + s2] >> 8) & 0xFF] ^ T8[ t[i + s3] & 0xFF] ^ Kdr[i] for i in xrange(BC)] * 2
+      Kdr = Kd[ROUNDS]
+      return struct.pack(format, *((Si[(t[i] >> 24) & 0xFF] << 24 | Si[(t[i + s1] >> 16) & 0xFF] << 16 | Si[(t[i + s2] >> 8) & 0xFF] << 8 | Si[t[i + s3] & 0xFF]) ^ Kdr[i] for i in xrange(BC)))
 
 
 def get_best_new_aes(_cache=[]):
@@ -420,6 +375,8 @@ def get_best_new_aes(_cache=[]):
 
 
 new_aes = get_best_new_aes()
+
+# ---
 
 strxor_16 = make_strxor(16)
 
