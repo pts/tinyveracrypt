@@ -30,6 +30,13 @@ def test_aes():
   assert aes_obj.decrypt(';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5') == 'FooBarBa' * 2
 
 
+def test_sha512():
+  assert tinyveracrypt.sha512('foobar').digest() == "\nP&\x1e\xbd\x1a9\x0f\xed+\xf3&\xf2g<\x14U\x82\xa64-R2\x04\x97=\x02\x193\x7f\x81aj\x80i\xb0\x12X|\xf5c_i%\xf1\xb5l6\x020\xc1\x9b'5\x00\xee\x01>\x03\x06\x01\xbf$%"
+  d = tinyveracrypt.sha512('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == '\xc6\xd2\xec\x86\xfe\xaa\xff\xecJ\xc9w)\xfe\xe6\xff\xe5\\\x9fl\xc3~\xc2\x88\xdd\xb2G\xb0j\x8dM\xe2\xf6\xd5\xccv\xafY\xd57;T\xf0|m\xfeBGT\x90\xa0\xd4\xab\x060\xf5\x11!\xa3\xdbkV\x05\x98O'
+
 
 def test_crypt_aes_xts():
   crypt_aes_xts = tinyveracrypt.crypt_aes_xts
@@ -57,6 +64,7 @@ def test_crypt_aes_xts():
 
 def test():
   test_aes()
+  test_sha512()
   test_crypt_aes_xts()
 
   check_full_dechd = tinyveracrypt.check_full_dechd
@@ -116,5 +124,5 @@ if __name__ == '__main__':
   else:
     test()
     if len(sys.argv) > 1:
-      test_slow()
+      test_slow()  # Uses sha512.
     print __file__, ' OK.'
