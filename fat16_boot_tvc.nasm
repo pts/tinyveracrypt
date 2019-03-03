@@ -50,7 +50,7 @@ msg:
 db 'This is not a bootable disk.  Please insert a bootable floppy and', 13, 10
 db 'press any key to try again ...', 13, 10, 0
 after_msg:
-pop si  ; Now msg contains the address of msg, position-independent.
+pop si  ; Now si contains the address of msg, position-independent.
 print_char:
 lodsb
 and_al_al
