@@ -17,12 +17,12 @@ Features
   machine can have less memory.
 * tinyveracrypt has an easy command-line interface for creating encrypted
   volumes (also compatible with the `veracrypt' and `cryptsetup' commands).
-* tinyveracrypt create encrypted volumes without using extra disk space for
+* tinyveracrypt can create encrypted volumes without using extra disk space for
   some filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs, hfsplus,
   iso9660, udf, minux and ocfs2).
-* tinyveracrypt create or use a plaintext FAT12 or FAT16 filesystem in front
-  of the encrypted volume.
-* tinyveracrypt has an easy command-line interface.
+* tinyveracrypt can create or use a plaintext FAT12 or FAT16 filesystem in
+  front of the encrypted volume.
+* tinyveracrypt has an easy-to-use and convenient command-line interface.
 * tinyveracrypt has some commands and flags compatible with `veracrypt' and
   `cryptsetup', so tinyveracrypt can be used as a drop-in replacement for
   these tools.
@@ -73,12 +73,12 @@ LUKS has better properties when modifying or deleting key slots: it is
 harder to forensically recover a deleted LUKS key than a deleted VeraCrypt
 key.
 
-Q6. Can tinyveracrypt open an encryptee volume created by
+Q6. Can tinyveracrypt open an encrypted volume created by
 tinyveracrypt, VeraCrypt or TrueCrypt?
 """"""""""""""""""""""""""""""""""""""
 tinyveracrypt can open encrypted volumes created by tinyveracrypt.
 
-tinyveracrypt can open encrypted volumes created by VeraCrypt or Truecrypy
+tinyveracrypt can open encrypted volumes created by VeraCrypt or TrueCrypt
 if the volume was created with the default settings of VeraCrypt 1.17
 (PBKDF2 of SHA-512, and AES in XTS mode (i.e. aes-xts-plain64)) or with the
 proper settings of Truecrypt >= 5.0. More code needs to be written for
@@ -130,7 +130,7 @@ The last working version of truecrypt containing the `--create' command is
 Q12. Can tinyveracrypt create encrypted volumes with a plaintext FAT
 filesystem in front of the encrypted volume?
 """"""""""""""""""""""""""""""""""""""""""""
-Yes, with FAT12 and FAT16 filesystems. (FAT32 and NTFS are not supported).
+Yes, with FAT12 and FAT16 filesystems. (FAT32 and NTFS are not supported.)
 
 If you already have a (plaintext) FAT12 or FAT16 filesystem at the beginning
 of the raw device, run
@@ -175,7 +175,7 @@ Don't do this unless you know what you are doing and you are ready to lose
 data in case you were wrong.
 
 This can be done safely with the following filesystems: ext2, ext3, ext4,
-btrfs and reiserfs, jfs, nilfs, hfsplus, iso9660, udf, minix and ocfs2,
+btrfs, reiserfs, jfs, nilfs, hfsplus, iso9660, udf, minix and ocfs2,
 because they don't use the first 512 bytes. Some other filesystems and data
 structures which don't work safely (because they use the first 512 bytes)
 include vfat, ntfs, xfs, exfat, Linux swap, Linux RAID, LUKS.
@@ -231,20 +231,38 @@ space (using set_jfs_id.py in a tricky way). For filesystems ext2, ext3 and
 ext4 extra disk space has to be used (except possibly with a fake 1K FAT
 filesystem).
 
+tinyveracrypt can create a VeraCrypt encrypted volume with a fake
+LUKS header containing an unencrypted UUID (recognized by blkid in
+util-linux and Busybox):
+
+  $ ./tinyveracrypt.py init --fake-luks-uuid=random RAWDEVICE
+
+The LUKS (LUKS1) headers don't contain a volume label field, so it's not
+possible to specify one.
+
+The created VeraCrypt encrypted volume will not be a valid LUKS volume
+though, `cryptsetup open' won't be able to open it without the `--type
+tcrypt --veracrypt' flag.
+
+
 Q15. What are the dependencies of tinyveracrypt?
 """"""""""""""""""""""""""""""""""""""""""""""""
 For creating and examining encrypted volumes, only Python 2.x is needed.
 
 More specific info about the Python versions: tinyveracrypt needs Python
-2.5, 2.6 or 2.7 (no external package are needed), or Python 2.4 with hashlib
-or pycrypto. The recommended Python version is Python 2.7 (2.7.8 or later)
-with OpenSSL bindings (the _ssl module). (OpenSSL's SHA-512 implementation
-has key derivation from passphrase much faster than the default SHA-512 in
-Python.) tinyveracrypt doesn't work with Python 3.
+2.5, 2.6 or 2.7 (no external package are needed), or Python 2.4 with the
+package hashlib or pycrypto. (Alternatively, Python 2.4 without these
+packages also works, but it is very slow: each operation may take ~30
+minutes, because of slow SHA-512 computation in PBKDF2.) The recommended
+Python version is Python 2.7 (2.7.8 or later) with OpenSSL bindings (the
+_ssl module). (OpenSSL's SHA-512 implementation has key derivation from
+passphrase much faster than the default SHA-512 in Python.) tinyveracrypt
+doesn't work with Python 3.
 
-For opening encrypted volumes, a Linux system with the dmsetup(8) tool (and
-also the losetup(8) tool for disk images) is also needed, with root access
-(e.g. sudo).
+For opening encrypted volumes with tinyveracrypt, a Linux system is needed
+with root access (e.g. sudo) and the dmsetup(8) tool installed, and for
+opening disk images, the losetup(8) tool is also needed. The cryptsetup(8)
+tool is not needed.
 
 Q16. Does a VeraCrypt volume have an unencrypted UUID?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -329,7 +347,7 @@ encrypted volumes.
 
 Q22. How to open a TrueCrypt encrypted volume on Linux?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""
-If you know the passpohrase, run this:
+If you know the passphrase, run this:
 
   $ sudo ./tinyveracrypt.py open --truecrypt RAWDEVICE NAME
 
@@ -393,7 +411,7 @@ volume (as NAME), and then run:
   $ sudo ./tinyveracrypt.py init --opened /dev/mapper/NAME
 
 Pass flag `--truecrypt' to `init' if you want to generate a TrueCrypt header.
-Pass any flags (e.g. --mkfat=...), specify any password.
+Pass any flags (e.g. --mkfat=...), specify any passphrase.
 
 Please note that the hidden volume, if any, will be destroyed as part of
 this.
