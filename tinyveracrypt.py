@@ -528,7 +528,6 @@ def check_decrypted_ofs(decrypted_ofs):
     # Typical value is 0x20000 for non-hidden volumes.
     raise ValueError('decrypted_size must be nonnegative, got: %d' % decrypted_ofs)
   if decrypted_ofs & 511:
-    # TODO(pts): What does aes_xts require as minimum? 16?
     raise ValueError('decrypted_ofs must be a multiple of 512, got: %d' % decrypted_ofs)
 
 def check_decrypted_size(decrypted_size):
@@ -568,11 +567,10 @@ def build_dechd(
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat (contains all encryption, hash, count etc. for TrueCrypt, but not for VeraCrypt)
   # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
   # https://www.veracrypt.fr/en/Encryption%20Algorithms.html
-  # TODO(pts): Add TrueCrypt support: signature: "TRUE", --pim=-14 (iterations == 1000), --encryption=aes, --hash=sha512, introduced in TrueCrypt 5.0.
   # --- 0: VeraCrypt hd sector starts here
   # 0 + 64: salt
   # --- 64: header starts here
-  # 64 + 4: signature: "VERA": 56455241
+  # 64 + 4: signature: "VERA": 56455241 or "TRUE"; for TrueCrypt: --pim=-14 (iterations == 1000), --encryption=aes, --hash=sha512, introduced in TrueCrypt 5.0.
   # 68 + 2: header_format_version: Volume header format version: 0005
   # 70 + 2: minimum_version_to_extract: Minimum program version to open (1.11): 010b
   # 72 + 4: keytablep_crc32: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
@@ -751,7 +749,7 @@ def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False):
   sha512_blocksize = 128
   # TODO(pts): Is kernel-mode crypto (AF_ALG,
   # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
-  # cryptsetup seems to be doing it.
+  # cryptsetup seems to be using it.
   return pbkdf2(passphrase, salt, header_key_size, iterations, sha512, sha512_blocksize)
 
 
