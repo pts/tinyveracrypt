@@ -106,6 +106,9 @@ def test_slow():
 
 
 if __name__ == '__main__':
+  if len(sys.argv) > 1 and sys.argv[1] == '--slow-aes':
+    tinyveracrypt.new_aes = tinyveracrypt.SlowAes
+    del sys.argv[1]
   if len(sys.argv) > 1 and sys.argv[1] == '--benchmark-slow-aes':
     benchmark_aes(new_aes=tinyveracrypt.SlowAes)
   elif len(sys.argv) > 1 and sys.argv[1] == '--benchmark-aes':
