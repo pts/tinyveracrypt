@@ -978,11 +978,11 @@ def get_fat_sizes(fat_header):
     raise ValueError('Expected sectors_per_fat>0, got: %d' % sectors_per_fat)
   if fat_count not in (1, 2):
     raise ValueError('Expected fat_count 1 or 2, got: %d' % fat_count)
-  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) / (sector_size >> 5)
+  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) // (sector_size >> 5)
   header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
   if header_sector_count > sector_count:
     raise ValueError('Too few sectors in FAT filesystem, not even header sectors fit.')
-  cluster_count = (sector_count - header_sector_count) / sectors_per_cluster
+  cluster_count = (sector_count - header_sector_count) // sectors_per_cluster
   if fstype == 'FAT12' and cluster_count > 4078:
     raise ValueError('cluster_count too large for FAT12: %d' % cluster_count)
   if fstype == 'FAT16' and cluster_count > 65518:
@@ -1020,13 +1020,13 @@ def recommend_fat_parameters(fd_sector_count, fat_count, fstype=None, sectors_pe
       if sectors_per_cluster > 2 and fstype == 'FAT12':
         continue  # Heuristic, use FAT16 instead.
       # 1 is our lower bound for fat_sector_count.
-      cluster_count = (fd_sector_count - 1) / sectors_per_cluster
+      cluster_count = (fd_sector_count - 1) // sectors_per_cluster
       while cluster_count > 0:
         if fstype == 'FAT12':
           sectors_per_fat = ((((2 + cluster_count) * 3 + 1) >> 1) + 511) >> 9
         else:
           sectors_per_fat = ((2 + (cluster_count << 1)) + 511) >> 9
-        cluster_count2 = (fd_sector_count - sectors_per_fat * fat_count) / sectors_per_cluster
+        cluster_count2 = (fd_sector_count - sectors_per_fat * fat_count) // sectors_per_cluster
         if cluster_count == cluster_count2:
           break
         cluster_count = cluster_count2
@@ -1112,7 +1112,7 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   sector_size = 512
   sector_count = fatfs_size >> 9
   rootdir_entry_count = (rootdir_entry_count + 15) & ~15  # Round up.
-  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) / (sector_size >> 5)
+  rootdir_sector_count = (rootdir_entry_count + ((sector_size >> 5) - 1)) // (sector_size >> 5)
   # TODO(pts): Add alignment so that first cluster starts at sectors_per_cluster
   # boundary.
   reserved_sector_count = 1  # Only the boot sector (containing fat_header).
