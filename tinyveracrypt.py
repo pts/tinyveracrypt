@@ -67,223 +67,169 @@ class SlowAes(object):
       assert len(ao.decrypt('ciphertext______')) == 16
     """
 
-    # --- Initialize the following constants: [S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, rcon.
+    # --- Initialize the following constants: S, Si, T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4, RC.
+    #
+    # Hardcoding the final values would make the code 14 kB longer.
 
-    A = [[1, 1, 1, 1, 1, 0, 0, 0],
-         [0, 1, 1, 1, 1, 1, 0, 0],
-         [0, 0, 1, 1, 1, 1, 1, 0],
-         [0, 0, 0, 1, 1, 1, 1, 1],
-         [1, 0, 0, 0, 1, 1, 1, 1],
-         [1, 1, 0, 0, 0, 1, 1, 1],
-         [1, 1, 1, 0, 0, 0, 1, 1],
-         [1, 1, 1, 1, 0, 0, 0, 1]]
-
-    # produce log and alog tables, needed for multiplying in the
-    # field GF(2^m) (generator = 3)
+    # Produce log and alog tables, needed for multiplying in the
+    # field GF(2^m) (generator = 3).
     alog = [1]
     for i in xrange(255):
-        j = (alog[-1] << 1) ^ alog[-1]
-        if j & 0x100 != 0:
-            j ^= 0x11B
-        alog.append(j)
+      j = (alog[-1] << 1) ^ alog[-1]
+      if j & 0x100 != 0:
+        j ^= 0x11B
+      alog.append(j)
 
     log = [0] * 256
     for i in xrange(1, 255):
-        log[alog[i]] = i
+      log[alog[i]] = i
 
     # multiply two elements of GF(2^m)
     def mul(a, b, alog, log):
-        if a == 0 or b == 0:
-            return 0
-        return alog[(log[a & 0xFF] + log[b & 0xFF]) % 255]
+      return a and b and alog[(log[a & 255] + log[b & 255]) % 255]
 
-    # substitution box based on F^{-1}(x)
+    # Substitution box based on F^{-1}(x).
     box = [[0] * 8 for i in xrange(256)]
     box[1][7] = 1
     for i in xrange(2, 256):
-        j = alog[255 - log[i]]
-        for t in xrange(8):
-            box[i][t] = (j >> (7 - t)) & 0x01
+      j = alog[255 - log[i]]
+      for t in xrange(8):
+        box[i][t] = (j >> (7 - t)) & 0x01
 
-    B = [0, 1, 1, 0, 0, 0, 1, 1]
+    A = ((1, 1, 1, 1, 1, 0, 0, 0), (0, 1, 1, 1, 1, 1, 0, 0), (0, 0, 1, 1, 1, 1, 1, 0), (0, 0, 0, 1, 1, 1, 1, 1), (1, 0, 0, 0, 1, 1, 1, 1), (1, 1, 0, 0, 0, 1, 1, 1), (1, 1, 1, 0, 0, 0, 1, 1), (1, 1, 1, 1, 0, 0, 0, 1))
+    B = (0, 1, 1, 0, 0, 0, 1, 1)
 
-    # affine transform:  box[i] <- B + A*box[i]
+    # Affine transform:  box[i] <- B + A*box[i].
     cox = [[0] * 8 for i in xrange(256)]
     for i in xrange(256):
-        for t in xrange(8):
-            cox[i][t] = B[t]
-            for j in xrange(8):
-                cox[i][t] ^= A[t][j] * box[i][j]
-
-    # S-boxes and inverse S-boxes
-    S =  [0] * 256
-    Si = [0] * 256
-    for i in xrange(256):
-        S[i] = cox[i][0] << 7
-        for t in xrange(1, 8):
-            S[i] ^= cox[i][t] << (7-t)
-        Si[S[i] & 0xFF] = i
-
-    # T-boxes
-    G = [[2, 1, 1, 3],
-        [3, 2, 1, 1],
-        [1, 3, 2, 1],
-        [1, 1, 3, 2]]
-
-    AA = [[0] * 8 for i in xrange(4)]
-
-    for i in xrange(4):
-        for j in xrange(4):
-            AA[i][j] = G[i][j]
-            AA[i][i+4] = 1
-
-    for i in xrange(4):
-        pivot = AA[i][i]
-        if pivot == 0:
-            t = i + 1
-            while AA[t][i] == 0 and t < 4:
-                t += 1
-                assert t != 4, 'G matrix must be invertible'
-                for j in xrange(8):
-                    AA[i][j], AA[t][j] = AA[t][j], AA[i][j]
-                pivot = AA[i][i]
+      for t in xrange(8):
+        cox[i][t] = B[t]
         for j in xrange(8):
-            if AA[i][j] != 0:
-                AA[i][j] = alog[(255 + log[AA[i][j] & 0xFF] - log[pivot & 0xFF]) % 255]
-        for t in xrange(4):
-            if i != t:
-                for j in xrange(i+1, 8):
-                    AA[t][j] ^= mul(AA[i][j], AA[t][i], alog, log)
-                AA[t][i] = 0
+          cox[i][t] ^= A[t][j] * box[i][j]
+
+    # S-boxes and inverse S-boxes.
+    S, Si =  [0] * 256, [0] * 256
+    for i in xrange(256):
+      S[i] = cox[i][0] << 7
+      for t in xrange(1, 8):
+        S[i] ^= cox[i][t] << (7 - t)
+      Si[S[i] & 255] = i
+
+    # T-boxes.
+    G = ((2, 1, 1, 3), (3, 2, 1, 1), (1, 3, 2, 1), (1, 1, 3, 2))
+    AA = [[0] * 8 for i in xrange(4)]
+    for i in xrange(4):
+      for j in xrange(4):
+        AA[i][j] = G[i][j]
+        AA[i][i + 4] = 1
+
+    for i in xrange(4):
+      pivot = AA[i][i]
+      if pivot == 0:
+        t = i + 1
+        while AA[t][i] == 0 and t < 4:
+          t += 1
+          assert t != 4, 'G matrix must be invertible.'
+          for j in xrange(8):
+            AA[i][j], AA[t][j] = AA[t][j], AA[i][j]
+          pivot = AA[i][i]
+      for j in xrange(8):
+        if AA[i][j] != 0:
+          AA[i][j] = alog[(255 + log[AA[i][j] & 255] - log[pivot & 255]) % 255]
+      for t in xrange(4):
+        if i != t:
+          for j in xrange(i + 1, 8):
+            AA[t][j] ^= mul(AA[i][j], AA[t][i], alog, log)
+          AA[t][i] = 0
 
     iG = [[0] * 4 for i in xrange(4)]
-
     for i in xrange(4):
-        for j in xrange(4):
-            iG[i][j] = AA[i][j + 4]
+      for j in xrange(4):
+        iG[i][j] = AA[i][j + 4]
 
     def mul4(a, bs, mul, alog, log):
-        if a == 0:
-            return 0
-        r = 0
+      r = 0
+      if a:
         for b in bs:
-            r <<= 8
-            if b != 0:
-                r = r | mul(a, b, alog, log)
-        return r
+          r <<= 8
+          if b:
+            r |= mul(a, b, alog, log)
+      return r
 
-    T1 = []
-    T2 = []
-    T3 = []
-    T4 = []
-    T5 = []
-    T6 = []
-    T7 = []
-    T8 = []
-    U1 = []
-    U2 = []
-    U3 = []
-    U4 = []
-
+    T1, T2, T3, T4, T5, T6, T7, T8, U1, U2, U3, U4 = [], [], [], [], [], [], [], [], [], [], [], []
     for t in xrange(256):
-        s = S[t]
-        T1.append(mul4(s, G[0], mul, alog, log))
-        T2.append(mul4(s, G[1], mul, alog, log))
-        T3.append(mul4(s, G[2], mul, alog, log))
-        T4.append(mul4(s, G[3], mul, alog, log))
+      s = S[t]
+      T1.append(mul4(s, G[0], mul, alog, log))
+      T2.append(mul4(s, G[1], mul, alog, log))
+      T3.append(mul4(s, G[2], mul, alog, log))
+      T4.append(mul4(s, G[3], mul, alog, log))
+      s = Si[t]
+      T5.append(mul4(s, iG[0], mul, alog, log))
+      T6.append(mul4(s, iG[1], mul, alog, log))
+      T7.append(mul4(s, iG[2], mul, alog, log))
+      T8.append(mul4(s, iG[3], mul, alog, log))
+      U1.append(mul4(t, iG[0], mul, alog, log))
+      U2.append(mul4(t, iG[1], mul, alog, log))
+      U3.append(mul4(t, iG[2], mul, alog, log))
+      U4.append(mul4(t, iG[3], mul, alog, log))
 
-        s = Si[t]
-        T5.append(mul4(s, iG[0], mul, alog, log))
-        T6.append(mul4(s, iG[1], mul, alog, log))
-        T7.append(mul4(s, iG[2], mul, alog, log))
-        T8.append(mul4(s, iG[3], mul, alog, log))
-
-        U1.append(mul4(t, iG[0], mul, alog, log))
-        U2.append(mul4(t, iG[1], mul, alog, log))
-        U3.append(mul4(t, iG[2], mul, alog, log))
-        U4.append(mul4(t, iG[3], mul, alog, log))
-
-    # round constants
-    rcon = [1]
+    RC = [1]  # Round constants.
     r = 1
     for t in xrange(1, 30):
-        r = mul(2, r, alog, log)
-        rcon.append(r)
+      r = mul(2, r, alog, log)
+      RC.append(r)
 
     del A, AA, pivot, B, G, box, log, alog, i, j, r, s, t, mul, mul4, cox, iG
-
 
     # --- End of constant initialization.
 
     __slots__ = ('Ke', 'Kd')
 
     def __init__(self, key):
-        if len(key) != 16 and len(key) != 24 and len(key) != 32:
-            raise ValueError('Invalid key size: ' + str(len(key)))
-        rcon, S, U1, U2, U3, U4 = self.rcon, self.S, self.U1, self.U2, self.U3, self.U4
-        ROUNDS = 6 + (len(key) >> 2)
-        # encryption round keys
-        Ke = [[0] * 4 for i in xrange(ROUNDS + 1)]
-        # decryption round keys
-        Kd = [[0] * 4 for i in xrange(ROUNDS + 1)]
-        ROUND_KEY_COUNT = (ROUNDS + 1) * 4
-        KC = len(key) / 4
-
-        # copy user material bytes into temporary ints
-        tk = []
-        for i in xrange(0, KC):
-            tk.append((ord(key[i * 4]) << 24) | (ord(key[i * 4 + 1]) << 16) |
-                (ord(key[i * 4 + 2]) << 8) | ord(key[i * 4 + 3]))
-
-        # copy values into round key arrays
-        t = 0
+      if len(key) != 16 and len(key) != 24 and len(key) != 32:
+        raise ValueError('Invalid key size: ' + str(len(key)))
+      RC, S, U1, U2, U3, U4 = self.RC, self.S, self.U1, self.U2, self.U3, self.U4
+      ROUNDS = 6 + (len(key) >> 2)
+      Ke = [[0] * 4 for i in xrange(ROUNDS + 1)]  # Encryption round keys.
+      Kd = [[0] * 4 for i in xrange(ROUNDS + 1)]  # Decryption round keys.
+      RKC = 28 + len(key)  # Round key count.
+      KC = len(key) >> 2
+      tk = list(struct.unpack('>' + 'L' * KC, key))
+      # Copy values into round key arrays.
+      t = 0
+      while t < KC:
+        Ke[t >> 2][t & 3] = tk[t]
+        Kd[ROUNDS - (t >> 2)][t & 3] = tk[t]
+        t += 1
+      tt = ri = 0
+      while t < RKC:
+        # Extrapolate using phi (the round key evolution function).
+        tt = tk[KC - 1]
+        tk[0] ^= ((S[(tt >> 16) & 255] & 255) << 24 ^ (S[(tt >> 8) & 255] & 255) << 16 ^ (S[tt & 255] & 255) <<  8 ^ (S[(tt >> 24) & 255] & 255) ^ (RC[ri] & 255) << 24)
+        ri += 1
+        if KC != 8:
+          for i in xrange(1, KC):
+            tk[i] ^= tk[i - 1]
+        else:
+          for i in xrange(1, KC >> 1):
+            tk[i] ^= tk[i-1]
+          tt = tk[(KC >> 1) - 1]
+          tk[KC >> 1] ^= ((S[tt & 255] & 255) ^ (S[(tt >>  8) & 255] & 255) << 8 ^ (S[(tt >> 16) & 255] & 255) << 16 ^ (S[(tt >> 24) & 255] & 255) << 24)
+          for i in xrange((KC >> 1) + 1, KC):
+            tk[i] ^= tk[i - 1]
+        # Copy values into round key arrays.
         j = 0
-        while j < KC and t < ROUND_KEY_COUNT:
-            Ke[t / 4][t & 3] = tk[j]
-            Kd[ROUNDS - (t / 4)][t & 3] = tk[j]
-            j += 1
-            t += 1
-        tt = 0
-        rconpointer = 0
-        while t < ROUND_KEY_COUNT:
-            # extrapolate using phi (the round key evolution function)
-            tt = tk[KC - 1]
-            tk[0] ^= ((S[(tt >> 16) & 0xFF] & 0xFF) << 24 ^
-                      (S[(tt >>  8) & 0xFF] & 0xFF) << 16 ^
-                      (S[ tt        & 0xFF] & 0xFF) <<  8 ^
-                      (S[(tt >> 24) & 0xFF] & 0xFF)       ^
-                      (rcon[rconpointer]    & 0xFF) << 24)
-            rconpointer += 1
-            if KC != 8:
-                for i in xrange(1, KC):
-                    tk[i] ^= tk[i-1]
-            else:
-                for i in xrange(1, KC / 2):
-                    tk[i] ^= tk[i-1]
-                tt = tk[KC / 2 - 1]
-                tk[KC / 2] ^= ((S[ tt        & 0xFF] & 0xFF)       ^
-                               (S[(tt >>  8) & 0xFF] & 0xFF) <<  8 ^
-                               (S[(tt >> 16) & 0xFF] & 0xFF) << 16 ^
-                               (S[(tt >> 24) & 0xFF] & 0xFF) << 24)
-                for i in xrange(KC / 2 + 1, KC):
-                    tk[i] ^= tk[i-1]
-            # copy values into round key arrays
-            j = 0
-            while j < KC and t < ROUND_KEY_COUNT:
-                Ke[t / 4][t & 3] = tk[j]
-                Kd[ROUNDS - (t / 4)][t & 3] = tk[j]
-                j += 1
-                t += 1
-        # inverse MixColumn where needed
-        for r in xrange(1, ROUNDS):
-            for j in xrange(4):
-                tt = Kd[r][j]
-                Kd[r][j] = (U1[(tt >> 24) & 0xFF] ^
-                            U2[(tt >> 16) & 0xFF] ^
-                            U3[(tt >>  8) & 0xFF] ^
-                            U4[ tt        & 0xFF])
-        self.Ke = Ke
-        self.Kd = Kd
+        while j < KC and t < RKC:
+          Ke[t >> 2][t & 3] = tk[j]
+          Kd[ROUNDS - (t >> 2)][t & 3] = tk[j]
+          j += 1
+          t += 1
+      # Invert MixColumn where needed.
+      for r in xrange(1, ROUNDS):
+        for j in xrange(4):
+          tt = Kd[r][j]
+          Kd[r][j] = (U1[(tt >> 24) & 255] ^ U2[(tt >> 16) & 255] ^ U3[(tt >>  8) & 255] ^ U4[tt & 255])
+      self.Ke, self.Kd = Ke, Kd
 
     def encrypt(self, plaintext):
       Ke, S, T1, T2, T3, T4 = self.Ke, self.S, self.T1, self.T2, self.T3, self.T4
@@ -295,9 +241,9 @@ class SlowAes(object):
       t = [t[i] ^ Ker[i] for i in xrange(4)] * 2
       for r in xrange(1, ROUNDS):  # Apply round transforms.
         Ker = Ke[r]
-        t = [T1[(t[i] >> 24) & 0xFF] ^ T2[(t[i + 1] >> 16) & 0xFF] ^ T3[(t[i + 2] >> 8) & 0xFF] ^ T4[ t[i + 3] & 0xFF] ^ Ker[i] for i in xrange(4)] * 2
+        t = [T1[(t[i] >> 24) & 255] ^ T2[(t[i + 1] >> 16) & 255] ^ T3[(t[i + 2] >> 8) & 255] ^ T4[ t[i + 3] & 255] ^ Ker[i] for i in xrange(4)] * 2
       Ker = Ke[ROUNDS]
-      return struct.pack('>LLLL', *((S[(t[i] >> 24) & 0xFF] << 24 | S[(t[i + 1] >> 16) & 0xFF] << 16 | S[(t[i + 2] >> 8) & 0xFF] << 8 | S[t[i + 3] & 0xFF]) ^ Ker[i] for i in xrange(4)))
+      return struct.pack('>LLLL', *((S[(t[i] >> 24) & 255] << 24 | S[(t[i + 1] >> 16) & 255] << 16 | S[(t[i + 2] >> 8) & 255] << 8 | S[t[i + 3] & 255]) ^ Ker[i] for i in xrange(4)))
 
     def decrypt(self, ciphertext):
       Kd, Si, T5, T6, T7, T8 = self.Kd, self.Si, self.T5, self.T6, self.T7, self.T8
@@ -309,9 +255,9 @@ class SlowAes(object):
       t = [t[i] ^ Kdr[i] for i in xrange(4)] * 2
       for r in xrange(1, ROUNDS):  # Apply round transforms.
         Kdr = Kd[r]
-        t = [T5[(t[i] >> 24) & 0xFF] ^ T6[(t[i + 3] >> 16) & 0xFF] ^ T7[(t[i + 2] >> 8) & 0xFF] ^ T8[ t[i + 1] & 0xFF] ^ Kdr[i] for i in xrange(4)] * 2
+        t = [T5[(t[i] >> 24) & 255] ^ T6[(t[i + 3] >> 16) & 255] ^ T7[(t[i + 2] >> 8) & 255] ^ T8[ t[i + 1] & 255] ^ Kdr[i] for i in xrange(4)] * 2
       Kdr = Kd[ROUNDS]
-      return struct.pack('>LLLL', *((Si[(t[i] >> 24) & 0xFF] << 24 | Si[(t[i + 3] >> 16) & 0xFF] << 16 | Si[(t[i + 2] >> 8) & 0xFF] << 8 | Si[t[i + 1] & 0xFF]) ^ Kdr[i] for i in xrange(4)))
+      return struct.pack('>LLLL', *((Si[(t[i] >> 24) & 255] << 24 | Si[(t[i + 3] >> 16) & 255] << 16 | Si[(t[i + 2] >> 8) & 255] << 8 | Si[t[i + 1] & 255]) ^ Kdr[i] for i in xrange(4)))
 
 
 def get_best_new_aes(_cache=[]):
