@@ -470,20 +470,13 @@ else:
     w = [0] * 80
     w[:16] = struct.unpack('>16Q', chunk)
     for i in xrange(16, 80):
-      s0 = _rotr64(w[i-15], 1) ^ _rotr64(w[i-15], 8) ^ (w[i-15] >> 7)
-      s1 = _rotr64(w[i-2], 19) ^ _rotr64(w[i-2], 61) ^ (w[i-2] >> 6)
-      w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffffffffffff
+      w[i] = (w[i - 16] + (_rotr64(w[i - 15], 1) ^ _rotr64(w[i - 15], 8) ^ (w[i - 15] >> 7)) + w[i - 7] + (_rotr64(w[i - 2], 19) ^ _rotr64(w[i - 2], 61) ^ (w[i - 2] >> 6))) & 0xffffffffffffffff
     a, b, c, d, e, f, g, h = hh
     for i in xrange(80):
-      s0 = _rotr64(a, 28) ^ _rotr64(a, 34) ^ _rotr64(a, 39)
-      maj = (a & b) ^ (a & c) ^ (b & c)
-      t2 = s0 + maj
-      s1 = _rotr64(e, 14) ^ _rotr64(e, 18) ^ _rotr64(e, 41)
-      ch = (e & f) ^ ((~e) & g)
-      t1 = h + s1 + ch + _k[i] + w[i]
+      t1 = h + (_rotr64(e, 14) ^ _rotr64(e, 18) ^ _rotr64(e, 41)) + ((e & f) ^ ((~e) & g)) + _k[i] + w[i]
+      t2 = (_rotr64(a, 28) ^ _rotr64(a, 34) ^ _rotr64(a, 39)) + ((a & b) ^ (a & c) ^ (b & c))
       a, b, c, d, e, f, g, h = (t1 + t2) & 0xffffffffffffffff, a, b, c, (d + t1) & 0xffffffffffffffff, e, f, g
-    return [(x + y) & 0xffffffffffffffff for x,y in _izip(hh, (a, b, c, d, e, f, g, h))]
-
+    return [(x + y) & 0xffffffffffffffff for x, y in _izip(hh, (a, b, c, d, e, f, g, h))]
 
   class sha512(object):
     _h0 = (0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
