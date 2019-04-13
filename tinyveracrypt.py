@@ -469,11 +469,11 @@ else:
   def sha512_process(chunk, hh, _izip=itertools.izip, _rotr64=rotr64, _k = sha512_k):
     w = [0] * 80
     w[:16] = struct.unpack('>16Q', chunk)
-    for i in range(16, 80):
-        s0 = _rotr64(w[i-15], 1) ^ _rotr64(w[i-15], 8) ^ (w[i-15] >> 7)
-        s1 = _rotr64(w[i-2], 19) ^ _rotr64(w[i-2], 61) ^ (w[i-2] >> 6)
-        w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffffffffffff
-    a,b,c,d,e,f,g,h = hh
+    for i in xrange(16, 80):
+      s0 = _rotr64(w[i-15], 1) ^ _rotr64(w[i-15], 8) ^ (w[i-15] >> 7)
+      s1 = _rotr64(w[i-2], 19) ^ _rotr64(w[i-2], 61) ^ (w[i-2] >> 6)
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) & 0xffffffffffffffff
+    a, b, c, d, e, f, g, h = hh
     for i in xrange(80):
       s0 = _rotr64(a, 28) ^ _rotr64(a, 34) ^ _rotr64(a, 39)
       maj = (a & b) ^ (a & c) ^ (b & c)
@@ -482,7 +482,7 @@ else:
       ch = (e & f) ^ ((~e) & g)
       t1 = h + s1 + ch + _k[i] + w[i]
       a, b, c, d, e, f, g, h = (t1 + t2) & 0xffffffffffffffff, a, b, c, (d + t1) & 0xffffffffffffffff, e, f, g
-    return [(x + y) & 0xffffffffffffffff for x,y in _izip(hh, [a,b,c,d,e,f,g,h])]
+    return [(x + y) & 0xffffffffffffffff for x,y in _izip(hh, (a, b, c, d, e, f, g, h))]
 
 
   class sha512(object):
@@ -527,15 +527,12 @@ else:
         self._buffer = m[lm - ((lm - i) & 127):]
 
     def digest(self):
-      mdi = self._counter & 0x7F
-      length = struct.pack('>Q', self._counter << 3)
-      if mdi < 112:
-        padlen = 111 - mdi
-      else:
-        padlen = 239 - mdi
+      c = self._counter
       r = self.copy()
-      r.update('\x80' + ('\0' * (padlen + 8)) + length)
-      return ''.join(struct.pack('>Q', i) for i in r._h[:8])
+      r.update(struct.pack(
+          '>c%dxQ' % ((119 - (c & 0x7f)) + (((c & 0x7f) > 111) << 7)),
+          '\x80', c << 3))
+      return struct.pack('>8Q', *r._h)
 
     def hexdigest(self):
       return self.digest().encode('hex')
