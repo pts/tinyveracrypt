@@ -528,11 +528,10 @@ else:
 
     def digest(self):
       c = self._counter
-      r = self.copy()
-      r.update(struct.pack(
-          '>c%dxQ' % ((119 - (c & 0x7f)) + (((c & 0x7f) > 111) << 7)),
-          '\x80', c << 3))
-      return struct.pack('>8Q', *r._h)
+      if (c & 0x7f) < 112:
+        return struct.pack('>8Q', *sha512_process(self._buffer + struct.pack('>c%dxQ' % (119 - (c & 0x7f)), '\x80', c << 3), self._h))
+      else:
+        return struct.pack('>8Q', *sha512_process(struct.pack('>120xQ', c << 3), sha512_process(self._buffer + struct.pack('>c%dx' % (~c & 0x7f), '\x80'), self._h)))
 
     def hexdigest(self):
       return self.digest().encode('hex')
