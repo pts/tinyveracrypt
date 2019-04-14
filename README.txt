@@ -453,6 +453,10 @@ data_offset (--ofs=).
 
 Options considered (and failed) to make it work:
 
+* --ofs=0 doesn't work with LUKS1 and cryptsetup 1.7.3 (`cryptsetup open'
+  fails an an internal offset check), the minimum is --ofs=1536, see
+  myluks_demo.py for creating a LUKS1 header with --ofs=1536.
+
 * --ofs=0, VeraCrypt backup header at the end of the device (between offsets
   -131072 and -130560), LUKS1 PHDR between offsets 0 and 592, LUKS1 key
   material between 512 and 576 (overlapping the LUKS1 PHDR), using a
