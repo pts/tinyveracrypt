@@ -521,6 +521,137 @@ else:
   sha512 = SlowSha512
 
 
+# --- SHA-1 hash (message digest).
+
+
+def _sha1_rotl32(x, y):
+  return ((x << y) | (x >> (32 - y))) & 0xffffffff
+
+
+def slow_sha1_process(chunk, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
+  w = [0] * 80
+  w[:16] = struct.unpack('>16L', chunk)
+  for i in range(16, 80):
+    w[i] = _rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
+  a, b, c, d, e = hh
+  for i in xrange(0, 20):
+    f = (b & c) | ((~b) & d)
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x5a827999 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(20, 40):
+    f = b ^ c ^ d
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x6ed9eba1 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(40, 60):
+    f = (b & c) | (b & d) | (c & d)
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0x8f1bbcdc + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  for i in xrange(60, 80):
+    f = b ^ c ^ d
+    a, b, c, d, e = (_rotl(a, 5) + f + e + 0xca62c1d6 + w[i]) & 0xffffffff, a, _rotl(b, 30), c, d
+  return [(x + y) & 0xffffffff for x, y in _izip(hh, (a, b, c, d, e))]
+
+
+del _sha1_rotl32  # Unpollute namespace.
+
+
+# Fallback pure Python implementation of SHA-1 based on
+# https://codereview.stackexchange.com/a/37669
+# It is about 162 times slower than OpenSSL's C implementation.
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Even Python 2.4 has sha.sha (autodetected below),
+# and Python >=2.5 has hashlib.sha1 (also autodetected below), so most
+# users don't need this implementation.
+class SlowSha1(object):
+  _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
+
+  blocksize = 1
+  block_size = 64
+  digest_size = 20
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer = ''
+    self._counter = 0
+    self._h = self._h0
+    if m is not None:
+      self.update(m)
+
+  def update(self, m):
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf = self._buffer
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = slow_sha1_process(buf + m[:i], hh)
+      for i in xrange(i, lm - 63, 64):
+        hh = slow_sha1_process(_buffer(m, i, 64), hh)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    c = self._counter
+    if (c & 63) < 56:
+      return struct.pack('>5L', *slow_sha1_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+    else:
+      return struct.pack('>5L', *slow_sha1_process(struct.pack('>56xQ', c << 3), slow_sha1_process(self._buffer + struct.pack('>c%dx' % (~c & 63), '\x80'), self._h)))
+
+  def hexdigest(self):
+    return self.digest().encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer = self._buffer
+    other._counter = self._counter
+    other._h = self._h
+    return other
+
+
+has_sha1_hashlib = has_sha1_openssl_hashlib = False
+try:
+  __import__('hashlib').sha1
+  has_sha1_hashlib = True
+  has_sha1_openssl_hashlib = __import__('hashlib').sha1.__name__.startswith('openssl_')
+except (ImportError, AttributeError):
+  pass
+has_sha1_pycrypto = False
+try:
+  __import__('Crypto.Hash._SHA512')
+  has_sha1_pycrypto = True
+  sys.modules['Crypto.Hash._SHA512'].new
+except (ImportError, AttributeError):
+  pass
+has_sha1_sha = False
+try:
+  __import__('sha')
+  sys.modules['sha'].sha
+  has_sha1_sha = True
+except (ImportError, AttributeError):
+  pass
+if has_sha1_openssl_hashlib:  # Fastest.
+  sha1 = sys.modules['hashlib'].sha1
+elif has_sha1_pycrypto:
+  # Faster than: Crypto.Hash.SHA512.SHA512Hash
+  sha1 = sys.modules['Crypto.Hash._SHA512'].new
+elif has_sha1_hashlib:
+  sha1 = sys.modules['hashlib'].sha1
+elif has_sha1_sha:
+  sha1 = sys.modules['sha'].sha
+else:
+  #raise ImportError(
+  #    'Cannot find SHA1 implementation: install sha, hashlib or pycrypto.')
+  sha1 = SlowSha1
+
 # ---
 
 # Helpers for do_hmac.

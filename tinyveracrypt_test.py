@@ -16,6 +16,15 @@ def benchmark_aes(new_aes):
     assert aes_obj.decrypt(';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5') == 'FooBarBa' * 2
 
 
+def benchmark_sha1():
+  sha1 = tinyveracrypt.sha1
+  for i in xrange(200):
+    sha1_obj = sha1(str(i))
+    for j in xrange(200):
+      sha1_obj.update(i * str(j))
+    sha1_obj.digest()
+
+
 def test_aes():
   aes_obj = tinyveracrypt.new_aes('Noob' * 4)  # AES-128.
   assert aes_obj.encrypt('FooBarBa' * 2) == '9h\x82\xfd\x846\x0b\xb6(\x9a1\xe1~\x1ar\xcd'
@@ -42,6 +51,20 @@ def test_sha512():
   assert tinyveracrypt.sha512(data).hexdigest() == 'bc15f07c1ab628c580128318a6349e242c0f6d2388f008709960f24bcd079f3229e4e7c07abf41649b8dc84b1439c36dfe848378422b24ac6a028f65b9de6049'
   assert tinyveracrypt.sha512(data[1:]).hexdigest() == '0b9e646aa4b3f8d8745c914eaf4fa10e7be6357043bc8504426c6d04971356e5bd068dbdb19d2e30061e49089d8ef0d97cc2ea1831a9c841507d234ba11d2f40'
   assert tinyveracrypt.sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
+
+
+def test_sha1():
+  assert tinyveracrypt.sha1('foobar').digest() == '\x88C\xd7\xf9$\x16!\x1d\xe9\xeb\xb9c\xffL\xe2\x81%\x93(x'
+  assert tinyveracrypt.sha1('Foobar! ' * 14).digest() == '\x14JM\x7f\xb2\xf6\xfc&\xc1\xfdG\x1c\xcc\xe5t%\xd3\x1b\x1c\\'
+  d = tinyveracrypt.sha1('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == ".\xfc\x12Pm\xf1\x88\x81l\xd3\x15\xffZ\xcd'\xc8<\xa9M\xd4"
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert tinyveracrypt.sha1(data).hexdigest() == '256e19c0b3e3e17e2fa6c725f0300c4ecd7716df'
+  assert tinyveracrypt.sha1(data[1:]).hexdigest() == '0e44b2fa9525d349ee2f40f4191a200100451c35'
+  assert tinyveracrypt.sha1('?' + data).hexdigest(), 'cae6f1534687dfc3033fa9c494b5e6c80efa61ec'
 
 
 def test_crypt_aes_xts():
@@ -111,6 +134,7 @@ def test_veracrypt():
 def test():
   test_aes()
   test_sha512()
+  test_sha1()
   test_crypt_aes_xts()
   test_veracrypt()
 
@@ -125,20 +149,28 @@ def test_slow():
 
 
 if __name__ == '__main__':
-  if len(sys.argv) > 1 and sys.argv[1] == '--slow-aes':
-    tinyveracrypt.new_aes = tinyveracrypt.SlowAes
-    del sys.argv[1]
-  if len(sys.argv) > 1 and sys.argv[1] == '--slow-sha512':
-    tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
-    del sys.argv[1]
-  if len(sys.argv) > 1 and sys.argv[1] == '--benchmark-slow-aes':
+  i = 1
+  while i < len(sys.argv):
+    arg = sys.argv[i]
+    if arg == '--slow-aes':
+      tinyveracrypt.new_aes = tinyveracrypt.SlowAes
+    elif arg == '--slow-sha512':
+      tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
+    elif arg == '--slow-sha1':
+      tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
+    else:
+      break
+    i += 1
+  if len(sys.argv) > i and sys.argv[i] == '--benchmark-slow-aes':
     benchmark_aes(new_aes=tinyveracrypt.SlowAes)
-  elif len(sys.argv) > 1 and sys.argv[1] == '--benchmark-aes':
+  elif len(sys.argv) > i and sys.argv[i] == '--benchmark-aes':
     benchmark_aes(new_aes=tinyveracrypt.new_aes)
-  elif len(sys.argv) > 1 and sys.argv[1].startswith('-'):
-    sys.exit('unknown flag: %s' % sys.argv[1])
+  elif len(sys.argv) > i and sys.argv[i] == '--benchmark-sha1':
+    benchmark_sha1()
+  elif len(sys.argv) > i and sys.argv[i].startswith('-'):
+    sys.exit('fatal: unknown flag: %s' % sys.argv[1])
   else:
     test()
-    if len(sys.argv) > 1:
+    if len(sys.argv) > i:
       test_slow()
     print __file__, ' OK.'
