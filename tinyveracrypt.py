@@ -232,7 +232,7 @@ class SlowAes(object):
     def encrypt(self, plaintext):
       Ke, S, T1, T2, T3, T4 = self.Ke, self.S, self.T1, self.T2, self.T3, self.T4
       if len(plaintext) != 16:
-        raise ValueError('wrong block length, expected 16, got ' + str(len(plaintext)))
+        raise ValueError('Wrong block length, expected 16, got: ' + str(len(plaintext)))
       ROUNDS = len(Ke) - 1
       t = struct.unpack('>LLLL', plaintext)
       Ker = Ke[0]
@@ -246,7 +246,7 @@ class SlowAes(object):
     def decrypt(self, ciphertext):
       Kd, Si, T5, T6, T7, T8 = self.Kd, self.Si, self.T5, self.T6, self.T7, self.T8
       if len(ciphertext) != 16:
-        raise ValueError('wrong block length, expected 16, got ' + str(len(plaintext)))
+        raise ValueError('Wrong block length, expected 16, got: ' + str(len(plaintext)))
       ROUNDS = len(Kd) - 1
       t = struct.unpack('>LLLL', ciphertext)
       Kdr = Kd[0]
@@ -310,7 +310,7 @@ def check_aes_xts_key(aes_xts_key):
 # slow, but it's not a problem, because we have to encrypt only 512 bytes
 # per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
 # other C crypto libraries with Python bindings don't support AES XTS.
-def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
+def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_crypt=None):
   check_aes_xts_key(aes_xts_key)
   if len(data) < 16 and len(data) > 0:
     # TODO(pts): Is there a meaningful result for these short inputs?
@@ -338,8 +338,10 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   #     return cipher.decrypt(data)
 
   pack, do_decrypt = struct.pack, not do_encrypt
-  codebook1 = new_aes(aes_xts_key[:32])
-  codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
+  if codebook1_crypt is None:
+    codebook1 = new_aes(aes_xts_key[:32])
+    codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
+    del codebook1
 
   # sector_idx is LSB-first for aes-xts-plain64, see
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
@@ -378,6 +380,25 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
 
   # TODO(pts): Use even less memory by using an array.array('B', ...).
   return ''.join(yield_crypt_blocks(t))
+
+
+def crypt_aes_xts_sectors(aes_xts_key, data, do_encrypt, sector_idx=0):
+  check_aes_xts_key(aes_xts_key)
+  codebook1 = new_aes(aes_xts_key[:32])
+  codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[not do_encrypt]
+  del codebook1
+
+  def yield_crypt_sectors(sector_idx):
+    i = 0
+    while i < len(data):
+      if len(data) - i < 16:
+        yield crypt_aes_xts(aes_xts_key, data[i:] + '\0' * (16 - (len(data) - i)), do_encrypt, 0, sector_idx, codebook1_crypt)
+      else:
+        yield crypt_aes_xts(aes_xts_key, data[i : i + 512], do_encrypt, 0, sector_idx, codebook1_crypt)
+      sector_idx += 1
+      i += 512
+
+  return ''.join(yield_crypt_sectors(sector_idx))
 
 
 # --- SHA-512 hash (message digest).
