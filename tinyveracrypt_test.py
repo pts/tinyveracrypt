@@ -37,6 +37,11 @@ def test_sha512():
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == '\xc6\xd2\xec\x86\xfe\xaa\xff\xecJ\xc9w)\xfe\xe6\xff\xe5\\\x9fl\xc3~\xc2\x88\xdd\xb2G\xb0j\x8dM\xe2\xf6\xd5\xccv\xafY\xd57;T\xf0|m\xfeBGT\x90\xa0\xd4\xab\x060\xf5\x11!\xa3\xdbkV\x05\x98O'
+  data = 'HelloWorld! ' * 20
+  assert len(data) == 128 + 112  # On the % 128 < 112 boundary.
+  assert tinyveracrypt.sha512(data).hexdigest() == 'bc15f07c1ab628c580128318a6349e242c0f6d2388f008709960f24bcd079f3229e4e7c07abf41649b8dc84b1439c36dfe848378422b24ac6a028f65b9de6049'
+  assert tinyveracrypt.sha512(data[1:]).hexdigest() == '0b9e646aa4b3f8d8745c914eaf4fa10e7be6357043bc8504426c6d04971356e5bd068dbdb19d2e30061e49089d8ef0d97cc2ea1831a9c841507d234ba11d2f40'
+  assert tinyveracrypt.sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
 
 
 def test_crypt_aes_xts():
@@ -63,11 +68,7 @@ def test_crypt_aes_xts():
   assert crypt_aes_xts(HEADER_KEY, encstr5, False, sector_idx=(1 << 70) - 42) == decstr5
 
 
-def test():
-  test_aes()
-  test_sha512()
-  test_crypt_aes_xts()
-
+def test_veracrypt():
   check_full_dechd = tinyveracrypt.check_full_dechd
   build_dechd = tinyveracrypt.build_dechd
   parse_dechd = tinyveracrypt.parse_dechd
@@ -107,23 +108,37 @@ def test():
   print 'CHANGED', i
 
 
+def test():
+  test_aes()
+  test_sha512()
+  test_crypt_aes_xts()
+  test_veracrypt()
+
+
 def test_slow():
   print 'SLOW'
   sys.stdout.flush()
   passphrase = 'foo'
-  assert tinyveracrypt.build_header_key(passphrase, SALT) == HEADER_KEY  # Takes about 6..60 seconds.
+  # Runs PBKDIF2 with SHA-512 in 15000 iterations.
+  # Takes about 6..60 seconds.
+  assert tinyveracrypt.build_header_key(passphrase, SALT) == HEADER_KEY
 
 
 if __name__ == '__main__':
   if len(sys.argv) > 1 and sys.argv[1] == '--slow-aes':
     tinyveracrypt.new_aes = tinyveracrypt.SlowAes
     del sys.argv[1]
+  if len(sys.argv) > 1 and sys.argv[1] == '--slow-sha512':
+    tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
+    del sys.argv[1]
   if len(sys.argv) > 1 and sys.argv[1] == '--benchmark-slow-aes':
     benchmark_aes(new_aes=tinyveracrypt.SlowAes)
   elif len(sys.argv) > 1 and sys.argv[1] == '--benchmark-aes':
     benchmark_aes(new_aes=tinyveracrypt.new_aes)
+  elif len(sys.argv) > 1 and sys.argv[1].startswith('-'):
+    sys.exit('unknown flag: %s' % sys.argv[1])
   else:
     test()
     if len(sys.argv) > 1:
-      test_slow()  # Uses sha512.
+      test_slow()
     print __file__, ' OK.'
