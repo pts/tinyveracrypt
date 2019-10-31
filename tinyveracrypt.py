@@ -596,6 +596,7 @@ def check_decrypted_size(decrypted_size):
 
 
 def check_keytable(keytable):
+  # Same as check_as_xts_key.
   if len(keytable) != 64:
     raise ValueError('keytable must be 64 bytes, got: %d' % len(keytable))
 
@@ -629,7 +630,7 @@ def check_decrypted_ofs(decrypted_ofs):
   if decrypted_ofs < 0:
     # The value of 0 works with veracrypt.
     # Typical value is 0x20000 for non-hidden volumes.
-    raise ValueError('decrypted_size must be nonnegative, got: %d' % decrypted_ofs)
+    raise ValueError('decrypted_ofs must be nonnegative, got: %d' % decrypted_ofs)
   if decrypted_ofs & 511:
     raise ValueError('decrypted_ofs must be a multiple of 512, got: %d' % decrypted_ofs)
 
@@ -783,7 +784,9 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
     raise ValueError('Missing NUL padding after keytable.')
 
 
-def build_table(keytable, decrypted_size, decrypted_ofs, raw_device):
+def build_table(
+    keytable, decrypted_size, decrypted_ofs, raw_device,
+    opt_params=('allow_discards',)):
   check_keytable(keytable)
   check_decrypted_size(decrypted_size)
   if isinstance(raw_device, (list, tuple)):
@@ -791,14 +794,14 @@ def build_table(keytable, decrypted_size, decrypted_ofs, raw_device):
   cipher = 'aes-xts-plain64'
   iv_offset = offset = decrypted_ofs
   start_offset_on_logical = 0
-  opt_params = ('allow_discards',)
   if opt_params:
     opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
   else:
     opt_params_str = ''
+  target_type = 'crypt'
   # https://www.kernel.org/doc/Documentation/device-mapper/dm-crypt.txt
-  return '%d %d crypt %s %s %d %s %s%s\n' % (
-      start_offset_on_logical, decrypted_size >> 9,
+  return '%d %d %s %s %s %d %s %s%s\n' % (
+      start_offset_on_logical, decrypted_size >> 9, target_type,
       cipher, keytable.encode('hex'),
       iv_offset >> 9, raw_device, offset >> 9, opt_params_str)
 
