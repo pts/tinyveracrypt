@@ -3,7 +3,7 @@
 
 """mkluks_demo.py: half-written alternative of `cryptsetup luksFormat'"""
 
-import hashlib
+#import hashlib  # See below.
 import itertools
 import struct
 import sys
@@ -218,7 +218,7 @@ class SlowAes(object):
     def encrypt(self, plaintext):
       Ke, S, T1, T2, T3, T4 = self.Ke, self.S, self.T1, self.T2, self.T3, self.T4
       if len(plaintext) != 16:
-        raise ValueError('wrong block length, expected 16, got ' + str(len(plaintext)))
+        raise ValueError('Wrong block length, expected 16, got: ' + str(len(plaintext)))
       ROUNDS = len(Ke) - 1
       t = struct.unpack('>LLLL', plaintext)
       Ker = Ke[0]
@@ -232,7 +232,7 @@ class SlowAes(object):
     def decrypt(self, ciphertext):
       Kd, Si, T5, T6, T7, T8 = self.Kd, self.Si, self.T5, self.T6, self.T7, self.T8
       if len(ciphertext) != 16:
-        raise ValueError('wrong block length, expected 16, got ' + str(len(plaintext)))
+        raise ValueError('Wrong block length, expected 16, got: ' + str(len(plaintext)))
       ROUNDS = len(Kd) - 1
       t = struct.unpack('>LLLL', ciphertext)
       Kdr = Kd[0]
@@ -297,7 +297,7 @@ def check_aes_xts_key(aes_xts_key):
 #
 # For Linux dm-crypt aes-xts-plain64, sector size is 512 bytes, so
 # device_ofs == (sector_idx << 9).
-def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
+def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_crypt=None):
   check_aes_xts_key(aes_xts_key)
   if len(data) < 16 and len(data) > 0:
     # TODO(pts): Is there a meaningful result for these short inputs?
@@ -325,8 +325,10 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   #     return cipher.decrypt(data)
 
   pack, do_decrypt = struct.pack, not do_encrypt
-  codebook1 = new_aes(aes_xts_key[:32])
-  codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
+  if codebook1_crypt is None:
+    codebook1 = new_aes(aes_xts_key[:32])
+    codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
+    del codebook1
 
   # sector_idx is LSB-first for aes-xts-plain64, see
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
@@ -367,6 +369,25 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
   return ''.join(yield_crypt_blocks(t))
 
 
+def crypt_aes_xts_sectors(aes_xts_key, data, do_encrypt, sector_idx=0):
+  check_aes_xts_key(aes_xts_key)
+  codebook1 = new_aes(aes_xts_key[:32])
+  codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[not do_encrypt]
+  del codebook1
+
+  def yield_crypt_sectors(sector_idx):
+    i = 0
+    while i < len(data):
+      if len(data) - i < 16:
+        yield crypt_aes_xts(aes_xts_key, data[i:] + '\0' * (16 - (len(data) - i)), do_encrypt, 0, sector_idx, codebook1_crypt)
+      else:
+        yield crypt_aes_xts(aes_xts_key, data[i : i + 512], do_encrypt, 0, sector_idx, codebook1_crypt)
+      sector_idx += 1
+      i += 512
+
+  return ''.join(yield_crypt_sectors(sector_idx))
+
+
 class UsageError(SystemExit):
   """Raised when there is a problem in the command-line."""
 
@@ -403,6 +424,14 @@ def check_keytable(keytable):
   # Same as check_as_xts_key.
   if len(keytable) != 64:
     raise ValueError('keytable must be 64 bytes, got: %d' % len(keytable))
+
+
+sha512 = __import__('hashlib').sha512
+
+sha1 = __import__('hashlib').sha1
+
+
+# ---
 
 
 def check_luks_decrypted_size(decrypted_size):
@@ -451,9 +480,6 @@ def check_luks_key_material_ofs(key_material_ofs):
     raise ValueError('key_material_ofs must be a multiple of 512, got: %d' % key_material_ofs)
 
 
-# ---
-
-
 def get_iterations(pim, is_truecrypt=False):
   if pim:
     return 15000 + 1000 * pim
@@ -488,9 +514,68 @@ def check_luks_slot_salt(slot_salt):
                      len(slot_salt))
 
 
+def luks_af_hash_h1(data, output_size, digest_cons):
+  if output_size <= 0:
+    raise ValueError('af_hash_h1 output_size must be at least 1, got: %d' %
+                     output_size)
+  digest_size = len(digest_cons().digest())
+  assert digest_size > 0
+  output = [digest_cons('\0\0\0\0' + data[:digest_size]).digest()]
+  for i in xrange(digest_size, output_size, digest_size):
+    output.append(digest_cons(struct.pack('>L', i // digest_size) + data[i : i + digest_size]).digest())
+  i = output_size % digest_size
+  if i:
+    output[-1] = output[-1][:i]
+  return ''.join(output)
+
+
+def check_stripe_count(stripe_count):
+  if stripe_count <= 0:
+    raise ValueError('luks_af_split stripe_count must be at least 1, got: %d' %
+                     stripe_count)
+
+
+def luks_af_split(data, stripe_count, digest_cons, random_data=None):
+  """Returns an anti-forensic multiplication of data by stripe_count."""
+  check_stripe_count(stripe_count)
+  if not data or stripe_count == 1:  # Shortcut.
+    return str(data)
+  size = len(data)
+  d, strxor = '\0' * size, make_strxor(size)
+  random_data_size = (stripe_count - 1) * size
+  if random_data:
+    if len(random_data) < random_data_size:
+      raise ValueError('luks_af_split random_data must be %d bytes, got: %d' %
+                       (random_data_size, len(random_data)))
+  else:
+    random_data = get_random_bytes(random_data_size)
+  for n in xrange(0, random_data_size, size):
+    d = luks_af_hash_h1(strxor(d, random_data[n : n + size]), size, digest_cons)
+    assert len(d) == size, (len(d), size)
+  # Of size len(data) * stripe_count.
+  return random_data[:random_data_size] + strxor(d, data)
+
+
+def luks_af_join(data, stripe_count, digest_cons):
+  check_stripe_count(stripe_count)
+  if not data or stripe_count == 1:  # Shortcut.
+    return str(data)
+  if len(data) % stripe_count:
+    raise ValueError('luks_af_join data size must be divisble by stripe_count=%d, got: %d' %
+                     (stripe_count, len(data)))
+  size = len(data) // stripe_count
+  d, strxor = '\0' * size, make_strxor(size)
+  for n in xrange(0, len(data) - size, size):
+    d = luks_af_hash_h1(strxor(d, data[n : n + size]), size, digest_cons)
+    assert len(d) == size, (len(d), size)
+  return strxor(d, data[-size:])
+
+
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
-    digest_cons, digest_blocksize, key_material_ofs):
+    digest_cons, digest_blocksize, key_material_ofs, stripe_count,
+    af_salt=None):
+  check_keytable(keytable)
   check_luks_key_material_ofs(key_material_ofs)
   if not slot_salt:
     slot_salt = get_random_bytes(32)
@@ -499,14 +584,16 @@ def build_luks_active_key_slot(
   # If there is any invalid keyslot, then
   # `sudo /sbin/cryptsetup luksOpen mkluks_demo.bin foo --debug' will fail
   # without considering other keyslots.
-  stripe_count = 1  # Number of anti-forensic stripes.
-  split_key = keytable  # AFsplit output for stripe_count=1.
+  split_key = luks_af_split(keytable, stripe_count, digest_cons, af_salt)
+  key_material_size = len(keytable) * stripe_count
+  assert len(split_key) == key_material_size
+  assert luks_af_join(split_key, stripe_count, digest_cons) == keytable
   aes_xts_key_size = 64
   header_key = pbkdf2(
       passphrase, slot_salt, aes_xts_key_size, slot_iterations, digest_cons,
       digest_blocksize)
-  key_material = crypt_aes_xts(header_key, split_key, do_encrypt=True)
-  assert len(key_material) == 64
+  key_material = crypt_aes_xts_sectors(header_key, split_key, do_encrypt=True)
+  assert len(key_material) == key_material_size
   key_slot_data = struct.pack(
       '>LL32sLL', active_tag, slot_iterations, slot_salt, key_material_ofs >> 9,
       stripe_count)
@@ -526,7 +613,8 @@ def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
 def build_luks_header(
     passphrase, decrypted_ofs=4096, keytable_salt=None,
     uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
-    cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None):
+    cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
+    af_stripe_count=1, af_salt=None):
   """Builds a LUKS1 header.
 
   Similar to `cryptsetup luksFormat', with the following differences:
@@ -542,6 +630,10 @@ def build_luks_header(
   * Doesn't try to autodetect iteration count based on CPU speed.
   * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
     strong, randomly generated password of at least 64 bytes of entropy.
+  * It's more configurable (e.g. decrypted_ofs and af_stripe_count).
+  * The default for af_stripe_count is smaller than the 4000 of
+    `cryptsetup luksFormat'.
+  * `cryptsetup luksAddKey' will fail if af_stripe_count < 4000 (default).
 
   Returns:
     String containing the LUKS1 partition header (phdr) and the key material.
@@ -550,10 +642,21 @@ def build_luks_header(
   """
   # Based on https://gitlab.com/cryptsetup/cryptsetup/blob/master/docs/on-disk-format.pdf
   # version 1.2.3.
+  if cipher == 'aes-xts-plain64':
+    cipher_name, cipher_mode, keytable_size = 'aes', 'xts-plain64', 64
+  else:
+    raise ValueError('Unsupported LUKS cipher: %s' % cipher)
+  key_material_sector_count = (af_stripe_count * keytable_size + 511) >> 9
+  if decrypted_ofs is None:
+    # Make room for all 8 key slots.
+    decrypted_ofs = (2 + 8 * key_material_sector_count) << 9
   check_luks_decrypted_ofs(decrypted_ofs)
+
   # 6 slots for the default decrypted_ofs == 4096.
-  slot_count = min(8, (decrypted_ofs >> 9) - 2)
-  assert slot_count > 0
+  slot_count = min(8, ((decrypted_ofs >> 9) - 2) // key_material_sector_count)
+  if slot_count <= 0:
+    raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
+                     ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
   if isinstance(passphrase, str):
     passphrases = (passphrase,)
   else:
@@ -561,12 +664,13 @@ def build_luks_header(
   if not passphrases:
     # `cryptsetup luksDump' allows it, but there is no way to recover keytable
     # in this situation.
-    raise ValueError('missing LUKS passphrases')
+    raise ValueError('Missing LUKS passphrases.')
   if len(passphrases) > slot_count:
-    if slot_count < 8:
-      raise ValueError('too many LUKS passphrases, increase decrypted_ofs by %d' % ((len(passphrases) - slot_count) << 9))
+    if len(passphrases) <= 8 and slot_count < 8:
+      raise ValueError('Too many LUKS passphrases, increase decrypted_ofs to %d or decrease af_stripe_count.' %
+                       ((2 + len(passphrases) * key_material_sector_count) << 9))
     else:
-      raise ValueError('LUKS passphrase count must be at most 8, got: %d' % len(passphrases))
+      raise ValueError('LUKS passphrase count must be at most %d, got: %d' % (slot_count, len(passphrases)))
   if not uuid_str:
     uuid_str = get_random_bytes(16).encode('hex')
     uuid_str = '-'.join((  # Add the dashes.
@@ -582,20 +686,16 @@ def build_luks_header(
   if keytable_iterations is None:
     keytable_iterations = get_iterations(pim)
   elif pim:
-    raise ValueError('both pim= and keytable_iterations= are specified')
+    raise ValueError('Both pim= and keytable_iterations= are specified.')
   check_iterations(keytable_iterations)
   if slot_iterations is None:
     slot_iterations = get_iterations(pim)  # TODO(pts): Halven it?
   elif pim:
-    raise ValueError('both pim= and slot_iterations= are specified')
+    raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
   if not keytable_salt:
     keytable_salt = get_random_bytes(32)
   check_luks_keytable_salt(keytable_salt)
-  if cipher == 'aes-xts-plain64':
-    cipher_name, cipher_mode, keytable_size = 'aes', 'xts-plain64', 64
-  else:
-    raise ValueError('unsupported LUKS cipher: %s' % cipher)
   if not keytable:
     keytable = get_random_bytes(keytable_size)
   elif len(keytable) != keytable_size:
@@ -604,9 +704,11 @@ def build_luks_header(
                      (keytable_size, len(keytable)))
   hash = hash.lower().replace('-', '')
   if hash == 'sha512':
-    digest_cons, digest_blocksize = hashlib.sha512, 128
+    digest_cons, digest_blocksize = sha512, 128
+  elif hash == 'sha1':
+    digest_cons, digest_blocksize = sha1, 64
   else:
-    raise ValueError('unsupported LUKS hash: %s' % hash)
+    raise ValueError('Unsupported LUKS hash: %s' % hash)
 
   magic = 'LUKS\xba\xbe'
   version = 1
@@ -619,25 +721,31 @@ def build_luks_header(
       magic, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
       keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str)]
   key_materials = []
-  maximum_key_material_ofs = min(4608, decrypted_ofs - 512)
+  if slot_count < 8:
+    sys.stderr.write('warning: only %d of 8 slots are usable, increase decrypted_ofs to %d or decrease af_stripe_count to %d to get all\n' %
+                     (slot_count, (2 + 8 * key_material_sector_count) << 9, ((decrypted_ofs - 1024) >> 12 << 9) // keytable_size))
   for i in xrange(8):
-    key_material_ofs = min((2 + i) << 9, maximum_key_material_ofs)
+    key_material_ofs = (2 + min(i, slot_count - 1) * key_material_sector_count) << 9
     if i < len(passphrases):
       # Let build_luks_active_key_slot generate random slot_salt values if
       # needed.
       key_slot_data, key_material = build_luks_active_key_slot(
           slot_iterations, slot_salt, keytable, passphrases[i],
-          digest_cons, digest_blocksize, key_material_ofs)
-      assert 1 <= len(key_material) <= 512
+          digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
+          af_salt)
+      assert key_material
+      key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
+      assert key_material_padding_size >= 0
       assert len(key_slot_data) == 48
       output.append(key_slot_data)
-      key_materials.append(struct.pack('>512s', key_material))
+      key_materials.append(key_material)
+      key_materials.append('\0' * key_material_padding_size)
       del key_slot_data, key_material
     else:
       output.append(build_luks_inactive_key_slot(
           slot_iterations, key_material_ofs))
       if i < slot_count:
-        key_materials.append('\0' * 512)
+        key_materials.append('\0' * (key_material_sector_count << 9))
   output.append('\0' * 432)
   output.extend(key_materials)
   result = ''.join(output)
@@ -670,13 +778,17 @@ def build_luks_table(
 
 
 def main(argv):
+  # Command with similar output: /sbin/cryptsetup luksFormat --batch-mode --cipher=aes-xts-plain64 --hash=sha1 --use-urandom mkluks_demo.bin
   size = 2066432
   check_luks_size(size)
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
   keytable = ''.join(map(chr, xrange(3, 67)))
   header = build_luks_header(
-      #passphrase=(TEST_PASSPHRASE, 'abc'),
+      passphrase=(TEST_PASSPHRASE, 'abc'),
       #pim=-14,
+      #hash='sha1',
+      af_salt='xyzAB' * 4000,
+      af_stripe_count=13,
       decrypted_ofs=decrypted_ofs,
       uuid_str='40bf7c9f-12a6-403f-81da-c4bd2183b74a',
       keytable_iterations=2, slot_iterations=3, # pim=-14,
@@ -689,12 +801,8 @@ def main(argv):
   payload1 = crypt_aes_xts(keytable, 'World!_ ' * 64, do_encrypt=True, sector_idx=1)
   payload2 = 'P' * (size - decrypted_ofs - len(payload0) - len(payload1))
   # Accepted by: ./mkluks_demo.py && /sbin/cryptsetup luksDump --debug mkluks_demo.bin
-  # Keys are specified randomly though, see ``Figure 5: Pseudo code for
-  # master key recovery'' in
-  # http://clemens.endorphin.org/LUKS-on-disk-format.pdf on doing it properly.
   open('mkluks_demo.bin', 'w+b').write(
       ''.join((header, header_padding, payload0, payload1, payload2)))
-  # /sbin/cryptsetup luksDump mkluks_demo.bin
   sys.stdout.write(build_luks_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0'))
 
 
