@@ -2569,6 +2569,46 @@ def cmd_mount(args):
         pass
 
 
+def cmd_close(args):
+  # This function is Linux-only.
+
+  if not args:
+    raise UsageError('missing dmsetup table <name> for the encrypted volume')
+  setup_path_for_dmsetup()
+  # TODO(pts): Run ioctl(2) manually instead of dmsetup(8).
+  #            Do we need to notify udev?
+  #            Which dm-crypt version should we use (4, 3, 2 or 1)?
+  #            Where does the event_nr below come from?
+  #            Why are the sem...(...) calls done?
+  #            Why is /run/udev/control access(2)ed?
+  #
+  # --noudevsync
+  # Command not supported. Recompile with "--enable-udev-sync" to enable.
+  # Cookie value is not set while trying to call DM_DEVICE_RESUME, DM_DEVICE_REMOVE or DM_DEVICE_RENAME ioctl. Please, consider using libdevmapper's udev synchronisation interface or disable it explicitly by calling dm_udev_set_sync_support(0)
+  #
+  # ioctl(5, DM_DEV_CREATE, {version=4.0.0, data_size=16384, name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", flags=DM_EXISTS_FLAG} => {version=4.35.0, data_size=305, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=0, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG}) = 0
+  # ioctl(5, DM_TABLE_LOAD, {version=4.0.0, data_size=16384, data_start=312, name="testvol", target_count=1, flags=DM_EXISTS_FLAG|DM_SECURE_DATA_FLAG, {sector_start=0, length=4028, target_type="crypt", string="aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 /dev/loop0 8"}} => {version=4.35.0, data_size=305, data_start=312, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=0, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG|DM_INACTIVE_PRESENT_FLAG}) = 0
+  # ioctl(5, DM_DEV_SUSPEND, {version=4.0.0, data_size=16384, name="testvol", event_nr=4210181, flags=DM_EXISTS_FLAG|DM_SECURE_DATA_FLAG} => {version=4.35.0, data_size=305, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=1, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG|DM_ACTIVE_PRESENT_FLAG|DM_UEVENT_GENERATED_FLAG}) = 0
+  #
+  # ioctl(3, DM_DEV_REMOVE, {version=4.0.0, data_size=16384, name="testvol", event_nr=6312172, flags=DM_EXISTS_FLAG} => {version=4.35.0, data_size=305, name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", flags=DM_EXISTS_FLAG|DM_UEVENT_GENERATED_FLAG}) = 0
+  #
+  # access("/run/udev/control", F_OK) = 0  # This is a socket.
+  # semctl(0, 0, SEM_INFO, 0x7ffe330c3f50) = 0
+  # semget(0xd4d3e05, 1, IPC_CREAT|IPC_EXCL|0600) = 3473408
+  # semctl(3473408, 0, SETVAL, 0x1)   = 0
+  # semctl(3473408, 0, GETVAL, 0x7f7f1b4183aa) = 1
+  # semop(3473408, [{0, 1, 0}], 1)    = 0
+  # semctl(3473408, 0, GETVAL, 0x7f7f1b418347) = 2
+  # semget(0xd4d3e05, 1, 000)         = 3473408
+  # semctl(3473408, 0, GETVAL, 0x7f7f1b418377) = 2
+  # semop(3473408, [{0, -1, IPC_NOWAIT}], 1) = 0
+  # semop(3473408, [{0, 0, 0}], 1)    = 0
+  # semctl(3473408, 0, IPC_RMID, 0)   = 0
+  run_and_write_stdin(('dmsetup', 'remove') + tuple(args), '', is_dmsetup=True)
+  # TODO(pts): If the encrypted volume was created on /dev/loop/... without
+  # autoclear, then run `losetup -d'.
+
+
 def cmd_open_table(args):
   # This function is Linux-only.
   import subprocess
@@ -3221,7 +3261,9 @@ def main(argv):
     cmd_mount(args)
   elif command == 'open-table':
     cmd_open_table(argv[2:])
-  # !! add 'close' and 'remove' (`cryptsetup close' and `dmsetup remove')
+  elif command in ('close', 'remove'):
+    # Emulates: `cryptsetup close <device>' and `dmsetup remove <device>'.
+    cmd_close(argv[2:])
   # !! add `tcryptDump' (`cryptsetup tcryptDump')
   elif command == 'create':  # For compatibility with `veracrypt --create'.
     # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
