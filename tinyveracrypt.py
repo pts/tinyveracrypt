@@ -313,7 +313,9 @@ def check_aes_xts_key(aes_xts_key):
 def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_crypt=None):
   check_aes_xts_key(aes_xts_key)
   if len(data) < 16 and len(data) > 0:
-    # TODO(pts): Is there a meaningful result for these short inputs?
+    # AES XTS is explicity not defined for 1..15 bytes of input, see
+    # `assert(N >= AES_BLK_BYTES)' in IEEE P1619/D16
+    # (http://libeccio.di.unisa.it/Crypto14/Lab/p1619.pdf).
     raise ValueError('At least one block of 128 bits needs to be supplied.')
   if len(data) >> 27:
     raise ValueError('data too long.')  # This is an implementation limitation.
@@ -2110,10 +2112,13 @@ def get_luks_keytable(f, passphrase):
   for slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt in active_slots:
     f.seek(slot_key_material_sector_idx << 9)
     slot_key_material_size = slot_stripe_count * keytable_size
+    # Such a modulo would make decrypting with crypt_aes_xts_sectors raise a
+    # ValueError, because crypt_aes_xts is not defined for such sizes.
+    # However, it never happens here, because keytable_size is a multiple of 32.
+    assert not 0 < (slot_key_material_size & 511) < 16
     slot_key_material = f.read(slot_key_material_size)
     if len(slot_key_material) < slot_key_material_size:
       raise ValueError('EOF in slot %d key material on raw device.' % slot_idx)
-    assert not 0 < (slot_key_material_size & 511) < 16  # !!! fix crypto
     slot_header_key = pbkdf2(  # Slow.
         passphrase, slot_salt, keytable_size, slot_iterations, digest_cons,
         digest_blocksize)
