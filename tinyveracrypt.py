@@ -1309,6 +1309,9 @@ class IncorrectPassphraseError(ValueError):
 
 
 # From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
+# Please note that tcrypt.c tries multiple ciphers: ('aes-xts-plain64',
+# 'serpent-xts-plain64', 'twofish-xts-plain64', ...) (29 in total),
+# we support only the first one.
 SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
     (0, 0, 'pbkdf2', 'ripemd160', 2000),
     (0, 0, 'pbkdf2', 'ripemd160', 1000),
@@ -1966,20 +1969,6 @@ def check_luks_key_material_ofs(key_material_ofs):
     raise ValueError('key_material_ofs must be a multiple of 512, got: %d' % key_material_ofs)
 
 
-def get_iterations(pim, is_truecrypt=False):
-  if pim:
-    return 15000 + 1000 * pim
-  elif is_truecrypt:
-    # TrueCrypt 5.0 SHA-512 has 1000 iterations (corresponding to --pim=-14),
-    # see: https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
-    return 1000
-  else:
-    # --pim=485 corresponds to iterations=500000
-    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
-    # for --hash=sha512 iterations == 15000 + 1000 * pim).
-    return 500000
-
-
 def check_iterations(iterations):
   if not isinstance(iterations, (int, long)):
     raise TypeError
@@ -2176,7 +2165,9 @@ def build_luks_header(
     raise ValueError('Both pim= and keytable_iterations= are specified.')
   check_iterations(keytable_iterations)
   if slot_iterations is None:
-    slot_iterations = get_iterations(pim)  # TODO(pts): Halven it?
+    # TODO(pts): Halven  both keytable_iterations and slot_iterations?
+    # What is the ratio by `cryptsetup luksFormat'?
+    slot_iterations = get_iterations(pim)
   elif pim:
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
