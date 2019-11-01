@@ -1050,27 +1050,6 @@ class IncorrectPassphraseError(ValueError):
   passphrase."""
 
 
-def is_luks1(enchd):
-  if not enchd.startswith('LUKS\xba\xbe\0\1') or len(enchd) < 208:
-    return False
-  if enchd[8 : 9] == '\0':  # --fake-luks-uuid=...
-    return False
-  (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
-   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
-  ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(enchd, 0, 208))
-  decrypted_ofs = decrypted_sector_idx << 9
-  cipher_name = cipher_name.rstrip('\0')
-  cipher_mode = cipher_mode.rstrip('\0')
-  hash = hash.rstrip('\0')
-  uuid_str = uuid_str.rstrip('\0')
-  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid_str) <= 36):
-    return False
-  if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').isalnum():
-    return False
-  # It looks like enchd is a LUKS1 encrypted volume header.
-  return True
-
-
 # From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
 SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
     (0, 0, 'pbkdf2', 'ripemd160', 2000),
@@ -1709,6 +1688,445 @@ def parse_keytable_arg(arg):
   if len(value) != 64:
     raise UsageError('keytable must be 64 bytes: %s' % arg)
   return value
+
+
+# --- LUKS.
+
+
+def check_luks_decrypted_size(decrypted_size):
+  min_decrypted_size = 2066432 - 4096
+  if decrypted_size < min_decrypted_size:
+    raise ValueError('LUKS decrypted_size must be at least %d bytes, got: %d' %
+                     (min_decrypted_size, decrypted_size))
+  if decrypted_size & 511:
+    raise ValueError('LUKS decrypted_size must be divisible by 512, got: %d' %
+                     decrypted_size)
+
+
+def check_luks_size(size):
+  # `cryptsetup luksDump' and `cryptSetup open ... --type=luks' in
+  # cryptsetup-1.7.3 both report this error for <2MiB volumes:
+  # `LUKS requires at least 2066432 bytes.'.
+  min_size = 2066432
+  if size < min_size:
+    raise ValueError('LUKS size must be at least %d bytes, got: %d' %
+                     (min_size, size))
+  if size & 511:
+    raise ValueError('LUKS size must be divisible by 512, got: %d' % size)
+
+
+def check_luks_decrypted_ofs(decrypted_ofs):
+  if decrypted_ofs < 4096:
+    # In 512-byte sectors. Must be larger than key_material_offset, which is
+    # at least 2, so payload_offset must be at least 3, thus the encrypted
+    # LUKS1 payload is at least 1536 bytes smaller than the device, and the
+    # minimum size for a LUKS1 device is 2048 bytes.
+    #
+    # `cryptsetup luksDump' allows decrypted_ofs >= 1536, but
+    # `sudo cryptsetup open ... --type luks' requires decrypted_ofs >= 4096,
+    # and fails with
+    # `Reduced data offset is allowed only for detached LUKS header.' for
+    # cryptsetup-1.7.3 otherwise.
+    raise ValueError('decrypted_ofs must be at least 4096, got: %d' % decrypted_ofs)
+  if decrypted_ofs & 511:
+    raise ValueError('decrypted_ofs must be a multiple of 512, got: %d' % decrypted_ofs)
+
+
+def check_luks_key_material_ofs(key_material_ofs):
+  if key_material_ofs < 1024:
+    raise ValueError('key_material_ofs must be nonnegative, got: %d' % key_material_ofs)
+  if key_material_ofs & 511:
+    raise ValueError('key_material_ofs must be a multiple of 512, got: %d' % key_material_ofs)
+
+
+def get_iterations(pim, is_truecrypt=False):
+  if pim:
+    return 15000 + 1000 * pim
+  elif is_truecrypt:
+    # TrueCrypt 5.0 SHA-512 has 1000 iterations (corresponding to --pim=-14),
+    # see: https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
+    return 1000
+  else:
+    # --pim=485 corresponds to iterations=500000
+    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
+    # for --hash=sha512 iterations == 15000 + 1000 * pim).
+    return 500000
+
+
+def check_iterations(iterations):
+  if not isinstance(iterations, (int, long)):
+    raise TypeError
+  # LUKS allows 1 and above.
+  if iterations <= 0:
+    raise ValueError('iterations must be positive, got: %d' % iterations)
+
+
+def check_luks_keytable_salt(keytable_salt):
+  if len(keytable_salt) != 32:
+    raise ValueError('LUKS keytable_salt must be 32 bytes, got: %d' %
+                     len(keytable_salt))
+
+
+def check_luks_slot_salt(slot_salt):
+  if len(slot_salt) != 32:
+    raise ValueError('LUKS slot_salt must be 32 bytes, got: %d' %
+                     len(slot_salt))
+
+
+def luks_af_hash_h1(data, output_size, digest_cons):
+  if output_size <= 0:
+    raise ValueError('af_hash_h1 output_size must be at least 1, got: %d' %
+                     output_size)
+  digest_size = len(digest_cons().digest())
+  assert digest_size > 0
+  output = [digest_cons('\0\0\0\0' + data[:digest_size]).digest()]
+  for i in xrange(digest_size, output_size, digest_size):
+    output.append(digest_cons(struct.pack('>L', i // digest_size) + data[i : i + digest_size]).digest())
+  i = output_size % digest_size
+  if i:
+    output[-1] = output[-1][:i]
+  return ''.join(output)
+
+
+def check_stripe_count(stripe_count):
+  if stripe_count <= 0:
+    raise ValueError('luks_af_split stripe_count must be at least 1, got: %d' %
+                     stripe_count)
+
+
+def luks_af_split(data, stripe_count, digest_cons, random_data=None):
+  """Returns an anti-forensic multiplication of data by stripe_count."""
+  check_stripe_count(stripe_count)
+  if not data or stripe_count == 1:  # Shortcut.
+    return str(data)
+  size = len(data)
+  d, strxor = '\0' * size, make_strxor(size)
+  random_data_size = (stripe_count - 1) * size
+  if random_data:
+    if len(random_data) < random_data_size:
+      raise ValueError('luks_af_split random_data must be %d bytes, got: %d' %
+                       (random_data_size, len(random_data)))
+  else:
+    random_data = get_random_bytes(random_data_size)
+  for n in xrange(0, random_data_size, size):
+    d = luks_af_hash_h1(strxor(d, random_data[n : n + size]), size, digest_cons)
+    assert len(d) == size, (len(d), size)
+  # Of size len(data) * stripe_count.
+  return random_data[:random_data_size] + strxor(d, data)
+
+
+def luks_af_join(data, stripe_count, digest_cons):
+  check_stripe_count(stripe_count)
+  if not data or stripe_count == 1:  # Shortcut.
+    return str(data)
+  if len(data) % stripe_count:
+    raise ValueError('luks_af_join data size must be divisble by stripe_count=%d, got: %d' %
+                     (stripe_count, len(data)))
+  size = len(data) // stripe_count
+  d, strxor = '\0' * size, make_strxor(size)
+  for n in xrange(0, len(data) - size, size):
+    d = luks_af_hash_h1(strxor(d, data[n : n + size]), size, digest_cons)
+    assert len(d) == size, (len(d), size)
+  return strxor(d, data[-size:])
+
+
+def build_luks_active_key_slot(
+    slot_iterations, slot_salt, keytable, passphrase,
+    digest_cons, digest_blocksize, key_material_ofs, stripe_count,
+    af_salt=None):
+  check_keytable(keytable)
+  check_luks_key_material_ofs(key_material_ofs)
+  if not slot_salt:
+    slot_salt = get_random_bytes(32)
+  check_luks_slot_salt(slot_salt)
+  active_tag = 0xac71f3
+  # If there is any invalid keyslot, then
+  # `sudo /sbin/cryptsetup luksOpen mkluks_demo.bin foo --debug' will fail
+  # without considering other keyslots.
+  split_key = luks_af_split(keytable, stripe_count, digest_cons, af_salt)
+  key_material_size = len(keytable) * stripe_count
+  assert len(split_key) == key_material_size
+  assert luks_af_join(split_key, stripe_count, digest_cons) == keytable
+  aes_xts_key_size = 64
+  header_key = pbkdf2(  # Slow.
+      passphrase, slot_salt, aes_xts_key_size, slot_iterations, digest_cons,
+      digest_blocksize)
+  key_material = crypt_aes_xts_sectors(header_key, split_key, do_encrypt=True)
+  assert len(key_material) == key_material_size
+  key_slot_data = struct.pack(
+      '>LL32sLL', active_tag, slot_iterations, slot_salt, key_material_ofs >> 9,
+      stripe_count)
+  assert len(key_slot_data) == 48
+  return key_slot_data, key_material
+
+
+def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
+  check_luks_key_material_ofs(key_material_ofs)
+  inactive_stripe_count = 1
+  inactive_tag = 0xdead
+  return struct.pack(
+      '>LL32xLL', inactive_tag, slot_iterations, key_material_ofs >> 9,
+      inactive_stripe_count)
+
+
+def build_luks_header(
+    passphrase, decrypted_ofs=4096, keytable_salt=None,
+    uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
+    cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
+    af_stripe_count=1, af_salt=None):
+  """Builds a LUKS1 header.
+
+  Similar to `cryptsetup luksFormat', with the following differences:
+
+  * Anti-forensic stripe count is 1, to make the header shorter. (This also
+    provides no protection against forensic analysis after key slot removal.)
+  * By default (decrypted_ofs=4096), the header supports only 6 key slots
+    (instead of the `cryptsetup luksFormat' default of 8).
+    Specify decrypted_ofs=4608 for 7 key slots, or secrypted_ofs>=5120 for 8
+    key slots.
+  * Supports only --hash=sha512 and --cipher=aes-xts-plain64. The
+    `cryptsetup luksFormat' default is --hash=sha1 --cipher=aes-xts-plain64.
+  * Doesn't try to autodetect iteration count based on CPU speed.
+  * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
+    strong, randomly generated password of at least 64 bytes of entropy.
+  * It's more configurable (e.g. decrypted_ofs and af_stripe_count).
+  * The default for af_stripe_count is smaller than the 4000 of
+    `cryptsetup luksFormat'.
+  * `cryptsetup luksAddKey' will fail if af_stripe_count < 4000 (default).
+
+  Returns:
+    String containing the LUKS1 partition header (phdr) and the key material.
+    To open it, copy it to the beginning of a raw device, and use
+    `sudo cryptsetup open ... --type=luks'.
+  """
+  # Based on https://gitlab.com/cryptsetup/cryptsetup/blob/master/docs/on-disk-format.pdf
+  # version 1.2.3.
+  if cipher == 'aes-xts-plain64':
+    cipher_name, cipher_mode, keytable_size = 'aes', 'xts-plain64', 64
+  else:
+    raise ValueError('Unsupported LUKS cipher: %s' % cipher)
+  key_material_sector_count = (af_stripe_count * keytable_size + 511) >> 9
+  if decrypted_ofs is None:
+    # Make room for all 8 key slots.
+    decrypted_ofs = (2 + 8 * key_material_sector_count) << 9
+  check_luks_decrypted_ofs(decrypted_ofs)
+
+  # 6 slots for the default decrypted_ofs == 4096.
+  slot_count = min(8, ((decrypted_ofs >> 9) - 2) // key_material_sector_count)
+  if slot_count <= 0:
+    raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
+                     ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
+  if isinstance(passphrase, str):
+    passphrases = (passphrase,)
+  else:
+    passphrases = passphrase
+  if not passphrases:
+    # `cryptsetup luksDump' allows it, but there is no way to recover keytable
+    # in this situation.
+    raise ValueError('Missing LUKS passphrases.')
+  if len(passphrases) > slot_count:
+    if len(passphrases) <= 8 and slot_count < 8:
+      raise ValueError('Too many LUKS passphrases, increase decrypted_ofs to %d or decrease af_stripe_count.' %
+                       ((2 + len(passphrases) * key_material_sector_count) << 9))
+    else:
+      raise ValueError('LUKS passphrase count must be at most %d, got: %d' % (slot_count, len(passphrases)))
+  if not uuid_str:
+    uuid_str = get_random_bytes(16).encode('hex')
+    uuid_str = '-'.join((  # Add the dashes.
+        uuid_str[:8], uuid_str[8 : 12], uuid_str[12 : 16],
+        uuid_str[16 : 20], uuid_str[20:]))
+  # Any random 16 bytes will do, typically it looks like:
+  # '40bf7c9f-12a6-403f-81da-c4bd2183b74a'.
+  if '\0' in uuid_str:
+    raise ValueError('NUL not allowed in LUKS uuid: %r' % uuid_str)
+  if len(uuid_str) > 36:
+    raise ValueError(
+        'LUKS uuid must be at most 36 bytes: %r' % uuid_str)
+  if keytable_iterations is None:
+    keytable_iterations = get_iterations(pim)
+  elif pim:
+    raise ValueError('Both pim= and keytable_iterations= are specified.')
+  check_iterations(keytable_iterations)
+  if slot_iterations is None:
+    slot_iterations = get_iterations(pim)  # TODO(pts): Halven it?
+  elif pim:
+    raise ValueError('Both pim= and slot_iterations= are specified.')
+  check_iterations(slot_iterations)
+  if not keytable_salt:
+    keytable_salt = get_random_bytes(32)
+  check_luks_keytable_salt(keytable_salt)
+  if not keytable:
+    keytable = get_random_bytes(keytable_size)
+  elif len(keytable) != keytable_size:
+    # keytable is called ``master_key' by LUKS.
+    raise ValueError('keytable must be %d bytes, got %d' %
+                     (keytable_size, len(keytable)))
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
+
+  signature = 'LUKS\xba\xbe'
+  version = 1
+  mk_digest = pbkdf2(  # Slow.
+      keytable, keytable_salt, 20, keytable_iterations,
+      digest_cons, digest_blocksize)
+
+  output = [struct.pack(
+      '>6sH32s32s32sLL20s32sL40s',
+      signature, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
+      keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str)]
+  key_materials = []
+  if slot_count < 8:
+    sys.stderr.write('warning: only %d of 8 slots are usable, increase decrypted_ofs to %d or decrease af_stripe_count to %d to get all\n' %
+                     (slot_count, (2 + 8 * key_material_sector_count) << 9, ((decrypted_ofs - 1024) >> 12 << 9) // keytable_size))
+  for i in xrange(8):
+    key_material_ofs = (2 + min(i, slot_count - 1) * key_material_sector_count) << 9
+    if i < len(passphrases):
+      # Let build_luks_active_key_slot generate random slot_salt values if
+      # needed.
+      key_slot_data, key_material = build_luks_active_key_slot(
+          slot_iterations, slot_salt, keytable, passphrases[i],
+          digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
+          af_salt)
+      assert key_material
+      key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
+      assert key_material_padding_size >= 0
+      assert len(key_slot_data) == 48
+      output.append(key_slot_data)
+      key_materials.append(key_material)
+      key_materials.append('\0' * key_material_padding_size)
+      del key_slot_data, key_material
+    else:
+      output.append(build_luks_inactive_key_slot(
+          slot_iterations, key_material_ofs))
+      if i < slot_count:
+        key_materials.append('\0' * (key_material_sector_count << 9))
+  output.append('\0' * 432)
+  output.extend(key_materials)
+  result = ''.join(output)
+  assert not len(result) & 511
+  assert len(result) <= decrypted_ofs
+  return result
+
+
+def get_luks_keytable(f, passphrase):
+  """Returns (decrypted_ofs, keytable) or raises an exception."""
+  f.seek(0)
+  header = f.read(592)
+  if len(header) < 592:
+    raise ValueError('Too short for LUKS1.')
+  if not header.startswith('LUKS\xba\xbe\0\1'):
+    raise ValueError('LUKS1 signature not found.')
+  (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
+   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
+  ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(header, 0, 208))
+  decrypted_ofs = decrypted_sector_idx << 9
+  cipher_name = cipher_name.rstrip('\0')
+  cipher_mode = cipher_mode.rstrip('\0')
+  hash = hash.rstrip('\0')
+  uuid_str = uuid_str.rstrip('\0')
+  if cipher_name.lower() != 'aes':
+    raise ValueError('Unsupported cipher: %r' % cipher_name)
+  if cipher_mode.lower().replace('-', '') != 'xtsplain64':  # 'xts-plain64'.
+    raise ValueError('Unsupported cipher mode: %r' % cipher_mode)
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
+  # TODO(pts): Check decrypted_sector_idx >= ... like cryptsetup.
+  if keytable_size != 64:
+    raise ValueError('keytable_size must be 64 for aes-xts-plain64, got: %d' % keytable_size)
+  if decrypted_sector_idx < 3:  # `cryptsetup open' also checks this.
+    raise ValueError('decrypted_sector_idx must be at leasst 3, got: %d' % decrypted_sector_idx)
+  active_slots = []
+  for slot_idx in xrange(8):
+    slot_active_tag, slot_iterations, slot_salt, slot_key_material_sector_idx, slot_stripe_count = struct.unpack(
+        '>LL32sLL', buffer(header, 208 + 48 * slot_idx, 48))
+    if slot_active_tag == 0xac71f3:
+      # TODO(pts): Report slot_idx in error messages.
+      if not slot_iterations:
+        raise ValueError('slot_iterations must be at least 1, got: %d' % slot_iterations)
+      if not slot_stripe_count:
+        raise ValueError('slot_stripe_count must be at least 1, got: %d' % slot_stripe_count)
+      if slot_key_material_sector_idx < 2:  # `cryptsetup open' also checks this.
+        raise ValueError('slot_key_material_sextor_idx must be at least 2, got: %d' % slot_key_material_sector_idx)
+      slot_key_material_size = slot_stripe_count * keytable_size
+      minimum_decrypted_sector_idx = slot_key_material_sector_idx + ((slot_key_material_size + 511) >> 9)
+      if decrypted_sector_idx < minimum_decrypted_sector_idx:  # `cryptsetup open' also checks this.
+        raise ValueError('decrypted_sector_idx must be at least %d because of an active slot, got: %d' %
+                         (minimum_decrypted_sector_idx, decrypted_sector_idx))
+      active_slots.append((slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt))
+    elif slot_active_tag != 0xdead:
+      raise ValueError('Unknown slot_active_tag: 0x%x' % slot_active_tag)
+  if not active_slots:
+    raise ValueError('No active slots found, it\'s impossible to open the volume even with a correct password.')
+  print >>sys.stderr, 'info: found %d active slot%s' % (len(active_slots), 's' * (len(active_slots) != 1))
+  if passphrase is None:
+    passphrase = prompt_passphrase(False)
+  for slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt in active_slots:
+    f.seek(slot_key_material_sector_idx << 9)
+    slot_key_material_size = slot_stripe_count * keytable_size
+    slot_key_material = f.read(slot_key_material_size)
+    if len(slot_key_material) < slot_key_material_size:
+      raise ValueError('EOF in slot %d key material on raw device.' % slot_idx)
+    aes_xts_key_size = 64
+    slot_header_key = pbkdf2(  # Slow.
+        passphrase, slot_salt, aes_xts_key_size, slot_iterations, digest_cons,
+        digest_blocksize)
+    slot_split_key = crypt_aes_xts_sectors(slot_header_key, slot_key_material, do_encrypt=False)
+    slot_keytable = luks_af_join(slot_split_key, slot_stripe_count, digest_cons)
+    slot_mk_digest = pbkdf2(  # Slow.
+        slot_keytable, keytable_salt, 20, keytable_iterations,
+        digest_cons, digest_blocksize)
+    if slot_mk_digest == mk_digest:
+      print >>sys.stderr, 'info: passphrase correct for slot %d' % slot_idx
+      break
+    print >>sys.stderr, 'info: passphrase incorrect for slot %d' % slot_idx
+  else:
+    raise ValueError('Incorrect passphrase.')
+  f.seek(decrypted_ofs)
+  if len(f.read(512)) != 512:
+    raise ValueError('decrypted_ofs beyond end of raw device.')
+  return decrypted_ofs, slot_keytable
+
+
+def build_luks_table(
+    keytable, decrypted_size, decrypted_ofs, raw_device,
+    opt_params=('allow_discards',)):
+  # Return value has same syntax as of `dmsetup table --showkeys' and what
+  # `dmsetup create' expects.
+  # https://www.kernel.org/doc/Documentation/device-mapper/dm-crypt.txt
+  check_luks_decrypted_size(decrypted_size)
+  check_luks_decrypted_ofs(decrypted_ofs)
+  check_keytable(keytable)
+  start_offset_on_logical = 0
+  cipher = 'aes-xts-plain64'
+  target_type = 'crypt'
+  iv_offset = 0
+  if opt_params:
+    opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
+  else:
+    opt_params_str = ''
+  return '%d %d %s %s %s %d %s %s%s\n' % (
+      start_offset_on_logical, decrypted_size >> 9, target_type,
+      cipher, keytable.encode('hex'),
+      iv_offset >> 9, raw_device, decrypted_ofs >> 9, opt_params_str)
+
+
+def is_luks1(enchd):
+  if not enchd.startswith('LUKS\xba\xbe\0\1') or len(enchd) < 208:
+    return False
+  if enchd[8 : 9] == '\0':  # --fake-luks-uuid=...
+    return False
+  (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
+   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
+  ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(enchd, 0, 208))
+  decrypted_ofs = decrypted_sector_idx << 9
+  cipher_name = cipher_name.rstrip('\0')
+  cipher_mode = cipher_mode.rstrip('\0')
+  hash = hash.rstrip('\0')
+  uuid_str = uuid_str.rstrip('\0')
+  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid_str) <= 36):
+    return False
+  if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').isalnum():
+    return False
+  # It looks like enchd is a LUKS1 encrypted volume header.
+  return True
 
 
 # ---
