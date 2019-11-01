@@ -1173,7 +1173,7 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 
 def build_table(
-    keytable, decrypted_size, decrypted_ofs, raw_device, iv_offset,
+    keytable, decrypted_size, decrypted_ofs, raw_device, iv_offset, do_showkeys,
     opt_params=('allow_discards',)):
   check_aes_xts_key(keytable)
   check_decrypted_size(decrypted_size)
@@ -1187,6 +1187,8 @@ def build_table(
   else:
     opt_params_str = ''
   target_type = 'crypt'
+  if not do_showkeys:
+    keytable = '\0' * len(keytable)
   # https://www.kernel.org/doc/Documentation/device-mapper/dm-crypt.txt
   return '%d %d %s %s %s %d %s %s%s\n' % (
       start_offset_on_logical, decrypted_size >> 9, target_type,
@@ -1389,7 +1391,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
-def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash):
+def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys):
   luks_device_size = None
   f = open(device)
   try:
@@ -1411,7 +1413,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash):
   else:
     decrypted_size = luks_device_size - decrypted_ofs
     iv_offset = 0
-  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset)
+  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset, do_showkeys)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -2379,6 +2381,7 @@ def cmd_get_table(args):
 
   truecrypt_mode = 1
   pim = device = passphrase = hash = None
+  do_showkeys = False
 
   i, value = 0, None
   while i < len(args):
@@ -2405,6 +2408,10 @@ def cmd_get_table(args):
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg)
+    elif arg == '--showkeys':  # Similar to `dmsetup table --showkeys'.
+      do_showkeys = True
+    elif arg == '--no-showkeys':
+      do_showkeys = False
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -2421,7 +2428,7 @@ def cmd_get_table(args):
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
-  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash))
+  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=do_showkeys))
   sys.stdout.flush()
 
 
@@ -2601,7 +2608,7 @@ def cmd_mount(args):
       if not had_dmsetup:
         yield_dm_devices()  # Get a possible error about sudo before prompting.
       passphrase = prompt_passphrase(do_passphrase_twice=False)
-    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash)  # Slow.
+    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
     losetup_cleanup_device = None
   finally:
@@ -2758,7 +2765,7 @@ def cmd_open_table(args):
     decrypted_size = device_size - decrypted_ofs - end_ofs
     # TODO(pts): Support iv_offset=0 (for LUKS).
     iv_offset = decrypted_ofs
-    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset)
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset, True)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
     losetup_cleanup_device = None
   finally:
