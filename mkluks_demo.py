@@ -441,6 +441,17 @@ def prompt_passphrase(do_passphrase_twice):
   return passphrase
 
 
+def get_hash_digest_params(hash):
+  """Returns (digest_cons, digest_blocksize)."""
+  hash2 = hash.lower().replace('-', '')
+  if hash2 == 'sha512':
+    return sha512, 128
+  elif hash2 == 'sha1':
+    return sha1, 64
+  else:
+    raise ValueError('Unsupported hash: %s' % hash)
+
+
 sha512 = __import__('hashlib').sha512
 
 sha1 = __import__('hashlib').sha1
@@ -625,17 +636,6 @@ def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
       inactive_stripe_count)
 
 
-def get_luks_hash_digest_params(hash):
-  """Returns (digest_cons, digest_blocksize)."""
-  hash2 = hash.lower().replace('-', '')
-  if hash2 == 'sha512':
-    return sha512, 128
-  elif hash2 == 'sha1':
-    return sha1, 64
-  else:
-    raise ValueError('Unsupported LUKS hash: %s' % hash)
-
-
 def build_luks_header(
     passphrase, decrypted_ofs=4096, keytable_salt=None,
     uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
@@ -728,7 +728,7 @@ def build_luks_header(
     # keytable is called ``master_key' by LUKS.
     raise ValueError('keytable must be %d bytes, got %d' %
                      (keytable_size, len(keytable)))
-  digest_cons, digest_blocksize = get_luks_hash_digest_params(hash)
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
 
   signature = 'LUKS\xba\xbe'
   version = 1
@@ -794,7 +794,7 @@ def luks_open(f, passphrase):
     raise ValueError('Unsupported cipher: %r' % cipher_name)
   if cipher_mode.lower().replace('-', '') != 'xtsplain64':  # 'xts-plain64'.
     raise ValueError('Unsupported cipher mode: %r' % cipher_mode)
-  digest_cons, digest_blocksize = get_luks_hash_digest_params(hash)
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
   # TODO(pts): Check decrypted_sector_idx >= ... like cryptsetup.
   if keytable_size != 64:
     raise ValueError('keytable_size must be 64 for aes-xts-plain64, got: %d' % keytable_size)

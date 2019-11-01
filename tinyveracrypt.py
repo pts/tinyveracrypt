@@ -983,24 +983,46 @@ def decrypt_header(enchd, header_key):
   return dechd
 
 
-# Slow, takes about 6..60 seconds.
-def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False):
-  if len(salt_or_enchd) < 64:
-    raise ValueError('Salt too short.')
-  salt = salt_or_enchd[:64]
+def get_iterations(pim, is_truecrypt=False):
   if pim:
-    iterations = 15000 + 1000 * pim
+    return 15000 + 1000 * pim
   elif is_truecrypt:
     # TrueCrypt 5.0 SHA-512 has 1000 iterations (corresponding to --pim=-14),
     # see: https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
-    iterations = 1000
+    return 1000
   else:
     # --pim=485 corresponds to iterations=500000
     # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
     # for --hash=sha512 iterations == 15000 + 1000 * pim).
-    iterations = 500000
+    return 500000
+
+
+SUPPORTED_HASHES = ('sha1', 'sha512')
+
+
+def get_hash_digest_params(hash):
+  """Returns (digest_cons, digest_blocksize)."""
+  hash2 = hash.lower().replace('-', '')
+  #blocksize = 16  # For MD2
+  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.
+  #blocksize = 128  # For SHA384, SHA512.
+  if hash2 == 'sha512':
+    return sha512, 128
+  elif hash2 == 'sha1':
+    return sha1, 64
+  else:
+    raise ValueError('Unsupported hash: %s' % hash)
+
+
+# Slow, takes about 6..60 seconds.
+def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False, iterations=None, hash='sha512'):
+  if len(salt_or_enchd) < 64:
+    raise ValueError('Salt too short.')
+  salt = salt_or_enchd[:64]
+  if iterations is None:
+    iterations = get_iterations(pim, is_truecrypt)
   # Speedup for testing.
-  if passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and iterations == 500000:
+  if hash == 'sha512' and passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and iterations == 500000:
     if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
       return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33'
     elif salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
@@ -1009,14 +1031,11 @@ def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False):
       return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,'
   # We could use a different hash algorithm and a different iteration count.
   header_key_size = 64
-  #blocksize = 16  # For MD2
-  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.
-  #blocksize = 128  # For SHA384, SHA512.
-  sha512_blocksize = 128
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
   # TODO(pts): Is kernel-mode crypto (AF_ALG,
   # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
   # cryptsetup seems to be using it.
-  return pbkdf2(passphrase, salt, header_key_size, iterations, sha512, sha512_blocksize)
+  return pbkdf2(passphrase, salt, header_key_size, iterations, digest_cons, digest_blocksize)
 
 
 def parse_dechd(dechd):
@@ -1026,29 +1045,68 @@ def parse_dechd(dechd):
   return keytable, decrypted_size, decrypted_ofs
 
 
+class IncorrectPassphraseError(ValueError):
+  """Raised when trying to open an encrypted volume with an incorrect
+  passphrase."""
+
+
+# From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
+SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
+    (0, 0, 'pbkdf2', 'ripemd160', 2000),
+    (0, 0, 'pbkdf2', 'ripemd160', 1000),
+    (0, 0, 'pbkdf2', 'sha512',    1000),
+    (0, 0, 'pbkdf2', 'whirlpool', 1000),
+    (1, 0, 'pbkdf2', 'sha1',      2000),
+    (0, 1, 'pbkdf2', 'sha512',    500000),
+    (0, 1, 'pbkdf2', 'ripemd160', 655331),
+    (0, 1, 'pbkdf2', 'ripemd160', 327661), # Boot only.
+    (0, 1, 'pbkdf2', 'whirlpool', 500000),
+    (0, 1, 'pbkdf2', 'sha256',    500000), # VeraCrypt 1.0f.
+    (0, 1, 'pbkdf2', 'sha256',    200000), # Boot only.
+)
+
+
 def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
   enchd = open(device).read(512)
   if len(enchd) != 512:
     raise ValueError('Raw device too short for VeraCrypt header.')
   dechd = None
-  if truecrypt_mode == 1:  # Try TrueCrypt, then VeraCrypt.
+
+  if pim is None:
+    if truecrypt_mode == 0:  # VeraCrypt only.
+      setup_modes = [m for m in SETUP_MODES if m[1]]
+    elif truecrypt_mode == 2:  # TrueCrypt only.
+      setup_modes = [m for m in SETUP_MODES if not m[1]]
+    else:
+      setup_modes = list(SETUP_MODES)
+  else:
+    setup_modes = []
+    if truecrypt_mode in (2, 1):  # Try TrueCrypt first.
+      setup_modes.append((0, 0, 'pbkdf2', 'sha512', get_iterations(pim, True)))
+    if truecrypt_mode in (0, 1):
+      setup_modes.append((0, 1, 'pbkdf2', 'sha512', get_iterations(pim, False)))
+
+  for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
+    # TODO(pts): Add sha256 and ripemd160.
+    if hash not in SUPPORTED_HASHES:  # Not supported by tinyveracrypt.
+      continue
+    if kdf != 'pbkdf2':  # Not supported by tinyveracrypt.
+      continue
     # TODO(pts): Reuse the partial output of the smaller iterations.
     #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
-    header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=True)  # A bit slow.
+    # Slow.
+    header_key = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
     dechd = decrypt_header(enchd, header_key)
     try:
       # enchd_suffix_size=132 is for --mkfat=... .
-      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=True)
+      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=not is_veracrypt)
     except ValueError, e:
-      dechd, truecrypt_mode = None, 0
-  if dechd is None:
-    header_key = build_header_key(passphrase, enchd, pim=pim, is_truecrypt=bool(truecrypt_mode))  # Slow for is_truecrypt=False.
-    dechd = decrypt_header(enchd, header_key)
-    try:
-      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=bool(truecrypt_mode))
-    except ValueError, e:
-      # We may put str(e) to the debug log, if requested.
-      raise ValueError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
+      # We may want to put str(e) to the debug log, if requested.
+      continue
+    break
+  else:
+    raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
+
   keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
   return build_table(keytable, decrypted_size, decrypted_ofs, device_id)
 
@@ -1644,7 +1702,7 @@ TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce
 
 def cmd_get_table(args):
   truecrypt_mode = 1
-  pim = 0
+  pim = None
   device = passphrase = None
 
   i, value = 0, None
@@ -1808,8 +1866,6 @@ def cmd_mount(args):
     raise UsageError('missing flag: --protect-hidden=no')
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
-  if pim is None:
-    raise UsageError('missing flag --pim=..., recommended: --pim=0')
   if name is not None and slot is not None:
     raise UsageError('<name> conflicts with --slot=')
 
@@ -2046,7 +2102,7 @@ def cmd_create(args):
       fat_uuid = value.encode('hex')
       if len(fat_uuid) != 4:
         raise UsageError('FAT uuid must be 4 bytes: %s' % arg)
-    elif arg.startswith('--fake-luks-uuid'):
+    elif arg.startswith('--fake-luks-uuid='):
       fake_luks_uuid = arg[arg.find('=') + 1:]
     elif arg == '--any-luks-uuid':
       is_any_luks_uuid = True
@@ -2577,11 +2633,15 @@ if __name__ == '__main__':
     except (ImportError, OSError, AttributeError):
       raise e
     os.kill(os.getpid(), signal.SIGINT)
+  except IncorrectPassphraseError, e:
+    msg = str(e)
+    print >>sys.stderr, 'fatal: %s%s' % (msg[:1].lower(), msg[1:].rstrip('.'))
+    sys.exit(2)
   except UsageError, e:
     print >>sys.stderr, 'fatal: usage: %s' % e
     sys.exit(1)
   except SystemExit, e:
-    if len(e.args) == 1 and isinstance(e[0], str):
+    if len(e.args) == 1 and isinstance(e.args[0], str):
       print >>sys.stderr, 'fatal: %s' % e
       sys.exit(1)
     raise
