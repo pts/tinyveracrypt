@@ -1211,18 +1211,24 @@ def decrypt_header(enchd, header_key):
   return dechd
 
 
-def get_iterations(pim, is_truecrypt=False):
-  if pim:
-    return 15000 + 1000 * pim
-  elif is_truecrypt:
+def get_iterations(pim, is_truecrypt=False, hash='sha512'):
+  # Calculations compatible with VeraCrypt 1.12 or later.
+  if pim:  # https://www.veracrypt.fr/en/Header%20Key%20Derivation.html
+    if hash in ('sha512', 'whirlpool'):
+      return 15000 + 1000 * pim
+    else:
+      return pim << 11  # * 2048.
+  elif is_truecrypt:  # Consistent with SETUP_MODES.
+    if hash in ('ripemd160', 'sha1'):
+      return 2000
     # TrueCrypt 5.0 SHA-512 has 1000 iterations (corresponding to --pim=-14),
     # see: https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
     return 1000
-  else:
-    # --pim=485 corresponds to iterations=500000
-    # (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that
-    # for --hash=sha512 iterations == 15000 + 1000 * pim).
-    return 500000
+  else:  # Consistent with SETUP_MODES.
+    if hash == 'ripemd160':
+      return 655331
+    else:  # --pim=485 corresponds to iterations=500000
+      return 500000
 
 
 HASH_BLOCKSIZES = {
@@ -1278,7 +1284,7 @@ def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False, it
     raise ValueError('Salt too short.')
   salt = salt_or_enchd[:64]
   if iterations is None:
-    iterations = get_iterations(pim, is_truecrypt)
+    iterations = get_iterations(pim, is_truecrypt, hash)
   # Speedup for testing.
   if hash == 'sha512' and passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and iterations == 500000:
     if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
@@ -1341,9 +1347,9 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
   else:
     setup_modes = []
     if truecrypt_mode in (2, 1):  # Try TrueCrypt first.
-      setup_modes.append((0, 0, 'pbkdf2', 'sha512', get_iterations(pim, True)))
+      setup_modes.append((0, 0, 'pbkdf2', 'sha512', get_iterations(pim, True, 'sha512')))
     if truecrypt_mode in (0, 1):
-      setup_modes.append((0, 1, 'pbkdf2', 'sha512', get_iterations(pim, False)))
+      setup_modes.append((0, 1, 'pbkdf2', 'sha512', get_iterations(pim, False, 'sha512')))
 
   for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
     # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
@@ -2160,14 +2166,15 @@ def build_luks_header(
     raise ValueError(
         'LUKS uuid must be at most 36 bytes: %r' % uuid_str)
   if keytable_iterations is None:
-    keytable_iterations = get_iterations(pim)
+    # Force hash='sha512' even for other hashes.
+    keytable_iterations = get_iterations(pim, False, hash)
   elif pim:
     raise ValueError('Both pim= and keytable_iterations= are specified.')
   check_iterations(keytable_iterations)
   if slot_iterations is None:
     # TODO(pts): Halven  both keytable_iterations and slot_iterations?
     # What is the ratio by `cryptsetup luksFormat'?
-    slot_iterations = get_iterations(pim)
+    slot_iterations = get_iterations(pim, False, hash)
   elif pim:
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
