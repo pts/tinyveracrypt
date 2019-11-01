@@ -970,6 +970,33 @@ def losetup_maybe_add(filename):
       os.close(fd)
 
 
+def ensure_block_device(filename, block_device_callback):
+  """Creates loopback block device if needed, calls block_device_callback,
+  cleans up (removes the loopback block device) on failure.
+
+  Will call block_device_callback(block_device, fd, device_id).
+  """
+  try:
+    stat_obj = os.stat(filename)
+  except OSError, e:
+    raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
+  block_device, fd, losetup_cleanup_device = losetup_maybe_add(filename)
+  try:
+    stat_obj = os.fstat(fd)
+    assert stat.S_ISBLK(stat_obj.st_mode)
+    device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
+    block_device_callback(block_device, fd, device_id)
+    losetup_cleanup_device = None
+  finally:
+    os.close(fd)
+    if losetup_cleanup_device is not None:
+      import subprocess
+      try:  # Ignore errors.
+        subprocess.call(('losetup', '-d', losetup_cleanup_device))
+      except OSError:
+        pass
+
+
 # --- VeraCrypt crypto.
 
 
@@ -1936,7 +1963,7 @@ def parse_decrypted_ofs_arg(arg):
   return value
 
 
-def parse_keytable_arg(arg):
+def parse_keytable_arg(arg, is_short_ok):
   value = arg[arg.find('=') + 1:].lower()
   if value in ('random', 'new', 'rnd'):
     value = get_random_bytes(64)
@@ -1945,8 +1972,12 @@ def parse_keytable_arg(arg):
       value = value.decode('hex')
     except (TypeError, ValueError):
       raise UsageError('keytable value must be hex: %s' % arg)
-  if len(value) != 64:
-    raise UsageError('keytable must be 64 bytes: %s' % arg)
+  if is_short_ok:
+    if len(value) not in (32, 48, 64):
+      raise UsageError('keytable must be 32, 48 or 64 bytes: %s' % arg)
+  else:
+    if len(value) != 64:
+      raise UsageError('keytable must be 64 bytes: %s' % arg)
   return value
 
 
@@ -2614,30 +2645,17 @@ def cmd_mount(args):
     name = 'veracrypt%d' % slot
     print >>sys.stderr, 'info: using dmsetup table name: %s' % name
 
-  try:
-    stat_obj = os.stat(device)
-  except OSError, e:
-    raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
-  block_device, fd, losetup_cleanup_device = losetup_maybe_add(device)
-  try:
-    stat_obj = os.fstat(fd)
-    assert stat.S_ISBLK(stat_obj.st_mode)
-    device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
+  def block_device_callback(block_device, fd, device_id):
     if passphrase is None:
       if not had_dmsetup:
         yield_dm_devices()  # Get a possible error about sudo before prompting.
-      passphrase = prompt_passphrase(do_passphrase_twice=False)
-    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
+      passphrase2 = prompt_passphrase(do_passphrase_twice=False)
+    else:
+      passphrase2 = passphrase
+    table = get_table(device, passphrase2, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
-    losetup_cleanup_device = None
-  finally:
-    os.close(fd)
-    if losetup_cleanup_device is not None:
-      import subprocess
-      try:  # Ignore errors.
-        subprocess.call(('losetup', '-d', losetup_cleanup_device))
-      except OSError:
-        pass
+
+  ensure_block_device(device, block_device_callback)
 
 
 def cmd_close(args):
@@ -2715,7 +2733,7 @@ def cmd_open_table(args):
       value = arg[arg.find('=') + 1:]
       end_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--keytable='):
-      keytable = parse_keytable_arg(arg)
+      keytable = parse_keytable_arg(arg, is_short_ok=True)
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -2748,52 +2766,15 @@ def cmd_open_table(args):
       f.close()
   if device_size < decrypted_ofs + end_ofs:
     raise UsageError('raw device too small for dmsetup table, size: %d' % device_size)
+  decrypted_size = device_size - decrypted_ofs - end_ofs
+  # TODO(pts): Support iv_offset=0 (for LUKS).
+  iv_offset = decrypted_ofs
 
-  try:
-    stat_obj = os.stat(device)
-  except OSError, e:
-    raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
-  losetup_cleanup_device = None
-  try:
-    # !! Get rid of code duplication below with cmd_mount.
-    if stat.S_ISREG(stat_obj.st_mode):  # Disk image.
-      if device.startswith('-'):
-        raise UsageError('raw device must not start with dash: %s' % device)
-      # Alternative, without race conditions, but doesn't work with busybox:
-      # sudo losetup --show -f RAWDEVICE
-      data = run_and_read_stdout(('losetup', '-f'))
-      if not data or data.startswith('-'):
-        raise ValueError('Expected loopback device name.')
-      data = data.rstrip('\n')
-      if '\n' in data or not data:
-        raise ValueError('Expected single loopback device name.')
-      losetup_cleanup_device = data
-      # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
-      # remove' is run then the loop device gets deleted automatically.
-      # Make the automatic deletion happen for tinyveracrypt as well.
-      # Can losetup do this?
-      run_and_write_stdin(('losetup', data, device), '', is_dmsetup=True)
-      stat_obj = os.stat(data)
-      if not stat.S_ISBLK(stat_obj.st_mode):
-        raise RuntimeError('Block device expected: %s' % data)
-      # Major is typically 7 for /dev/loop...
-    elif not stat.S_ISBLK(stat_obj.st_mode):
-      raise SystemExit('not a block device or image: %s' % device)
-    device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
-
-    decrypted_size = device_size - decrypted_ofs - end_ofs
-    # TODO(pts): Support iv_offset=0 (for LUKS).
-    iv_offset = decrypted_ofs
+  def block_device_callback(block_device, fd, device_id):
     table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset, True)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
-    losetup_cleanup_device = None
-  finally:
-    if losetup_cleanup_device is not None:
-      import subprocess
-      try:  # Ignore errors.
-        subprocess.call(('losetup', '-d', losetup_cleanup_device))
-      except OSError:
-        pass
+
+  ensure_block_device(device, block_device_callback)
 
 
 def cmd_create(args):
@@ -2821,7 +2802,7 @@ def cmd_create(args):
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--keytable='):
-      keytable = parse_keytable_arg(arg)
+      keytable = parse_keytable_arg(arg, is_short_ok=False)
     elif arg.startswith('--salt='):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
