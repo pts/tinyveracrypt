@@ -1407,6 +1407,8 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
     f.close()
 
   if luks_device_size is None:
+    if is_luks1(enchd):
+      sys.stderr.write('warning: raw device has LUKS header, trying to open as VeraCrypt/TrueCrypt will likely fail\n')
     dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
     iv_offset = decrypted_ofs
@@ -2379,7 +2381,7 @@ def cmd_get_table(args):
   # 1.17, TrueCrypt and cryptsetup-1.7.3. Also hidden and system volumes
   # are not supported. See the README.txt for more limitations.
 
-  truecrypt_mode = 1
+  truecrypt_mode = None
   pim = device = passphrase = hash = None
   do_showkeys = False
 
@@ -2399,6 +2401,21 @@ def cmd_get_table(args):
       truecrypt_mode = 1
     elif arg == '--truecrypt':
       truecrypt_mode = 2
+    elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
+      if '=' in arg:
+        type_arg = arg[arg.find('=') + 1:].lower()
+      else:
+        type_arg = args[i]
+        i += 1
+      if type_arg == 'tcrypt':
+        if truecrypt_mode is None:
+          # --truecrypt only, for cryptsetup compatibility.
+          truecrypt_mode = 2
+      elif type_arg == 'luks':
+        truecrypt_mode = 3
+      else:
+        # Cryptsetup also supports --type=plain and --type=loopaes.
+        raise UsageError('unsupported flag value: %s' % arg)
     elif arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
@@ -2415,6 +2432,8 @@ def cmd_get_table(args):
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
+  if truecrypt_mode is None:
+    truecrypt_mode = 1
   if device is None:
     if i >= len(args):
       raise UsageError('missing <device> hosting the encrypted volume')
@@ -2968,7 +2987,7 @@ def cmd_create(args):
     raise UsageError('missing flag: --random-source=/dev/urandm')
   if device_size is None:
     raise UsageError('missing flag: --size=...')
-  if pim is None:
+  if pim is None:  # For compatibility with `veracrypt --create'.
     if is_truecrypt:
       pim = 0
     else:
