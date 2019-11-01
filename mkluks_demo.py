@@ -16,11 +16,13 @@ def main(argv):
   size = 2066432
   tinyveracrypt.check_luks_size(size)
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
-  keytable = ''.join(map(chr, xrange(3, 67)))
+  key_size = 48  # 64 is better. Any of (32, 48, 64).
+  keytable = ''.join(map(chr, xrange(3, 3 + key_size)))
   header = tinyveracrypt.build_luks_header(
       passphrase=(tinyveracrypt.TEST_PASSPHRASE, 'abc'),
       #pim=-14,
       #hash='sha1',
+      key_size=key_size,
       af_salt='xyzAB' * 4000,
       af_stripe_count=13,
       decrypted_ofs=decrypted_ofs,
