@@ -2134,29 +2134,6 @@ def get_luks_keytable(f, passphrase):
   return decrypted_ofs, slot_keytable
 
 
-def build_luks_table(
-    keytable, decrypted_size, decrypted_ofs, raw_device,
-    opt_params=('allow_discards',)):
-  # Return value has same syntax as of `dmsetup table --showkeys' and what
-  # `dmsetup create' expects.
-  # https://www.kernel.org/doc/Documentation/device-mapper/dm-crypt.txt
-  check_luks_decrypted_size(decrypted_size)
-  check_luks_decrypted_ofs(decrypted_ofs)
-  check_keytable(keytable)
-  start_offset_on_logical = 0
-  cipher = 'aes-xts-plain64'
-  target_type = 'crypt'
-  iv_offset = 0
-  if opt_params:
-    opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
-  else:
-    opt_params_str = ''
-  return '%d %d %s %s %s %d %s %s%s\n' % (
-      start_offset_on_logical, decrypted_size >> 9, target_type,
-      cipher, keytable.encode('hex'),
-      iv_offset >> 9, raw_device, decrypted_ofs >> 9, opt_params_str)
-
-
 def is_luks1(enchd):
   if not enchd.startswith('LUKS\xba\xbe\0\1') or len(enchd) < 208:
     return False
