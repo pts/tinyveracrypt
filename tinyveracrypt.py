@@ -1200,7 +1200,7 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 
 def build_table(
-    keytable, decrypted_size, decrypted_ofs, raw_device, iv_offset, do_showkeys,
+    keytable, decrypted_size, decrypted_ofs, raw_device, iv_ofs, do_showkeys,
     opt_params=('allow_discards',)):
   check_aes_xts_key(keytable)
   check_decrypted_size(decrypted_size)
@@ -1220,7 +1220,7 @@ def build_table(
   return '%d %d %s %s %s %d %s %s%s\n' % (
       start_offset_on_logical, decrypted_size >> 9, target_type,
       cipher, keytable.encode('hex'),
-      iv_offset >> 9, raw_device, offset >> 9, opt_params_str)
+      iv_ofs >> 9, raw_device, offset >> 9, opt_params_str)
 
 
 def encrypt_header(dechd, header_key):
@@ -1438,11 +1438,11 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
       sys.stderr.write('warning: raw device has LUKS header, trying to open as VeraCrypt/TrueCrypt will likely fail\n')
     dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
-    iv_offset = decrypted_ofs
+    iv_ofs = decrypted_ofs
   else:
     decrypted_size = luks_device_size - decrypted_ofs
-    iv_offset = 0
-  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset, do_showkeys)
+    iv_ofs = 0
+  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, do_showkeys)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -2714,7 +2714,7 @@ def cmd_open_table(args):
   import subprocess
 
   device_size = 'auto'
-  keytable = device = name = decrypted_ofs = end_ofs = None
+  keytable = device = name = decrypted_ofs = end_ofs = iv_ofs = None
 
   i, value = 0, None
   while i < len(args):
@@ -2727,11 +2727,11 @@ def cmd_open_table(args):
     elif arg.startswith('--size='):
       device_size = parse_device_size_arg(arg)
     elif arg.startswith('--ofs='):
-      value = arg[arg.find('=') + 1:]
       decrypted_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--end-ofs='):
-      value = arg[arg.find('=') + 1:]
       end_ofs = parse_decrypted_ofs_arg(arg)
+    elif arg.startswith('--iv-ofs='):  # --iv-ofs=0 for LUKS, unspecified for VeraCrypt.
+      iv_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--keytable='):
       keytable = parse_keytable_arg(arg, is_short_ok=True)
     else:
@@ -2767,11 +2767,11 @@ def cmd_open_table(args):
   if device_size < decrypted_ofs + end_ofs:
     raise UsageError('raw device too small for dmsetup table, size: %d' % device_size)
   decrypted_size = device_size - decrypted_ofs - end_ofs
-  # TODO(pts): Support iv_offset=0 (for LUKS).
-  iv_offset = decrypted_ofs
+  if iv_ofs is None:
+    iv_ofs = decrypted_ofs
 
   def block_device_callback(block_device, fd, device_id):
-    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset, True)
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, True)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
@@ -3011,7 +3011,7 @@ def cmd_create(args):
       raise ValueError('Expected single dmsetup table line.')
     try:
       (start_sector, sector_count, target_type, sector_format, keytable,
-       iv_offset, device_id, sector_offset) = data.split(' ')[:8]
+       iv_ofs, device_id, sector_offset) = data.split(' ')[:8]
       if start_sector != '0' or target_type != 'crypt':
         raise ValueError
     except ValueError:
@@ -3030,11 +3030,11 @@ def cmd_create(args):
     except (TypeError, ValueError):
       raise ValueError('keytable must be hex, got: %s' % keytable)
     try:
-      iv_offset = int(iv_offset)
+      iv_ofs = int(iv_ofs)
     except ValueError:
-      raise ValueError('iv_offset must be an integer, got: %r' % iv_offset)
-    if iv_offset < 0:
-      raise ValueError('sector count must be nonnegative, got: %d' % iv_offset)
+      raise ValueError('iv_ofs must be an integer, got: %r' % iv_ofs)
+    if iv_ofs < 0:
+      raise ValueError('sector count must be nonnegative, got: %d' % iv_ofs)
     device_id = parse_device_id(device_id)  # (major, minor)
     try:
       sector_offset = int(sector_offset)
@@ -3042,8 +3042,8 @@ def cmd_create(args):
       raise ValueError('sector_offset must be an integer, got: %r' % sector_offset)
     if sector_offset < 0:
       raise ValueError('sector count must be nonnegative, got: %d' % sector_offset)
-    if iv_offset != sector_offset:
-      raise ValueError('offset mismatch: iv_offset=%d sector_offset=%d' % (iv_offset, sector_offset))
+    if iv_ofs != sector_offset:
+      raise ValueError('offset mismatch: iv_ofs=%d sector_offset=%d' % (iv_ofs, sector_offset))
     device_int = device_id[0] << 8 | device_id[1]
 
     device = None
