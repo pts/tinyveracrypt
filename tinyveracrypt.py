@@ -346,7 +346,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
   # sector_idx is LSB-first for aes-xts-plain64, see
   # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
   t0, t1 = struct.unpack('<QQ', new_aes(aes_xts_key[32 : 64]).encrypt(pack(
-      '<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 8)))
+      '<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 64)))
   t = (t1 << 64) | t0
   for i in xrange(ofs >> 4):
     t <<= 1
