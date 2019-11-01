@@ -2370,6 +2370,13 @@ TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce
 
 
 def cmd_get_table(args):
+  # Please note that the commands cmd_get_table and cmd_get_mount are not
+  # able to open all VeraCrypt, TrueCrypt and LUKS volumes: they work only
+  # with some hashes (e.g. --hash=sha512) and one cipher
+  # (--cipher=aes-xts-plain64), which matches the default for VeraCrypt
+  # 1.17, TrueCrypt and cryptsetup-1.7.3. Also hidden and system volumes
+  # are not supported. See the README.txt for more limitations.
+
   truecrypt_mode = 1
   pim = device = passphrase = hash = None
 
@@ -2619,16 +2626,27 @@ def cmd_close(args):
   #            Where does the event_nr below come from?
   #            Why are the sem...(...) calls done?
   #            Why is /run/udev/control access(2)ed?
+  #            Do we need to call udev manually to update /dev/disk/... ? (/run/udev/queue.bin)
+  #            Do we need to create the block device nodes in /dev/mapper/ (either we or udev; cryptsetup doesn't create it)?
   #
   # --noudevsync
   # Command not supported. Recompile with "--enable-udev-sync" to enable.
   # Cookie value is not set while trying to call DM_DEVICE_RESUME, DM_DEVICE_REMOVE or DM_DEVICE_RENAME ioctl. Please, consider using libdevmapper's udev synchronisation interface or disable it explicitly by calling dm_udev_set_sync_support(0)
+  # grep  ' device-mapper' /proc/devices (misc?)
+  #
+  # stat("/dev/mapper/control", {st_mode=S_IFCHR|0600, st_rdev=makedev(10, 236), ...}) = 0
+  # open("/dev/mapper/control", O_RDWR)     = 3
+  # ioctl(3, DM_VERSION, 0x21d10f0)         = 0
   #
   # ioctl(5, DM_DEV_CREATE, {version=4.0.0, data_size=16384, name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", flags=DM_EXISTS_FLAG} => {version=4.35.0, data_size=305, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=0, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG}) = 0
   # ioctl(5, DM_TABLE_LOAD, {version=4.0.0, data_size=16384, data_start=312, name="testvol", target_count=1, flags=DM_EXISTS_FLAG|DM_SECURE_DATA_FLAG, {sector_start=0, length=4028, target_type="crypt", string="aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 /dev/loop0 8"}} => {version=4.35.0, data_size=305, data_start=312, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=0, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG|DM_INACTIVE_PRESENT_FLAG}) = 0
   # ioctl(5, DM_DEV_SUSPEND, {version=4.0.0, data_size=16384, name="testvol", event_nr=4210181, flags=DM_EXISTS_FLAG|DM_SECURE_DATA_FLAG} => {version=4.35.0, data_size=305, dev=makedev(254, 2), name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", target_count=1, open_count=0, event_nr=0, flags=DM_EXISTS_FLAG|DM_ACTIVE_PRESENT_FLAG|DM_UEVENT_GENERATED_FLAG}) = 0
   #
   # ioctl(3, DM_DEV_REMOVE, {version=4.0.0, data_size=16384, name="testvol", event_nr=6312172, flags=DM_EXISTS_FLAG} => {version=4.35.0, data_size=305, name="testvol", uuid="CRYPT-LUKS1-40bf7c9f12a6403f81dac4bd2183b74a-testvol", flags=DM_EXISTS_FLAG|DM_UEVENT_GENERATED_FLAG}) = 0
+
+  # --- dmsetup table:
+  # ioctl(3, DM_VERSION, 0x13110f0)         = 0
+  # ioctl(3, DM_TABLE_STATUS, 0x1311020)    = 0
   #
   # access("/run/udev/control", F_OK) = 0  # This is a socket.
   # semctl(0, 0, SEM_INFO, 0x7ffe330c3f50) = 0
@@ -3239,28 +3257,17 @@ def main(argv):
   #    Blocks 1 through 34 must be good in order to build a filesystem.
   #    (So marking block 32 bad won't work for ext2, ext3, ext4 filesystems of at least about 8 GiB in size for -b 1024, or 120 GiB for -b 4096)
   #    also: Warning: the backup superblock/group descriptors at block 32768 contain bad blocks.
-  #    SUXX: `fsck.ext -c ...' clears the badblocks list, so from that point on the exti{2,3,4} filesystem will be able to reuse the previous bad block
+  #    SUXX: `fsck.ext -c ...' clears the badblocks list, so from that point on the ext{2,3,4} filesystem will be able to reuse the previous bad block
   #    There seems to be no unmovable file in ext2.
   #    btrfs (superblock at 65536) works for up to 241 GB, block size 4096, Reserved GDT blocks at 16-1024
   #    ``Reserved GDT blocks'' always finishes before 1050
-  #    btrfs (superblock also at 64 MiB): To put block 32768 (64 MiB) to the ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4 -g ...' (blocks per block group), but it may have a performance penalty on SSDs (if not aligned to 6 MB boundary); example: python -c 'f = open("ext2.img", "wb"); f.truncate(240 << 30)' && mkfs.ext4 -E nodiscard -g 16304 -F ext2.img && dumpe2fs ext2.img >ext4.dump
+  #    btrfs (superblock also at 64 MiB): To put block 32768 (64 MiB) to the
+  #      ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4
+  #      -g ...' (blocks per block group), but it may have a performance
+  #      penalty on SSDs (if not aligned to 6 MB boundary); example: python -c
+  #      'f = open("ext2.img", "wb"); f.truncate(240 << 30)' && mkfs.ext4 -E
+  #      nodiscard -g 16304 -F ext2.img && dumpe2fs ext2.img >ext4.dump
 
-  # !! use fcntl.ioctl etc. instead of dmsetup (strace on Debian Buster is helpful)
-  # --- dmsetup remove:
-  # grep  ' device-mapper' /proc/devices (misc?)
-  # stat("/dev/mapper/control", {st_mode=S_IFCHR|0600, st_rdev=makedev(10, 236), ...}) = 0
-  # open("/dev/mapper/control", O_RDWR)     = 3
-  # ioctl(3, DM_VERSION, 0x21d10f0)         = 0
-  # ioctl(3, DM_DEV_REMOVE, 0x21d1020)      = 0
-  # !! Do we need to call udev manually to update /dev/disk/... ? (/run/udev/queue.bin)
-  # !! Do we need to create the device nodes in /dev/mapper ?
-  # --- dmsetup table:
-  # ioctl(3, DM_VERSION, 0x13110f0)         = 0
-  # ioctl(3, DM_TABLE_STATUS, 0x1311020)    = 0
-  # --- dmsetup create:
-  # ioctl(3, DM_DEV_CREATE, 0x146e310)      = 0
-  # ioctl(3, DM_TABLE_LOAD, 0x146e240)      = 0
-  # ioctl(3, DM_DEV_SUSPEND, 0x146e240)     = 0
   if len(argv) < 2:
     raise UsageError('missing command')
   if len(argv) > 1 and argv[1] == '--text':
@@ -3271,23 +3278,17 @@ def main(argv):
     argv[1 : 3] = argv[2 : 0 : -1]
 
   command = argv[1].lstrip('-')
-  if command == 'get-table':  # !! Use `table' as an alias, also --showkeys.
-    # !! Also add mount with compatible syntax.
-    # * veracrypt --mount --text --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
-    # * cryptsetup open --type tcrypt --veracrypt /dev/sdb e4t  # Creates /dev/mapper/NAME
-    # Please note that this command is not able to mount all volumes: it
-    # works only with hash sha512 and encryption aes-xts-plain64, the
-    # default for veracrypt-1.17, and the one the commands mkveracrypt,
-    # mkinfat and mkfat generate.
+  if command == 'get-table':  # !! Add --showkeys.
+    # Doesn't emulates: dmsetup table [--showkeys] NAME
     cmd_get_table(argv[2:])
   elif command == 'mount':
-    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
+    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
     # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
     #
     # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
     cmd_mount(argv[2:])
   elif command == 'open':
-    # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME
+    # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME  # Creates /dev/mapper/NAME
     args = argv[2:]
     args[:0] = ('--keyfiles=', '--protect-hidden=no', # '--pim=0',
                 '--filesystem=none', '--hash=sha512', '--encryption=aes',
