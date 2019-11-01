@@ -945,14 +945,14 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 
 def build_table(
-    keytable, decrypted_size, decrypted_ofs, raw_device,
+    keytable, decrypted_size, decrypted_ofs, raw_device, iv_offset,
     opt_params=('allow_discards',)):
   check_keytable(keytable)
   check_decrypted_size(decrypted_size)
   if isinstance(raw_device, (list, tuple)):
     raw_device = '%d:%s' % tuple(raw_device)
   cipher = 'aes-xts-plain64'
-  iv_offset = offset = decrypted_ofs
+  offset = decrypted_ofs
   start_offset_on_logical = 0
   if opt_params:
     opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
@@ -1066,14 +1066,8 @@ SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
 )
 
 
-def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
-  enchd = open(device).read(512)
-  if len(enchd) != 512:
-    raise ValueError('Raw device too short for encrypted volume.')
-
+def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
   if pim is None:
-    if is_luks1(enchd):
-      raise ValueError('LUKS1 header detected, not supported.')
     if truecrypt_mode == 0:  # VeraCrypt only.
       setup_modes = [m for m in SETUP_MODES if m[1]]
     elif truecrypt_mode == 2:  # TrueCrypt only.
@@ -1101,15 +1095,35 @@ def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
     try:
       # enchd_suffix_size=132 is for --mkfat=... .
       check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=not is_veracrypt)
+      return dechd
     except ValueError, e:
       # We may want to put str(e) to the debug log, if requested.
-      continue
-    break
-  else:
-    raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
+      pass
+  raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
-  keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
-  return build_table(keytable, decrypted_size, decrypted_ofs, device_id)
+
+def get_table(device, passphrase, device_id, pim, truecrypt_mode):
+  luks_device_size = None
+  f = open(device)
+  try:
+    enchd = f.read(512)
+    if len(enchd) != 512:
+      raise ValueError('Raw device too short for encrypted volume.')
+    if pim is None and truecrypt_mode == 1 and is_luks1(enchd):
+      f.seek(0, 2)
+      luks_device_size = f.tell()
+      decrypted_ofs, keytable = get_luks_keytable(f, passphrase)
+  finally:
+    f.close()
+
+  if luks_device_size is None:
+    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode)
+    keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
+    iv_offset = decrypted_ofs
+  else:
+    decrypted_size = luks_device_size - decrypted_ofs
+    iv_offset = 0
+  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -2054,8 +2068,8 @@ def get_luks_keytable(f, passphrase):
     elif slot_active_tag != 0xdead:
       raise ValueError('Unknown slot_active_tag: 0x%x' % slot_active_tag)
   if not active_slots:
-    raise ValueError('No active slots found, it\'s impossible to open the volume even with a correct password.')
-  print >>sys.stderr, 'info: found %d active slot%s' % (len(active_slots), 's' * (len(active_slots) != 1))
+    raise ValueError('No active LUKS slots found, it\'s impossible to open the volume even with a correct password.')
+  print >>sys.stderr, 'info: found %d active LUKS slot%s' % (len(active_slots), 's' * (len(active_slots) != 1))
   if passphrase is None:
     passphrase = prompt_passphrase(False)
   for slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt in active_slots:
@@ -2078,7 +2092,7 @@ def get_luks_keytable(f, passphrase):
       break
     print >>sys.stderr, 'info: passphrase incorrect for slot %d' % slot_idx
   else:
-    raise ValueError('Incorrect passphrase.')
+    raise IncorrectPassphraseError('Incorrect passphrase for LUKS volume.')
   f.seek(decrypted_ofs)
   if len(f.read(512)) != 512:
     raise ValueError('decrypted_ofs beyond end of raw device.')
@@ -2215,6 +2229,7 @@ def cmd_mount(args):
       truecrypt_mode = 1
     elif arg == '--truecrypt':
       truecrypt_mode = 2
+    # !! TODO(pts): Add --type=luks to be compatible with `cryptsetup open'.
     elif arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
@@ -2259,7 +2274,13 @@ def cmd_mount(args):
       if value != 'aes':
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = value
+    elif arg.startswith('--cipher='):
+      value = arg[arg.find('=') + 1:].lower()
+      if value != 'aes-xts-plain64':
+        raise UsageError('unsupported flag value: %s' % arg)
+      encryption = 'aes'
     elif arg.startswith('--hash='):
+      # !! TODO(pts): Add full support for --hash=sha1 everywhere.
       value = arg[arg.find('=') + 1:].lower().replace('-', '')
       if value != 'sha512':
         raise UsageError('unsupported flag value: %s' % arg)
@@ -2472,7 +2493,9 @@ def cmd_open_table(args):
     device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
 
     decrypted_size = device_size - decrypted_ofs - end_ofs
-    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id)
+    # TODO(pts): Support iv_offset=0 (for LUKS).
+    iv_offset = decrypted_ofs
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_offset)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
     losetup_cleanup_device = None
   finally:
@@ -2582,6 +2605,11 @@ def cmd_create(args):
       if value != 'aes':
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = value
+    elif arg.startswith('--cipher='):
+      value = arg[arg.find('=') + 1:].lower()
+      if value != 'aes-xts-plain64':
+        raise UsageError('unsupported flag value: %s' % arg)
+      encryption = 'aes'
     elif arg.startswith('--hash='):
       value = arg[arg.find('=') + 1:].lower().replace('-', '')
       if value != 'sha512':
@@ -3022,7 +3050,7 @@ def main(argv):
   elif len(argv) > 2 and command == 'open':
     # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME
     args = argv[2:]
-    args[:0] = ('--keyfiles=', '--protect-hidden=no', '--pim=0',
+    args[:0] = ('--keyfiles=', '--protect-hidden=no', # '--pim=0',
                 '--filesystem=none', '--hash=sha512', '--encryption=aes',
                 '--custom-name')
     cmd_mount(args)

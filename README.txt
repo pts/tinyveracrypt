@@ -1,12 +1,12 @@
 tinyveracrypt: VeraCrypt-compatible block device encryption setup
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt
-and TrueCrypt encrypted volumes, and to open (mount) them on Linux. It's a
-drop-in replacement for the cryptsetup, veracrypt and truecrypt tools for
-the subset of commands and flags it understands. It's implemented in Python
-2 with only standard Python modules as dependencies. It has some additional
-features such as plaintext UUID or plaintext FAT filesystem in front of the
-encrypted volume.
+tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt,
+TrueCrypt and LUKS encrypted volumes, and to open (mount) them on Linux.
+It's a drop-in replacement for the cryptsetup, veracrypt and truecrypt tools
+for the subset of commands and flags it understands. It's implemented in
+Python 2 with only standard Python modules as dependencies. It has some
+additional features such as plaintext UUID or plaintext FAT filesystem in
+front of the encrypted volume.
 
 Features
 ~~~~~~~~
@@ -74,15 +74,22 @@ harder to forensically recover a deleted LUKS key than a deleted VeraCrypt
 key.
 
 Q6. Can tinyveracrypt open an encrypted volume created by
-tinyveracrypt, VeraCrypt or TrueCrypt?
-""""""""""""""""""""""""""""""""""""""
+tinyveracrypt, VeraCrypt, TrueCrypt or cryptsetup luksFormat?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 tinyveracrypt can open encrypted volumes created by tinyveracrypt.
 
 tinyveracrypt can open encrypted volumes created by VeraCrypt or TrueCrypt
 if the volume was created with the default settings of VeraCrypt 1.17
-(PBKDF2 of SHA-512, and AES in XTS mode (i.e. aes-xts-plain64)) or with the
-proper settings of Truecrypt >= 5.0. More code needs to be written for
-opening other kinds of volumes as well, some of them look like easy to add.
+(PBKDF2 of SHA-512 or SHA-1, and AES in XTS mode (i.e. aes-xts-plain64)) or
+with the proper settings of Truecrypt >= 5.0. More code needs to be written
+for opening other kinds of volumes as well, some of them look like easy to
+add.
+
+tinyveracrypt can open LUKS1 encrypted volumes (as cretead by `cryptsetup
+luksFormat') if the volume was created with the settings
+`--cipher=aes-xts-plain64 --hash=sha512' or
+`--cipher=aes-xts-plain64 --hash=sha1'. The default settings in
+cryptsetup 1.7.3 are: `--cipher=aes-xts-plain64 --hash=sha512'.
 
 See Q21 and Q22 question how to open the volume with different tools.
 
@@ -126,6 +133,20 @@ a VeraCrypt encrypted volume instead.
 
 The last working version of truecrypt containing the `--create' command is
 7.1a, which was released on 2012-02-07.
+
+Q11. How to create a LUKS1 encrypted volume?
+""""""""""""""""""""""""""""""""""""""""""""
+This doesn't work yet, but it will works soon:
+
+  $ ./tinyveracrypt.py init --luks RAWDEVICE
+
+It is mostly equivalent to:
+
+  $ cryptsetup luksFormat --batch-mode --cipher=aes-xts-plain64 --hash=sha512 --use-urandom RAWDEVICE
+
+Q11B. How to create a LUKS2 encrypted volume?
+"""""""""""""""""""""""""""""""""""""""""""""
+tinyveracrypt doesn't support LUKS2.
 
 Q12. Can tinyveracrypt create encrypted volumes with a plaintext FAT
 filesystem in front of the encrypted volume?
@@ -244,7 +265,6 @@ The created VeraCrypt encrypted volume will not be a valid LUKS volume
 though, `cryptsetup open' won't be able to open it without the `--type
 tcrypt --veracrypt' flag.
 
-
 Q15. What are the dependencies of tinyveracrypt?
 """"""""""""""""""""""""""""""""""""""""""""""""
 For creating and examining encrypted volumes, only Python 2.x is needed.
@@ -307,8 +327,33 @@ If you know the passphrase, run this:
 Please note that for VeraCrypt encrypted volumes you'd need to specify
 `--veracrypt'.
 
-Q21. How to open a VeraCrypt encrypted volume on Linux?
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Q21A. How to open a LUKS1, VeraCrypt or TrueCrypt encrypted volume on Linux
+(without knowning which one it is)?
+"""""""""""""""""""""""""""""""""""
+If you know the passphrase, run this:
+
+  $ sudo ./tinyveracrypt.py open RAWDEVICE NAME
+
+This only works if the encrypted volume was created by tinyveracrypt or with
+another tool with the encryption and hash settings compatible with
+tinyveracrypt.
+
+Q21B. How to open a LUKS1 encrypted volume on Linux?
+""""""""""""""""""""""""""""""""""""""""""""""""""""
+If you know the passphrase, run this:
+
+  $ sudo ./tinyveracrypt.py open RAWDEVICE NAME
+
+This only works if the encrypted volume was created by tinyveracrypt or with
+another tool with the encryption and hash settings compatible with
+tinyveracrypt.
+
+Alternatively, run this:
+
+  $ sudo cryptsetup open RAWDEVICE NAME
+
+Q22A. How to open a VeraCrypt encrypted volume on Linux?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 If you know the passpohrase, run this:
 
   $ sudo ./tinyveracrypt.py open RAWDEVICE NAME
@@ -345,13 +390,13 @@ The decrypted volume will be available as /dev/mapper/DEVNAME .
 Please note that both (including `--veracrypt') also work for TrueCrypt
 encrypted volumes.
 
-Q22. How to open a TrueCrypt encrypted volume on Linux?
+Q22B. How to open a TrueCrypt encrypted volume on Linux?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""
 If you know the passphrase, run this:
 
   $ sudo ./tinyveracrypt.py open --truecrypt RAWDEVICE NAME
 
-Alternateivel, if you have VeraCrypt installed, run this:
+Alternatively, if you have VeraCrypt installed, run this:
 
   $ sudo veracrypt --text --mount --truecrypt --keyfiles= --protect-hidden=no --pim=0 --filesystem=none RAWDEVICE
 
@@ -398,7 +443,7 @@ Q23. Which command-line VeraCrypt features are missing from tinyveracrypt?
 * system volume
 * keyfile
 * encryption other than AES
-* hash other than SHA-512
+* hash other than SHA-512 and SHA-1
 * mounting the filesystem at open time
 * opening volumes on non-Linux systems (e.g. macOS or Windows)
 
@@ -415,6 +460,9 @@ Pass any flags (e.g. --mkfat=...), specify any passphrase.
 
 Please note that the hidden volume, if any, will be destroyed as part of
 this.
+
+Conversion from LUKS doesn't work, because the iv_offset values of
+TrueCrypt/VeraCrypt vs LUKS are incompatible.
 
 Q25. Which other tools is tinyveracrypt compatible with?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
