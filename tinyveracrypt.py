@@ -1315,9 +1315,12 @@ class IncorrectPassphraseError(ValueError):
 
 
 # From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
+#
 # Please note that tcrypt.c tries multiple ciphers: ('aes-xts-plain64',
 # 'serpent-xts-plain64', 'twofish-xts-plain64', ...) (29 in total),
 # we support only the first one.
+#
+# cryptsetup-1.7.3 ignores is_legacy and also detects legacy modes.
 SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
     (0, 0, 'pbkdf2', 'ripemd160', 2000),
     (0, 0, 'pbkdf2', 'ripemd160', 1000),
@@ -1333,10 +1336,14 @@ SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
 )
 
 
-def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
+def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
   # This function doesn't support LUKS, the caller should.
   if truecrypt_mode not in (0, 1, 2):
     raise ValueError('Unknown truecrypt_mode: %r' % truecrypt_mode)
+  if hash is not None and not is_hash_supported(hash):
+    # We shouldn't reach this, parse_veracrypt_hash_arg(...) should have
+    # caught it already.
+    raise SystemExit('unsupported hash requested: %s' % hash)
   if pim is None:
     if truecrypt_mode == 0:  # VeraCrypt only.
       setup_modes = [m for m in SETUP_MODES if m[1]]
@@ -1344,17 +1351,27 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
       setup_modes = [m for m in SETUP_MODES if not m[1]]
     else:
       setup_modes = list(SETUP_MODES)
-  else:
+    if hash is not None:
+      setup_modes = [m for m in setup_modes if m[3] == hash]
+      if not setup_modes:
+        pim = 0  # Try to get some more modes below.
+    else:
+      setup_modes = [m for m in setup_modes if is_hash_supported(m[3])]
+      if not setup_modes:  # We shouldn't reach this.
+        raise ValueError('No setup modes remaining (unexpected).')
+  if pim is not None:
     setup_modes = []
+    if hash is None:
+      hash = 'sha512'
     if truecrypt_mode in (2, 1):  # Try TrueCrypt first.
-      setup_modes.append((0, 0, 'pbkdf2', 'sha512', get_iterations(pim, True, 'sha512')))
+      setup_modes.append((0, 0, 'pbkdf2', hash, get_iterations(pim, True, hash)))
     if truecrypt_mode in (0, 1):
-      setup_modes.append((0, 1, 'pbkdf2', 'sha512', get_iterations(pim, False, 'sha512')))
+      setup_modes.append((0, 1, 'pbkdf2', hash, get_iterations(pim, False, hash)))
 
   for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
     # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
-    if not is_hash_supported(hash):
-      continue
+    if not is_hash_supported(hash):  # We shouldn't reach this.
+      raise ValueError('Hash not supported (unexpected): %s' % hash)
     if kdf != 'pbkdf2':  # Not supported by tinyveracrypt.
       continue
     # TODO(pts): Reuse the partial output of the smaller iterations.
@@ -1372,14 +1389,14 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
-def get_table(device, passphrase, device_id, pim, truecrypt_mode):
+def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash):
   luks_device_size = None
   f = open(device)
   try:
     enchd = f.read(512)
     if len(enchd) != 512:
       raise ValueError('Raw device too short for encrypted volume.')
-    if ((pim is None and truecrypt_mode == 1 and is_luks1(enchd)) or
+    if ((pim is None and hash is None and truecrypt_mode == 1 and is_luks1(enchd)) or
         truecrypt_mode == 3):
       f.seek(0, 2)
       luks_device_size = f.tell()
@@ -1388,7 +1405,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode):
     f.close()
 
   if luks_device_size is None:
-    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode)
+    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
     iv_offset = decrypted_ofs
   else:
@@ -1418,7 +1435,7 @@ def get_random_bytes(size, _functions=[]):
 def build_veracrypt_header(
     decrypted_size, passphrase, enchd_prefix='', enchd_suffix='',
     decrypted_ofs=None, pim=None, fake_luks_uuid=None,
-    is_truecrypt=False, keytable=None):
+    is_truecrypt=False, keytable=None, hash='sha512'):
   """Returns 512 bytes.
 
   Args:
@@ -1447,7 +1464,7 @@ def build_veracrypt_header(
     enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
     assert len(enchd_prefix) <= 64
   salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
-  header_key = build_header_key(passphrase, salt, pim=pim, is_truecrypt=is_truecrypt)  # Slow.
+  header_key = build_header_key(passphrase, salt, pim=pim, is_truecrypt=is_truecrypt, hash=hash)  # Slow.
   if fake_luks_uuid is not None:
     zeros_ofs = 160  # Must be divisible by 16 for crypt_aes_xts.
     # util-linux blkid supports 40 bytes, busybox blkid supports 36 bytes.
@@ -1719,7 +1736,10 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   return fat_header, label
 
 
-def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None, device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False, keytable=None, **kwargs):
+def build_veracrypt_fat(
+    decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None,
+    device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False,
+    keytable=None, hash='sha512', **kwargs):
   # FAT12 filesystem header based on minifat3.
   # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
   # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
@@ -1762,7 +1782,7 @@ def build_veracrypt_fat(decrypted_size, passphrase, do_include_all_header_sector
       # Based on fat16_boot_tvc.nasm.
       enchd_suffix='\x0e\x1f\xe8d\x00This is not a bootable disk.  Please insert a bootable floppy and\r\npress any key to try again ...\r\n\x00^\xac"\xc0t\x0bV\xb4\x0e\xbb\x07\x00\xcd\x10^\xeb\xf02\xe4\xcd\x16\xcd\x19\xeb\xfeU\xaa',
       decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt,
-      keytable=keytable)
+      keytable=keytable, hash=hash)
   assert len(enchd) == 512
   assert enchd.startswith(fat_header)
   if not do_include_all_header_sectors:
@@ -2351,8 +2371,7 @@ TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce
 
 def cmd_get_table(args):
   truecrypt_mode = 1
-  pim = None
-  device = passphrase = None
+  pim = device = passphrase = hash = None
 
   i, value = 0, None
   while i < len(args):
@@ -2377,6 +2396,8 @@ def cmd_get_table(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--hash='):
+      hash = parse_veracrypt_hash_arg(arg)
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -2393,8 +2414,20 @@ def cmd_get_table(args):
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
-  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode))
+  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash))
   sys.stdout.flush()
+
+
+def parse_veracrypt_hash_arg(arg):
+  value = arg[arg.find('=') + 1:].lower().replace('-', '')
+  allowed_values = set(item[3] for item in SETUP_MODES)
+  if value not in allowed_values:
+    raise UsageError('hash not allowed in TrueCrypt/VeraCrypt volumes, choose any of %r: %s' %
+                     (tuple(allowed_values), arg))
+  if not is_hash_supported(value):
+    # tinyveracrypt doesn't know how to compute this hash.
+    raise UsageError('unsupported hash: %s' % arg)
+  return value
 
 
 def cmd_mount(args):
@@ -2480,11 +2513,7 @@ def cmd_mount(args):
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = 'aes'
     elif arg.startswith('--hash='):
-      # !! TODO(pts): Add full support for --hash=sha1 everywhere.
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
-      if value != 'sha512':
-        raise UsageError('unsupported flag value: %s' % arg)
-      hash = value
+      hash = parse_veracrypt_hash_arg(arg)
     elif arg.startswith('--filesystem='):
       value = arg[arg.find('=') + 1:].lower().replace('-', '')
       if value != 'none':
@@ -2519,8 +2548,8 @@ def cmd_mount(args):
     raise UsageError('too many command-line arguments')
   if encryption != 'aes':
     raise UsageError('missing flag: --encryption=aes')
-  if hash != 'sha512':
-    raise UsageError('missing flag: --hash=sha512')
+  if hash is None:
+    raise UsageError('missing flag: --hash=...')
   if filesystem != 'none':
     raise UsageError('missing flag: --filesystem=none')
   if protect_hidden != 'no':
@@ -2565,7 +2594,7 @@ def cmd_mount(args):
       if not had_dmsetup:
         yield_dm_devices()  # Get a possible error about sudo before prompting.
       passphrase = prompt_passphrase(do_passphrase_twice=False)
-    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode)  # Slow.
+    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
     losetup_cleanup_device = None
   finally:
@@ -2828,10 +2857,7 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = 'aes'
     elif arg.startswith('--hash='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
-      if value != 'sha512':
-        raise UsageError('unsupported flag value: %s' % arg)
-      hash = value
+      hash = parse_veracrypt_hash_arg(arg)
     elif arg.startswith('--filesystem='):
       value = arg[arg.find('=') + 1:].lower().replace('-', '')
       if value != 'none':
@@ -2907,8 +2933,8 @@ def cmd_create(args):
     raise UsageError('missing flag: --volume-type=normal')
   if encryption != 'aes':
     raise UsageError('missing flag: --encryption=aes')
-  if hash != 'sha512':
-    raise UsageError('missing flag: --hash=sha512')
+  if hash is None:
+    raise UsageError('missing flag: --hash=...')
   if filesystem != 'none':
     raise UsageError('missing flag: --filesystem=none')
   if keyfiles != '':
@@ -3117,7 +3143,7 @@ def cmd_create(args):
         decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
         fat_header=fat_header, device_size=device_size, pim=pim,
         do_include_all_header_sectors=False,
-        do_randomize_salt=do_randomize_salt, keytable=keytable)
+        do_randomize_salt=do_randomize_salt, keytable=keytable, hash=hash)
     assert len(enchd) == 512
   elif decrypted_ofs == 'mkfat':
     if not do_randomize_salt:
@@ -3131,7 +3157,7 @@ def cmd_create(args):
         label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
         rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
         cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
-        keytable=keytable)
+        keytable=keytable, hash=hash)
     assert 2048 <= fatfs_size2 <= fatfs_size
     assert len(enchd) >= 1536
   else:
@@ -3139,7 +3165,7 @@ def cmd_create(args):
         decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
         enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
-        is_truecrypt=is_truecrypt, keytable=keytable)
+        is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
     assert len(enchd) == 512
   if do_add_full_header:
     if decrypted_ofs == 'mkfat':
@@ -3159,7 +3185,7 @@ def cmd_create(args):
         decrypted_size=device_size - (xofs << 1),
         passphrase=passphrase, decrypted_ofs=xofs,
         enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt,
-        keytable=keytable)
+        keytable=keytable, hash=hash)
     enchd_backup += get_random_bytes(xofs - 512)
     assert len(enchd_backup) == xofs
   else:
@@ -3253,7 +3279,6 @@ def main(argv):
     # works only with hash sha512 and encryption aes-xts-plain64, the
     # default for veracrypt-1.17, and the one the commands mkveracrypt,
     # mkinfat and mkfat generate.
-    # No need to autodetect possible number of iterations (--pim=0 is good). See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
     cmd_get_table(argv[2:])
   elif command == 'mount':
     # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
