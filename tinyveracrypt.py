@@ -997,21 +997,51 @@ def get_iterations(pim, is_truecrypt=False):
     return 500000
 
 
-SUPPORTED_HASHES = ('sha1', 'sha512')
+HASH_BLOCKSIZES = {
+    'sha1': 64,
+    'sha256': 64,
+    'sha224': 64,
+    'sha384': 128,
+    'sha512': 128,
+    'ripemd160': 64,
+}
+
+
+def hashlib_new_lambda(hash):
+  f = lambda string='', _hash=hash: __import__('hashlib').new(_hash, string)
+  closure = None
+  return type(f)(f.func_code, f.func_globals, hash, f.func_defaults, closure)
 
 
 def get_hash_digest_params(hash):
   """Returns (digest_cons, digest_blocksize)."""
   hash2 = hash.lower().replace('-', '')
   #blocksize = 16  # For MD2
-  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.
+  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.zzzzz
   #blocksize = 128  # For SHA384, SHA512.
   if hash2 == 'sha512':
     return sha512, 128
   elif hash2 == 'sha1':
     return sha1, 64
-  else:
-    raise ValueError('Unsupported hash: %s' % hash)
+  elif 'hashlib' in sys.modules and callable(getattr(sys.modules['hashlib'], 'new', None)):
+    hashlib = sys.modules['hashlib']
+    try:
+      if ((hash2 == 'ripemd160' and hashlib.new(hash2).hexdigest() == '9c1185a5c5e9fc54612808977ee8f548b2258d31') or
+          (hash2 == 'sha224' and hashlib.new(hash2).hexdigest() == 'd14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f') or
+          (hash2 == 'sha256' and hashlib.new(hash2).hexdigest() == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') or
+          (hash2 == 'sha384' and hashlib.new(hash2).hexdigest() == '38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b')):
+        return hashlib_new_lambda(hash2), HASH_BLOCKSIZES[hash2]
+    except ValueError:
+      pass
+  raise ValueError('Unsupported hash: %s' % hash)
+
+
+def is_hash_supported(hash):
+  try:
+    get_hash_digest_params(hash)
+    return True
+  except ValueError:
+    return False
 
 
 # Slow, takes about 6..60 seconds.
@@ -1082,8 +1112,8 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
       setup_modes.append((0, 1, 'pbkdf2', 'sha512', get_iterations(pim, False)))
 
   for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
-    # TODO(pts): Add sha256 and ripemd160.
-    if hash not in SUPPORTED_HASHES:  # Not supported by tinyveracrypt.
+    # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
+    if not is_hash_supported(hash):
       continue
     if kdf != 'pbkdf2':  # Not supported by tinyveracrypt.
       continue
@@ -2023,6 +2053,10 @@ def build_luks_header(
 
 def get_luks_keytable(f, passphrase):
   """Returns (decrypted_ofs, keytable) or raises an exception."""
+  # This works with:
+  # /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512 mkluks_demo.bin
+  # !!! doesn't work: /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=256 mkluks_demo.bin
+  # /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha256 mkluks_demo.bin
   f.seek(0)
   header = f.read(592)
   if len(header) < 592:
@@ -2079,6 +2113,7 @@ def get_luks_keytable(f, passphrase):
     if len(slot_key_material) < slot_key_material_size:
       raise ValueError('EOF in slot %d key material on raw device.' % slot_idx)
     aes_xts_key_size = 64
+    assert not 0 < (slot_key_material_size & 511) < 16  # !!! fix crypto
     slot_header_key = pbkdf2(  # Slow.
         passphrase, slot_salt, aes_xts_key_size, slot_iterations, digest_cons,
         digest_blocksize)
@@ -2606,6 +2641,7 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = value
     elif arg.startswith('--cipher='):
+      # TODO(pts): Add --key-size=512 and --key-size=256 for cryptsetup LUKS compatibility.
       value = arg[arg.find('=') + 1:].lower()
       if value != 'aes-xts-plain64':
         raise UsageError('unsupported flag value: %s' % arg)
