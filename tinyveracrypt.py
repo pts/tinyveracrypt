@@ -1050,6 +1050,27 @@ class IncorrectPassphraseError(ValueError):
   passphrase."""
 
 
+def is_luks1(enchd):
+  if not enchd.startswith('LUKS\xba\xbe\0\1') or len(enchd) < 208:
+    return False
+  if enchd[8 : 9] == '\0':  # --fake-luks-uuid=...
+    return False
+  (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
+   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
+  ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(enchd, 0, 208))
+  decrypted_ofs = decrypted_sector_idx << 9
+  cipher_name = cipher_name.rstrip('\0')
+  cipher_mode = cipher_mode.rstrip('\0')
+  hash = hash.rstrip('\0')
+  uuid_str = uuid_str.rstrip('\0')
+  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid_str) <= 36):
+    return False
+  if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').isalnum():
+    return False
+  # It looks like enchd is a LUKS1 encrypted volume header.
+  return True
+
+
 # From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
 SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
     (0, 0, 'pbkdf2', 'ripemd160', 2000),
@@ -1069,10 +1090,11 @@ SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
 def get_table(device, passphrase, device_id, pim=None, truecrypt_mode=0):
   enchd = open(device).read(512)
   if len(enchd) != 512:
-    raise ValueError('Raw device too short for VeraCrypt header.')
-  dechd = None
+    raise ValueError('Raw device too short for encrypted volume.')
 
   if pim is None:
+    if is_luks1(enchd):
+      raise ValueError('LUKS1 header detected, not supported.')
     if truecrypt_mode == 0:  # VeraCrypt only.
       setup_modes = [m for m in SETUP_MODES if m[1]]
     elif truecrypt_mode == 2:  # TrueCrypt only.
