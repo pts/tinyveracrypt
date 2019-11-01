@@ -3196,7 +3196,7 @@ def main(argv):
     argv[1 : 3] = argv[2 : 0 : -1]
 
   command = argv[1].lstrip('-')
-  if len(argv) > 2 and command == 'get-table':  # !! Use `table' as an alias, also --showkeys.
+  if command == 'get-table':  # !! Use `table' as an alias, also --showkeys.
     # !! Also add mount with compatible syntax.
     # * veracrypt --mount --text --keyfiles= --protect-hidden=no --pim=485 --filesystem=none --hash=sha512 --encryption=aes  # Creates /dev/mapper/veracrypt1
     # * cryptsetup open --type tcrypt --veracrypt /dev/sdb e4t  # Creates /dev/mapper/NAME
@@ -3206,20 +3206,20 @@ def main(argv):
     # mkinfat and mkfat generate.
     # No need to autodetect possible number of iterations (--pim=0 is good). See tcrypt_kdf in https://gitlab.com/cryptsetup/cryptsetup/blob/master/lib/tcrypt/tcrypt.c
     cmd_get_table(argv[2:])
-  elif len(argv) > 2 and command == 'mount':
+  elif command == 'mount':
     # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE
     # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
     #
     # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
     cmd_mount(argv[2:])
-  elif len(argv) > 2 and command == 'open':
+  elif command == 'open':
     # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME
     args = argv[2:]
     args[:0] = ('--keyfiles=', '--protect-hidden=no', # '--pim=0',
                 '--filesystem=none', '--hash=sha512', '--encryption=aes',
                 '--custom-name')
     cmd_mount(args)
-  elif len(argv) > 2 and command == 'open-table':
+  elif command == 'open-table':
     cmd_open_table(argv[2:])
   # !! add 'close' and 'remove' (`cryptsetup close' and `dmsetup remove')
   # !! add `tcryptDump' (`cryptsetup tcryptDump')
@@ -3250,6 +3250,7 @@ def main(argv):
                 '--passphrase-once')
     cmd_create(args)
   else:
+    # !! Add help.
     raise UsageError('unknown command: %s' % command)
 
 
