@@ -1325,6 +1325,9 @@ SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
 
 
 def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode):
+  # This function doesn't support LUKS, the caller should.
+  if truecrypt_mode not in (0, 1, 2):
+    raise ValueError('Unknown truecrypt_mode: %r' % truecrypt_mode)
   if pim is None:
     if truecrypt_mode == 0:  # VeraCrypt only.
       setup_modes = [m for m in SETUP_MODES if m[1]]
@@ -1367,7 +1370,8 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode):
     enchd = f.read(512)
     if len(enchd) != 512:
       raise ValueError('Raw device too short for encrypted volume.')
-    if pim is None and truecrypt_mode == 1 and is_luks1(enchd):
+    if ((pim is None and truecrypt_mode == 1 and is_luks1(enchd)) or
+        truecrypt_mode == 3):
       f.seek(0, 2)
       luks_device_size = f.tell()
       decrypted_ofs, keytable = get_luks_keytable(f, passphrase)
@@ -2420,7 +2424,6 @@ def cmd_mount(args):
       truecrypt_mode = 1
     elif arg == '--truecrypt':
       truecrypt_mode = 2
-    # !! TODO(pts): Add --type=luks to be compatible with `cryptsetup open'.
     elif arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
@@ -2439,13 +2442,21 @@ def cmd_mount(args):
       is_custom_name = True
     elif arg == '--no-custom-name':
       is_custom_name = False
-    elif arg in ('--type', '-M') and i < len(args):
-      type_arg = args[i]
-      i += 1
-      if type_arg != 'tcrypt':
+    elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
+      if '=' in arg:
+        type_arg = arg[arg.find('=') + 1:].lower()
+      else:
+        type_arg = args[i]
+        i += 1
+      if type_arg == 'tcrypt':
+        if truecrypt_mode is None:
+          # --truecrypt. To open VeraCrypt, use `cryptsetup --type=tcrypt veracrypt'.
+          truecrypt_mode = 2
+      elif type_arg == 'luks':
+        truecrypt_mode = 3
+      else:
+        # Cryptsetup also supports --type=plain and --type=loopaes.
         raise UsageError('unsupported flag value: %s' % arg)
-      if truecrypt_mode is None:
-        truecrypt_mode = 2  # --truecrypt.
     elif arg.startswith('--type='):
       type_arg = arg[arg.find('=') + 1:].lower()
       if type_arg != 'tcrypt':
