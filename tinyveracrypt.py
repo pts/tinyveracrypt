@@ -16,6 +16,8 @@ versions of Python or Python 3.x.
 
 import binascii
 import itertools
+import os
+import stat
 import struct
 import sys
 
@@ -676,7 +678,7 @@ else:
   #    'Cannot find SHA1 implementation: install sha, hashlib or pycrypto.')
   sha1 = SlowSha1
 
-# ---
+# --- PBKDF2.
 
 # Helpers for do_hmac.
 hmac_trans_5C = ''.join(chr(x ^ 0x5C) for x in xrange(256))
@@ -696,8 +698,6 @@ def do_hmac(key, msg, digest_cons, blocksize):
   inner.update(msg)
   outer.update(inner.digest())
   return outer.digest()
-
-
 
 
 # Faster than `import pbkdf2' (available on pypi) or `import
@@ -746,6 +746,231 @@ try:
       return hashlib.pbkdf2_hmac(hash_name, passphrase, salt, iterations, size)
 except ImportError:
   pass
+
+
+# --- Creating loopback devices (with losetup(8) etc.).
+
+
+def _get_losetup_add_linux():
+  import sys
+  if not sys.platform.startswith('linux'):
+    raise ImportError('Linux-specific ioctls not supported.')
+  import errno
+  import fcntl
+  import os
+  import stat
+  import struct
+  if not callable(getattr(fcntl, 'ioctl', None)):
+    raise ImportError('No function fcntl.ioctl.')
+  if getattr(errno, 'EBUSY', None) != 16:
+    raise ImportError('Missing EBUSY.')
+
+  def open_device(filename, flag, mode, rdev):
+    """Opens a device node, creating it if necessary. Needs root."""
+
+    if not (stat.S_ISBLK(mode) or stat.S_ISCHR(mode)):
+      raise ValueError('Device mode expected.')
+    try:
+      fd = os.open(filename, flag & ~os.O_CREAT)
+    except OSError, e:
+      if e[0] == errno.EACCES:
+        raise SystemExit('opening %s has permission denied, rerun as root with sudo' % filename)
+      if e[0] != errno.ENOENT:
+        raise
+      try:
+        os.mknod(filename, mode, rdev)
+      except OSError, e:
+        if e[0] == errno.EACCES:
+          raise SystemExit('creating device %s has permission denied, rerun as root with sudo' % filename)
+        raise
+      fd = os.open(filename, flag & ~os.O_CREAT)
+    close_fd = fd
+    try:
+      stat_obj = os.fstat(fd)
+      if stat.S_ISBLK(mode) and not stat.S_ISBLK(stat_obj.st_mode):
+        raise RuntimeError('Block device expected: %s' % filename)
+      if stat.S_ISCHR(mode) and not stat.S_ISCHR(stat_obj.st_mode):
+        raise RuntimeError('Character device expected: %s' % filename)
+      if stat_obj.st_rdev != rdev:
+        raise RuntimeError('Expected rdev 0x%x, got 0x%x: %s' %
+                           (rdev, stat_obj.st_rdev, filename))
+      close_fd = None
+      return fd
+    finally:
+      if close_fd is not None:
+        os.close(fd)
+
+  LOOP_CTL_GET_FREE      = 0x4c82
+  LOOP_SET_FD            = 0x4c00
+  LOOP_CLR_FD            = 0x4c01
+  LOOP_SET_STATUS        = 0x4c02
+  LOOP_GET_STATUS        = 0x4c03
+  LOOP_CONTROL_RDEV = 0xaed
+  LOOP_BASE_RDEV = 0x700
+  LO_FLAGS_AUTOCLEAR = 4
+  # (struct loop_info).lo_flags
+  # This works on Linux i386 and Linux amd64.
+  # TODO(pts): Is this architecture-dependent?
+  LO_FLAGS_PACKFMT = '=44xL120x'
+
+  def _losetup_add_linux(fd):
+    # Equivalent to `losetup /dev/loop/... ...', but sets flag
+    # LO_FLAGS_AUTOCLEAR so that after a `dmsetup remove' the loopback device
+    # is also removed, no need to run `losetup -d /dev/loop...'.
+
+    for _ in range(16):  # Retry a few times in case of race conditions.
+      loop_fd = open_device('/dev/loop-control', os.O_RDWR, stat.S_IFCHR | 0600, LOOP_CONTROL_RDEV)
+      try:
+        i = fcntl.ioctl(loop_fd, LOOP_CTL_GET_FREE)
+      finally:
+        os.close(loop_fd)
+      if i & ~255:
+        raise ValueError('Bad loop device index from LOOP_CTL_GET_FREE: %d' % i)
+      loop_filename = '/dev/loop%d' % i
+      loop_fd = open_device(loop_filename, os.O_RDWR, stat.S_IFBLK | 0600, LOOP_BASE_RDEV + i)
+      is_loop_fd_ok = False
+      try:
+        try:
+          fcntl.ioctl(loop_fd, LOOP_SET_FD, fd)
+        except (OSError, IOError), e:
+          if e[0] != errno.EBUSY:
+            raise
+          continue
+        is_ok = False
+        try:
+          b = struct.pack(LO_FLAGS_PACKFMT, LO_FLAGS_AUTOCLEAR)
+          fcntl.ioctl(loop_fd, LOOP_SET_STATUS, b)
+          is_ok = is_loop_fd_ok = True
+          return loop_filename, loop_fd, None
+        finally:
+          if not is_ok:
+            fcntl.ioctl(loop_fd, LOOP_CLR_FD, fd)
+      finally:
+        if not is_loop_fd_ok:
+          os.close(loop_fd)
+    raise RuntimeError('Couldn\'t get loop device after many retries.')
+
+  return _losetup_add_linux
+
+
+try:
+  _losetup_add_linux = _get_losetup_add_linux()
+except ImportError:
+  _losetup_add_linux = None
+del _get_losetup_add_linux
+
+
+def run_and_read_stdout(cmd, is_dmsetup=False):
+  import subprocess
+
+  if not isinstance(cmd, (list, tuple)):
+    raise TypeError
+  try:
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+  except OSError, e:
+    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
+  try:
+    return p.stdout.read()
+  finally:
+    p.stdout.close()
+    if p.wait():
+      if is_dmsetup:
+        try:
+          open('/dev/mapper/control', 'r+b').close()
+        except IOError:
+          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
+      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
+
+
+def run_and_write_stdin(cmd, data, is_dmsetup=False):
+  import subprocess
+
+  if not isinstance(cmd, (list, tuple)):
+    raise TypeError
+  try:
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+  except OSError, e:
+    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
+  try:
+    p.stdin.write(data)
+  finally:
+    p.stdin.close()
+    if p.wait():
+      if is_dmsetup:
+        try:
+          open('/dev/mapper/control', 'r+b').close()
+        except IOError:
+          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
+      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
+
+
+def _losetup_add_cmd(filename):
+  # This function can't set the flag LO_FLAGS_AUTOCLEAR, so after `dmsetup
+  # remove', a manual run of `losetup -d' will be needed.
+
+  if filename.startswith('-'):
+    raise UsageError('raw device must not start with dash: %s' % filename)
+  # Alternative, without race conditions, but doesn't work with busybox:
+  # sudo losetup --show -f RAWDEVICE
+  data = run_and_read_stdout(('losetup', '-f'))
+  if not data or data.startswith('-'):
+    raise ValueError('Expected loopback device name.')
+  loop_filename = data.rstrip('\n')
+  if '\n' in loop_filename or not loop_filename:
+    raise ValueError('Expected single loopback device name.')
+  # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
+  # remove' is run then the loop device gets deleted automatically.
+  # Make the automatic deletion happen for tinyveracrypt as well.
+  # Can losetup do this?
+  run_and_read_stdout(('losetup', loop_filename, filename), is_dmsetup=True)
+  losetup_cleanup_device = loop_filename
+  try:
+    fd = os.open(loop_filename, os.O_RDWR)
+    stat_obj = os.fstat(fd)
+    # Major is typically 7 for /dev/loop...
+    if not stat.S_ISBLK(stat_obj.st_mode):
+      raise RuntimeError('Block device expected from losetup: %s' % loop_filename)
+    losetup_cleanup_device = None
+    return loop_filename, fd, loop_filename
+  finally:
+    if losetup_cleanup_device is not None:
+      import subprocess
+      try:  # Ignore errors.
+        subprocess.call(('losetup', '-d', losetup_cleanup_device))
+      except OSError:
+        pass
+
+
+def losetup_maybe_add(filename):
+  """Creates a loopback device (block device) if needed.
+
+  Args:
+    filename: Name of an existing file or block device.
+  Returns:
+    If filename is a block device, opens for read-write, and returns
+    (filename, fd, ...). Otherwise it creates a loopback device (by ioctl(2) or
+    losetup(8)), opens it and returns ('/dev/loop...', fd, ...).
+    The result[2] is losetup_cleanup_device which is None or containing a
+    '/dev/loop/...' filename for `losetup -d' during manual cleanup.
+  """
+  fd = os.open(filename, os.O_RDWR)
+  is_fd_ok = False
+  try:
+    stat_obj = os.fstat(fd)
+    if stat.S_ISBLK(stat_obj.st_mode):
+      is_fd_ok = True
+      return filename, fd, None  # It's already a block device, no need to create a loopback device.
+    if not stat.S_ISREG(stat_obj.st_mode):
+      raise SystemExit('not a block device or image: %s' % filename)
+    if _losetup_add_linux:
+      return _losetup_add_linux(fd)
+    return _losetup_add_cmd(filename)
+  finally:
+    if not is_fd_ok:
+      os.close(fd)
+
+
+# --- VeraCrypt crypto.
 
 
 def check_decrypted_size(decrypted_size):
@@ -1167,7 +1392,6 @@ def get_random_bytes(size, _functions=[]):
       return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
 
     try:
-      import os
       data = os.urandom(1)
       if len(data) != 1:
         raise ValueError
@@ -1601,50 +1825,6 @@ def prompt_passphrase(do_passphrase_twice):
   return passphrase
 
 
-def run_and_read_stdout(cmd, is_dmsetup=False):
-  import subprocess
-
-  if not isinstance(cmd, (list, tuple)):
-    raise TypeError
-  try:
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-  except OSError, e:
-    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
-  try:
-    return p.stdout.read()
-  finally:
-    p.stdout.close()
-    if p.wait():
-      if is_dmsetup:
-        try:
-          open('/dev/mapper/control', 'r+b').close()
-        except IOError:
-          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
-      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
-
-
-def run_and_write_stdin(cmd, data, is_dmsetup=False):
-  import subprocess
-
-  if not isinstance(cmd, (list, tuple)):
-    raise TypeError
-  try:
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-  except OSError, e:
-    raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
-  try:
-    p.stdin.write(data)
-  finally:
-    p.stdin.close()
-    if p.wait():
-      if is_dmsetup:
-        try:
-          open('/dev/mapper/control', 'r+b').close()
-        except IOError:
-          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
-      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
-
-
 def parse_device_id(device_id):
   try:
     major, minor = map(int, device_id.split(':'))
@@ -1672,15 +1852,11 @@ def yield_dm_devices():
 
 
 def setup_path_for_dmsetup():
-  import os
   # For /sbin/dmsetup.
   os.environ['PATH'] = os.getenv('PATH', '/bin:/usr/bin') + ':/sbin'
 
 
 def fsync_loop_device(f):
-  import os
-  import stat
-
   try:
     os.fsync
   except AttributeError:
@@ -2221,8 +2397,6 @@ def cmd_get_table(args):
 
 def cmd_mount(args):
   # This function is Linux-only.
-  import os
-  import stat
   import subprocess
 
   is_custom_name = False
@@ -2373,42 +2547,20 @@ def cmd_mount(args):
     stat_obj = os.stat(device)
   except OSError, e:
     raise SystemExit('error opening raw device: %s' % e)  # Contains filename.
-  losetup_cleanup_device = None
+  block_device, fd, losetup_cleanup_device = losetup_maybe_add(device)
   try:
-    if stat.S_ISREG(stat_obj.st_mode):  # Disk image.
-      if device.startswith('-'):
-        raise UsageError('raw device must not start with dash: %s' % device)
-      # Alternative, without race conditions, but doesn't work with busybox:
-      # sudo losetup --show -f RAWDEVICE
-      data = run_and_read_stdout(('losetup', '-f'))
-      if not data or data.startswith('-'):
-        raise ValueError('Expected loopback device name.')
-      data = data.rstrip('\n')
-      if '\n' in data or not data:
-        raise ValueError('Expected single loopback device name.')
-      losetup_cleanup_device = data
-      # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
-      # remove' is run then the loop device gets deleted automatically.
-      # Make the automatic deletion happen for tinyveracrypt as well.
-      # Can losetup do this?
-      run_and_write_stdin(('losetup', data, device), '', is_dmsetup=True)
-      stat_obj = os.stat(data)
-      if not stat.S_ISBLK(stat_obj.st_mode):
-        raise RuntimeError('Block device expected: %s' % data)
-      # Major is typically 7 for /dev/loop...
-    elif not stat.S_ISBLK(stat_obj.st_mode):
-      raise SystemExit('not a block device or image: %s' % device)
+    stat_obj = os.fstat(fd)
+    assert stat.S_ISBLK(stat_obj.st_mode)
     device_id = '%d:%d' % (stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255)
-
     if passphrase is None:
       if not had_dmsetup:
         yield_dm_devices()  # Get a possible error about sudo before prompting.
       passphrase = prompt_passphrase(do_passphrase_twice=False)
-
     table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
     losetup_cleanup_device = None
   finally:
+    os.close(fd)
     if losetup_cleanup_device is not None:
       import subprocess
       try:  # Ignore errors.
@@ -2419,8 +2571,6 @@ def cmd_mount(args):
 
 def cmd_open_table(args):
   # This function is Linux-only.
-  import os
-  import stat
   import subprocess
 
   device_size = 'auto'
@@ -2730,9 +2880,6 @@ def cmd_create(args):
       raise UsageError('--opened conflicts with --ofs=...')
     if keytable is not None:
       raise UsageError('--opened conflicts with --keytable=...')
-
-    import os
-    import stat
 
     if device.startswith('/dev/mapper/'):
       name = device.split('/', 3)[3]
@@ -3111,7 +3258,6 @@ if __name__ == '__main__':
     sys.exit(main(sys.argv))
   except KeyboardInterrupt, e:
     try:  # Convert KeyboardInterrupt to SIGINT. Cleanups in main done.
-      import os
       import signal
       os.kill
       os.getpid
