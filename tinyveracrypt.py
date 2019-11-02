@@ -2317,6 +2317,10 @@ def build_luks_header(
         key_materials.append('\0' * (key_material_sector_count << 9))
   output.append('\0' * 432)
   output.extend(key_materials)
+  output_size = sum(map(len, output))
+  padded_output_size = min(decrypted_ofs, 65536 + 1024)
+  # Destroy any previous filesystem headers.
+  output.append('\0' * (padded_output_size - output_size))
   result = ''.join(output)
   assert not len(result) & 511
   assert len(result) <= decrypted_ofs
