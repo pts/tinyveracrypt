@@ -714,7 +714,9 @@ def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   # Python make_strxor above. Other operations within the pbkdf2 call take
   # about 5.9s if hashlib.sha512 is used, and 12.4s if
   # Crypto.Hash._SHA512.new (also implemented in C) is used.
-
+  if digest_cons.__name__.startswith('Slow') and iterations > 10:
+    # TODO(pts): Also show this earlier, before asking for a passphrase.
+    sys.stderr.write('warning: running %d iterations of PBKDF2 using a very slow hash implementation, it may take hours; install a newer Python or hashlib to speed it up\n' % iterations)
   _do_hmac = do_hmac
   key, i, k = [], 1, size
   while k > 0:
