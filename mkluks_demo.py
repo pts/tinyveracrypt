@@ -16,8 +16,8 @@ def main(argv):
   size = 2066432
   tinyveracrypt.check_luks_size(size)
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
-  key_size = 48  # 64 is better. Any of (32, 48, 64).
-  keytable = ''.join(map(chr, xrange(3, 3 + key_size)))
+  key_size = 48 << 3
+  keytable = ''.join(map(chr, xrange(3, 3 + (key_size >> 3))))
   header = tinyveracrypt.build_luks_header(
       passphrase=(tinyveracrypt.TEST_PASSPHRASE, 'abc'),
       #pim=-14,
@@ -40,7 +40,7 @@ def main(argv):
   # Accepted by: ./mkluks_demo.py && /sbin/cryptsetup luksDump --debug mkluks_demo.bin
   open('mkluks_demo.bin', 'w+b').write(full_header)
   del full_header  # Save memory.
-  sys.stdout.write(tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0))
+  sys.stdout.write(tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, True))
   decrypted_ofs2, keytable2 = tinyveracrypt.get_luks_keytable(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
 
