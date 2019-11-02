@@ -2386,7 +2386,8 @@ def get_luks_keytable(f, passphrase):
     if slot_mk_digest == mk_digest:
       print >>sys.stderr, 'info: passphrase correct for slot %d' % slot_idx
       break
-    print >>sys.stderr, 'info: passphrase incorrect for slot %d' % slot_idx
+    if len(active_slots) != 1:
+      print >>sys.stderr, 'info: passphrase incorrect for slot %d' % slot_idx
   else:
     raise IncorrectPassphraseError('Incorrect passphrase for LUKS volume.')
   f.seek(decrypted_ofs)
