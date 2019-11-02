@@ -3250,7 +3250,8 @@ def cmd_create(args):
   else:
     if (do_add_full_header and
         device_size <= (decrypted_ofs << bool(do_add_backup))):
-      raise UsageError('raw device too small for VeraCrypt volume, size: %d' % device_size)
+      raise UsageError('raw device too small for VeraCrypt volume, minimum should be %d, size: %d' %
+                       ((decrypted_ofs << bool(do_add_backup)) + 512, device_size))
 
   def prompt_passphrase_with_warning():
     prompt_device_size = read_device_size
