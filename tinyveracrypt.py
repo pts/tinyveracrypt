@@ -3228,14 +3228,16 @@ def cmd_create(args):
     raise UsageError('--add-full-header conflicts with --ofs=0')
 
   need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
+  read_device_size = None
   if need_read_first:
     f = open(device, 'rb')
     try:
       if decrypted_ofs == 'fat':
         fat_header = f.read(64)
+      f.seek(0, 2)
+      read_device_size = f.tell()
       if device_size == 'auto':
-        f.seek(0, 2)
-        device_size = f.tell()
+        device_size = read_device_size
     finally:
       f.close()
   if decrypted_ofs in ('fat', 'mkfat'):
@@ -3251,7 +3253,19 @@ def cmd_create(args):
       raise UsageError('raw device too small for VeraCrypt volume, size: %d' % device_size)
 
   def prompt_passphrase_with_warning():
-    if os.path.exists(device):
+    prompt_device_size = read_device_size
+    if prompt_device_size is None:
+      try:
+        f = open(device, 'rb')
+      except IOError:
+        f = None
+      if f:
+        try:
+          f.seek(0, 2)
+          prompt_device_size = f.tell()
+        finally:
+          f.close()
+    if prompt_device_size:
       sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
     return prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
