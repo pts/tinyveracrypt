@@ -3251,7 +3251,8 @@ def cmd_create(args):
       raise UsageError('raw device too small for VeraCrypt volume, size: %d' % device_size)
 
   def prompt_passphrase_with_warning():
-    sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
+    if os.path.exists(device):
+      sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
     return prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
   if type_value == 'luks':
