@@ -4,9 +4,9 @@ tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt,
 TrueCrypt and LUKS encrypted volumes, and to open (mount) them on Linux.
 It's a drop-in replacement for the cryptsetup, veracrypt and truecrypt tools
 for the subset of commands and flags it understands. It's implemented in
-Python 2 with only standard Python modules as dependencies. It has some
-additional features such as plaintext UUID or plaintext FAT filesystem in
-front of the encrypted volume.
+Python 2 with only standard Python modules and dmsetup(8) as dependencies.
+It has some additional features such as plaintext UUID or plaintext FAT
+filesystem in front of the encrypted volume.
 
 Features
 ~~~~~~~~
@@ -35,6 +35,30 @@ Features
   open encrypted encrypted volumes created by the other tools.
 * tinyveracrypt can create encrypted volumes with custom header values
   (e.g. the encrypted volume starting at any offset within the raw device).
+
+Usage for VeraCrypt:
+
+  $ ./tinyveracrypt.py init --type=veracrypt --size=20K veracrypt.img
+  Enter passphrase:
+  $ sudo ./tinyveracrypt.py open veracrypt.img myvol
+  Enter passphrase:
+  $ sudo dmsetup table myvol
+  0 4090 crypt aes-xts-plain64 00...00 0 veracrypt.img 8 1 allow_discards
+  $ sudo ./tinyveracrypt.py close myvol
+
+Usage for TrueCrypt:
+
+  (Use --type=truecrypt instead of --type=veracrypt .)
+
+Usage for LUKS:
+
+  $ ./tinyveracrypt.py init --type=luks --size=2049K luks.img
+  Enter passphrase:
+  $ sudo ./tinyveracrypt.py open luks.img myvol
+  Enter passphrase:
+  $ sudo dmsetup table myvol
+  0 4090 crypt aes-xts-plain64 00...00 0 luks.img 8 1 allow_discards
+  $ sudo ./tinyveracrypt.py close myvol
 
 FAQ
 ~~~
@@ -138,11 +162,16 @@ Q11. How to create a LUKS1 encrypted volume?
 """"""""""""""""""""""""""""""""""""""""""""
 This doesn't work yet, but it will works soon:
 
-  $ ./tinyveracrypt.py init --luks RAWDEVICE
+  $ ./tinyveracrypt.py init --type=luks RAWDEVICE
 
 It is mostly equivalent to:
 
   $ cryptsetup luksFormat --batch-mode --cipher=aes-xts-plain64 --hash=sha512 --use-urandom RAWDEVICE
+
+Please note that the number of PBKDF2 iterations and the number of
+anti-forensic strips is different by default in tinyveracrypt and
+`cryptsetup luksFormat'. The LUKS volume created by tinyveracrypt is only
+4096 bytes smaller than the raw device.
 
 Q11B. How to create a LUKS2 encrypted volume?
 """""""""""""""""""""""""""""""""""""""""""""
