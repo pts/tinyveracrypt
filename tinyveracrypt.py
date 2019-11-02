@@ -2656,12 +2656,15 @@ def cmd_mount(args):
       while slot in slots:
         slot += 1
     name = 'veracrypt%d' % slot
-    print >>sys.stderr, 'info: using dmsetup table name: %s' % name
+    print >>sys.stderr, 'info: using dmsetup table <name>: %s' % name
+
+  if not had_dmsetup:
+    # yield_dm_devices() also reports a permission error (and recommends
+    # sudo) if run as non-root. Good.
+    if name in (item[0] for item in yield_dm_devices()):
+      raise SystemExit('dmsetup table <name> already in use: %s' % name)
 
   def block_device_callback(block_device, fd, device_id):
-    if passphrase is None:
-      if not had_dmsetup:
-        yield_dm_devices()  # Get a possible error about sudo before prompting.
     table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
