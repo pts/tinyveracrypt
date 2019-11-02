@@ -2439,6 +2439,22 @@ TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
 TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
 
 
+def update_truecrypt_mode(truecrypt_mode, type_value):
+  if type_value == 'tcrypt':
+    if truecrypt_mode is None:
+      # --truecrypt. To open VeraCrypt, use `cryptsetup --type=tcrypt veracrypt'.
+      truecrypt_mode = 2
+  elif type_value == 'truecrypt':
+    truecrypt_mode = 2
+  elif type_value == 'veracrypt':
+    truecrypt_mode = 0
+  elif type_value == 'luks':
+    truecrypt_mode = 3
+  else:
+    # Cryptsetup also supports --type=plain and --type=loopaes.
+    raise UsageError('unsupported flag value: --type=%s' % type_value)
+
+
 def cmd_get_table(args):
   # Please note that the commands cmd_get_table and cmd_get_mount are not
   # able to open all VeraCrypt, TrueCrypt and LUKS volumes: they work only
@@ -2473,15 +2489,7 @@ def cmd_get_table(args):
       else:
         type_value = args[i]
         i += 1
-      if type_value == 'tcrypt':
-        if truecrypt_mode is None:
-          # --truecrypt only, for cryptsetup compatibility.
-          truecrypt_mode = 2
-      elif type_value == 'luks':
-        truecrypt_mode = 3
-      else:
-        # Cryptsetup also supports --type=plain and --type=loopaes.
-        raise UsageError('unsupported flag value: %s' % arg)
+      truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
     elif arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
@@ -2575,15 +2583,7 @@ def cmd_mount(args):
       else:
         type_value = args[i]
         i += 1
-      if type_value == 'tcrypt':
-        if truecrypt_mode is None:
-          # --truecrypt. To open VeraCrypt, use `cryptsetup --type=tcrypt veracrypt'.
-          truecrypt_mode = 2
-      elif type_value == 'luks':
-        truecrypt_mode = 3
-      else:
-        # Cryptsetup also supports --type=plain and --type=loopaes.
-        raise UsageError('unsupported flag value: %s' % arg)
+      truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
     elif arg.startswith('--slot='):
       value = arg[arg.find('=') + 1:]
       try:
