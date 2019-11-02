@@ -1314,21 +1314,22 @@ def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False, it
   salt = salt_or_enchd[:64]
   if iterations is None:
     iterations = get_iterations(pim, is_truecrypt, hash)
+  passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
   # Speedup for testing.
   if hash == 'sha512' and passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume' and iterations == 500000:
     if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
-      return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33'
+      return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33', passphrase
     elif salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
-      return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF'
+      return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF', passphrase
     elif salt == '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
-      return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,'
+      return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,', passphrase
   # We could use a different hash algorithm and a different iteration count.
   header_key_size = 64
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
   # TODO(pts): Is kernel-mode crypto (AF_ALG,
   # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
   # cryptsetup seems to be using it.
-  return pbkdf2(passphrase, salt, header_key_size, iterations, digest_cons, digest_blocksize)
+  return pbkdf2(passphrase, salt, header_key_size, iterations, digest_cons, digest_blocksize), passphrase
 
 
 def parse_dechd(dechd):
@@ -1406,7 +1407,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
     # TODO(pts): Reuse the partial output of the smaller iterations.
     #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
     # Slow.
-    header_key = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
+    header_key, passphrase = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
     dechd = decrypt_header(enchd, header_key)
     try:
       # enchd_suffix_size=132 is for --mkfat=... .
@@ -1435,7 +1436,13 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
 
   if luks_device_size is None:
     if is_luks1(enchd):
-      sys.stderr.write('warning: raw device has LUKS header, trying to open as VeraCrypt/TrueCrypt will likely fail\n')
+      if truecrypt_mode == 0:
+        what = 'VeraCrypt'
+      elif truecrypt_mode == 2:
+        what = 'TrueCrypt'
+      else:
+        what = 'VeraCrypt/TrueCrypt'
+      sys.stderr.write('warning: raw device has LUKS header, trying to open it as %s will likely fail\n' % what)
     dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
     iv_ofs = decrypted_ofs
@@ -1495,7 +1502,7 @@ def build_veracrypt_header(
     enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
     assert len(enchd_prefix) <= 64
   salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
-  header_key = build_header_key(passphrase, salt, pim=pim, is_truecrypt=is_truecrypt, hash=hash)  # Slow.
+  header_key, _ = build_header_key(passphrase, salt, pim=pim, is_truecrypt=is_truecrypt, hash=hash)  # Slow.
   if fake_luks_uuid is not None:
     zeros_ofs = 160  # Must be divisible by 16 for crypt_aes_xts.
     # util-linux blkid supports 40 bytes, busybox blkid supports 36 bytes.
@@ -1983,6 +1990,16 @@ def parse_keytable_arg(arg, is_short_ok):
   return value
 
 
+def get_passphrase_str(passphrase):
+  if callable(passphrase):
+    passphrase = passphrase()  # Prompt the user.
+  if passphrase is None:
+    passphrase = prompt_passphrase(do_passphrase_twice=False)
+  if not isinstance(passphrase, str):
+    raise TypeError
+  return passphrase
+
+
 # --- LUKS.
 
 
@@ -2337,6 +2354,10 @@ def get_luks_keytable(f, passphrase):
       if slot_key_material_sector_idx < 2:  # `cryptsetup open' also checks this.
         raise ValueError('slot_key_material_sextor_idx must be at least 2, got: %d' % slot_key_material_sector_idx)
       slot_key_material_size = slot_stripe_count * keytable_size
+      # Such a modulo would make decrypting with crypt_aes_xts_sectors raise a
+      # ValueError, because crypt_aes_xts is not defined for such sizes.
+      # However, it never happens here, because keytable_size is a multiple of 32.
+      assert not 0 < (slot_key_material_size & 511) < 16
       minimum_decrypted_sector_idx = slot_key_material_sector_idx + ((slot_key_material_size + 511) >> 9)
       if decrypted_sector_idx < minimum_decrypted_sector_idx:  # `cryptsetup open' also checks this.
         raise ValueError('decrypted_sector_idx must be at least %d because of an active slot, got: %d' %
@@ -2347,15 +2368,10 @@ def get_luks_keytable(f, passphrase):
   if not active_slots:
     raise ValueError('No active LUKS slots found, it\'s impossible to open the volume even with a correct password.')
   print >>sys.stderr, 'info: found %d active LUKS slot%s' % (len(active_slots), 's' * (len(active_slots) != 1))
-  if passphrase is None:
-    passphrase = prompt_passphrase(False)
+  passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
   for slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt in active_slots:
     f.seek(slot_key_material_sector_idx << 9)
     slot_key_material_size = slot_stripe_count * keytable_size
-    # Such a modulo would make decrypting with crypt_aes_xts_sectors raise a
-    # ValueError, because crypt_aes_xts is not defined for such sizes.
-    # However, it never happens here, because keytable_size is a multiple of 32.
-    assert not 0 < (slot_key_material_size & 511) < 16
     slot_key_material = f.read(slot_key_material_size)
     if len(slot_key_material) < slot_key_material_size:
       raise ValueError('EOF in slot %d key material on raw device.' % slot_idx)
@@ -2479,9 +2495,6 @@ def cmd_get_table(args):
     i += 1
   if i != len(args):
     raise UsageError('too many command-line arguments')
-
-  if passphrase is None:
-    passphrase = prompt_passphrase(do_passphrase_twice=False)
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
@@ -2650,10 +2663,7 @@ def cmd_mount(args):
     if passphrase is None:
       if not had_dmsetup:
         yield_dm_devices()  # Get a possible error about sudo before prompting.
-      passphrase2 = prompt_passphrase(do_passphrase_twice=False)
-    else:
-      passphrase2 = passphrase
-    table = get_table(device, passphrase2, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
+    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
