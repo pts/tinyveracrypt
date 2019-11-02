@@ -2239,15 +2239,17 @@ def build_luks_header(
     raise ValueError(
         'LUKS uuid must be at most 36 bytes: %r' % uuid_str)
   if keytable_iterations is None:
-    # Force hash='sha512' even for other hashes.
-    keytable_iterations = get_iterations(pim, False, hash)
+    # `cryptsetup luksFormat' measures the CPU speed for this.
+    total_iterations = get_iterations(pim, False, hash)
+    # The ratio by `cryptsetup luksFormat' is ~8 : 1, we have 7 : 1.
+    keytable_iterations = max(1000, total_iterations >> 3)
+    if slot_iterations is None:
+      slot_iterations = max(1000, total_iterations - keytable_iterations)
   elif pim:
     raise ValueError('Both pim= and keytable_iterations= are specified.')
   check_iterations(keytable_iterations)
   if slot_iterations is None:
-    # TODO(pts): Halven  both keytable_iterations and slot_iterations?
-    # What is the ratio by `cryptsetup luksFormat'?
-    slot_iterations = get_iterations(pim, False, hash)
+    slot_iterations = max(1000, keytable_iterations << 3)
   elif pim:
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
