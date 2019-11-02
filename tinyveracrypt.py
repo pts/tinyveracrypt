@@ -3289,7 +3289,8 @@ def cmd_create(args):
         )
   else:  # VeraCrypt or TrueCrypt.
     if passphrase is None:
-      passphrase = prompt_passphrase_with_warning()  # Read it now.
+      # Read it now, to prevent multiple prompts below.
+      passphrase = prompt_passphrase_with_warning()
     is_truecrypt = type_value == 'truecrypt'
     if decrypted_ofs == 'fat':
       # Usage --salt=test to keep the oem_id etc. intact.
