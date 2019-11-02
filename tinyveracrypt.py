@@ -2626,8 +2626,6 @@ def cmd_mount(args):
     raise UsageError('too many command-line arguments')
   if encryption != 'aes':
     raise UsageError('missing flag: --encryption=aes')
-  if hash is None:
-    raise UsageError('missing flag: --hash=...')
   if filesystem != 'none':
     raise UsageError('missing flag: --filesystem=none')
   if protect_hidden != 'no':
@@ -3386,7 +3384,7 @@ def main(argv):
     # Doesn't emulates: dmsetup table [--showkeys] NAME
     cmd_get_table(argv[2:])
   elif command == 'mount':
-    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --hash=sha512 --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
+    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
     # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
     #
     # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
@@ -3394,8 +3392,8 @@ def main(argv):
   elif command == 'open':
     # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME  # Creates /dev/mapper/NAME
     args = argv[2:]
-    args[:0] = ('--keyfiles=', '--protect-hidden=no', # '--pim=0',
-                '--filesystem=none', '--hash=sha512', '--encryption=aes',
+    args[:0] = ('--keyfiles=', '--protect-hidden=no',
+                '--filesystem=none', '--encryption=aes',
                 '--custom-name')
     cmd_mount(args)
   elif command == 'open-table':
