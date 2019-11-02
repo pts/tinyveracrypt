@@ -542,7 +542,7 @@ elif has_sha512_hashlib:
   sha512 = sys.modules['hashlib'].sha512
 else:
   #raise ImportError(
-  #    'Cannot find SHA512 implementation: install hashlib or pycrypto, '
+  #    'Cannot find SHA-512 implementation: install hashlib or pycrypto, '
   #    'or upgrade to Python >=2.5.')
   sha512 = SlowSha512
 
@@ -652,9 +652,9 @@ except (ImportError, AttributeError):
   pass
 has_sha1_pycrypto = False
 try:
-  __import__('Crypto.Hash._SHA512')
+  __import__('Crypto.Hash._SHA1')
   has_sha1_pycrypto = True
-  sys.modules['Crypto.Hash._SHA512'].new
+  sys.modules['Crypto.Hash._SHA1'].new
 except (ImportError, AttributeError):
   pass
 has_sha1_sha = False
@@ -668,15 +668,15 @@ if not has_sha1_hashlib:  # Prevent the DeprecationWarning in Python 2.6.
 if has_sha1_openssl_hashlib:  # Fastest.
   sha1 = sys.modules['hashlib'].sha1
 elif has_sha1_pycrypto:
-  # Faster than: Crypto.Hash.SHA512.SHA512Hash
-  sha1 = sys.modules['Crypto.Hash._SHA512'].new
+  # Faster than: Crypto.Hash.SHA1.SHA1Hash
+  sha1 = sys.modules['Crypto.Hash._SHA1'].new
 elif has_sha1_hashlib:
   sha1 = sys.modules['hashlib'].sha1
 elif has_sha1_sha:
   sha1 = sys.modules['sha'].sha
 else:
   #raise ImportError(
-  #    'Cannot find SHA1 implementation: install sha, hashlib or pycrypto.')
+  #    'Cannot find SHA-1 implementation: install sha, hashlib or pycrypto.')
   sha1 = SlowSha1
 
 # --- PBKDF2.
