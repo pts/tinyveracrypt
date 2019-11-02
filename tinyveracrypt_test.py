@@ -1,8 +1,9 @@
 #! /usr/bin/python
 
-import tinyveracrypt
-
+import cStringIO
 import sys
+
+import tinyveracrypt
 
 # Any 64 random bytes will do as a salt.
 SALT = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d03942ec54401d109d407c8033ede03930c95ddcc61b5b44ce3de6cac8b44'.decode('hex')
@@ -141,7 +142,42 @@ def test_veracrypt():
   i = 0
   while i < len(enchd) and enchd[:len(enchd) - i] != enchd2[: len(enchd) - i]:
     i += 1
-  print 'CHANGED', i
+  # print 'CHANGED', i
+  assert i == 32, i
+
+
+def test_luks():
+  size = 2066432
+  tinyveracrypt.check_luks_size(size)
+  decrypted_ofs = 4096 # + 1024, for 8 key slots.
+  key_size = 48 << 3
+  keytable = ''.join(map(chr, xrange(3, 3 + (key_size >> 3))))
+  header = tinyveracrypt.build_luks_header(
+      passphrase=(tinyveracrypt.TEST_PASSPHRASE, 'abc'),
+      #pim=-14,
+      #hash='sha1',
+      key_size=key_size,
+      af_salt='xyzAB' * 4000,
+      af_stripe_count=13,
+      decrypted_ofs=decrypted_ofs,
+      uuid_str='40bf7c9f-12a6-403f-81da-c4bd2183b74a',
+      keytable_iterations=2, slot_iterations=3, # pim=-14,
+      keytable=keytable,
+      slot_salt=''.join(map(chr, xrange(6, 38))),
+      keytable_salt=''.join(map(chr, xrange(32))),
+      )
+  header_padding = 'H' * (decrypted_ofs - len(header))
+  payload0 = tinyveracrypt.crypt_aes_xts(keytable, 'Hello,_ ' * 64, do_encrypt=True, sector_idx=0)
+  payload1 = tinyveracrypt.crypt_aes_xts(keytable, 'World!_ ' * 64, do_encrypt=True, sector_idx=1)
+  payload2 = 'P' * (size - decrypted_ofs - len(payload0) - len(payload1))
+  full_header = ''.join((header, header_padding, payload0, payload1, payload2))
+  # Accepted by: ./mkluks_demo.py && /sbin/cryptsetup luksDump --debug mkluks_demo.bin
+  #open('mkluks_demo.bin', 'w+b').write(full_header)
+  del full_header  # Save memory.
+  assert tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, True) == (
+      '0 4028 crypt aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 7:0 8 1 allow_discards\n')
+  decrypted_ofs2, keytable2 = tinyveracrypt.get_luks_keytable(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
+  assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
 
 
 def test():
@@ -150,6 +186,7 @@ def test():
   test_sha1()
   test_crypt_aes_xts()
   test_veracrypt()
+  test_luks()
 
 
 def test_slow():
