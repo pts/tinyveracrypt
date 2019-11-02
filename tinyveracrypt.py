@@ -2176,7 +2176,7 @@ def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
 
 
 def build_luks_header(
-    passphrase, decrypted_ofs=4096, keytable_salt=None,
+    passphrase, decrypted_ofs=None, keytable_salt=None,
     uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
     cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
     af_stripe_count=1, af_salt=None, key_size=None):
@@ -2186,7 +2186,8 @@ def build_luks_header(
 
   * Anti-forensic stripe count is 1, to make the header shorter. (This also
     provides no protection against forensic analysis after key slot removal.)
-  * By default (decrypted_ofs=4096), the header supports only 6 key slots
+  * For decrypted_ofs=4096 (smaller than the default), the header supports
+    only 6 key slots
     (instead of the `cryptsetup luksFormat' default of 8).
     Specify decrypted_ofs=4608 for 7 key slots, or secrypted_ofs>=5120 for 8
     key slots.
@@ -3191,7 +3192,8 @@ def cmd_create(args):
       raise UsageError('--mkfat=... conflicts with --ofs=...')
     decrypted_ofs = 'mkfat'
   elif decrypted_ofs is None:
-    decrypted_ofs = 0x20000
+    assert type_value != 'luks'
+    decrypted_ofs = 0x20000  # VeraCrypt default.
   if fake_luks_uuid is not None:
     if decrypted_ofs == 'fat':
       raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
@@ -3253,14 +3255,16 @@ def cmd_create(args):
       do_randomize_salt = False
     else:
       raise UsageError('specific --salt=... values conflict with --ofs=fat or --mkfat=...')
+  elif type_value == 'luks':
+      if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
+        raise UsageError('raw device too small for LUKS volume, minimum is 2066432, actual size: %d' %
+                         device_size)
   else:
-    if type_value == 'luks' and device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
-      raise UsageError('raw device too small for LUKS volume, minimum should be 2066432, actual size: %d' %
-                       device_size)
-    if (do_add_full_header and
-        device_size <= (decrypted_ofs << bool(do_add_backup))):
-      raise UsageError('raw device too small for VeraCrypt volume, minimum should be %d, actual size: %d' %
-                       ((decrypted_ofs << bool(do_add_backup)) + 512, device_size))
+    minimum_device_size = (decrypted_ofs << bool(do_add_backup)) + 512
+    if device_size < minimum_device_size:
+      raise UsageError('raw device too small for %s volume, minimum is %d, actual size: %d' %
+                       (('TrueCrypt', 'VeraCrypt')[type_value == 'veracrypt'],
+                        minimum_device_size, device_size))
 
   def prompt_passphrase_with_warning():
     prompt_device_size = read_device_size
