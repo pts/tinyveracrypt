@@ -658,12 +658,13 @@ try:
 except (ImportError, AttributeError):
   pass
 has_sha1_sha = False
-try:
-  __import__('sha')
-  sys.modules['sha'].sha
-  has_sha1_sha = True
-except (ImportError, AttributeError):
-  pass
+if not has_sha1_hashlib:  # Prevent the DeprecationWarning in Python 2.6.
+  try:
+    __import__('sha')
+    sys.modules['sha'].sha
+    has_sha1_sha = True
+  except (ImportError, AttributeError):
+    pass
 if has_sha1_openssl_hashlib:  # Fastest.
   sha1 = sys.modules['hashlib'].sha1
 elif has_sha1_pycrypto:
