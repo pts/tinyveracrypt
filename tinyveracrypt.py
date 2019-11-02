@@ -1964,6 +1964,8 @@ def parse_decrypted_ofs_arg(arg):
 
 
 def parse_keytable_arg(arg, is_short_ok):
+  if arg is None:
+    return None
   value = arg[arg.find('=') + 1:].lower()
   if value in ('random', 'new', 'rnd'):
     value = get_random_bytes(64)
@@ -2179,7 +2181,9 @@ def build_luks_header(
   # version 1.2.3.
   if cipher == 'aes-xts-plain64':
     cipher_name, cipher_mode = 'aes', 'xts-plain64'
-    keytable_size = min(255, key_size or 64)
+    if key_size & 7:  # Number of bits.
+      raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
+    keytable_size = min(255, key_size >> 3 or 64)
     check_aes_xts_key('\0' * keytable_size)
   else:
     raise ValueError('Unsupported LUKS cipher: %s' % cipher)
@@ -2194,20 +2198,6 @@ def build_luks_header(
   if slot_count <= 0:
     raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
                      ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
-  if isinstance(passphrase, str):
-    passphrases = (passphrase,)
-  else:
-    passphrases = passphrase
-  if not passphrases:
-    # `cryptsetup luksDump' allows it, but there is no way to recover keytable
-    # in this situation.
-    raise ValueError('Missing LUKS passphrases.')
-  if len(passphrases) > slot_count:
-    if len(passphrases) <= 8 and slot_count < 8:
-      raise ValueError('Too many LUKS passphrases, increase decrypted_ofs to %d or decrease af_stripe_count.' %
-                       ((2 + len(passphrases) * key_material_sector_count) << 9))
-    else:
-      raise ValueError('LUKS passphrase count must be at most %d, got: %d' % (slot_count, len(passphrases)))
   if not uuid_str:
     uuid_str = get_random_bytes(16).encode('hex')
     uuid_str = '-'.join((  # Add the dashes.
@@ -2243,21 +2233,38 @@ def build_luks_header(
     raise ValueError('keytable must be %d bytes, got %d' %
                      (keytable_size, len(keytable)))
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
+  if slot_count < 8:
+    sys.stderr.write('warning: only %d of 8 slots are usable, increase decrypted_ofs to %d or decrease af_stripe_count to %d to get all\n' %
+                     (slot_count, (2 + 8 * key_material_sector_count) << 9, ((decrypted_ofs - 1024) >> 12 << 9) // keytable_size))
+
+  # Do this as late as possible, after `raise ValueError' checks above.
+  if callable(passphrase):
+    passphrase = passphrase()  # Prompt user for passphrase.
+  if isinstance(passphrase, str):
+    passphrases = (passphrase,)
+  else:
+    passphrases = passphrase
+  if not passphrases:
+    # `cryptsetup luksDump' allows it, but there is no way to recover keytable
+    # in this situation.
+    raise ValueError('Missing LUKS passphrases.')
+  if len(passphrases) > slot_count:
+    if len(passphrases) <= 8 and slot_count < 8:
+      raise ValueError('Too many LUKS passphrases, increase decrypted_ofs to %d or decrease af_stripe_count.' %
+                       ((2 + len(passphrases) * key_material_sector_count) << 9))
+    else:
+      raise ValueError('LUKS passphrase count must be at most %d, got: %d' % (slot_count, len(passphrases)))
 
   signature = 'LUKS\xba\xbe'
   version = 1
   mk_digest = pbkdf2(  # Slow.
       keytable, keytable_salt, 20, keytable_iterations,
       digest_cons, digest_blocksize)
-
   output = [struct.pack(
       '>6sH32s32s32sLL20s32sL40s',
       signature, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
       keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str)]
   key_materials = []
-  if slot_count < 8:
-    sys.stderr.write('warning: only %d of 8 slots are usable, increase decrypted_ofs to %d or decrease af_stripe_count to %d to get all\n' %
-                     (slot_count, (2 + 8 * key_material_sector_count) << 9, ((decrypted_ofs - 1024) >> 12 << 9) // keytable_size))
   for i in xrange(8):
     key_material_ofs = (2 + min(i, slot_count - 1) * key_material_sector_count) << 9
     if i < len(passphrases):
@@ -2434,15 +2441,15 @@ def cmd_get_table(args):
       truecrypt_mode = 2
     elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
       if '=' in arg:
-        type_arg = arg[arg.find('=') + 1:].lower()
+        type_value = arg[arg.find('=') + 1:].lower()
       else:
-        type_arg = args[i]
+        type_value = args[i]
         i += 1
-      if type_arg == 'tcrypt':
+      if type_value == 'tcrypt':
         if truecrypt_mode is None:
           # --truecrypt only, for cryptsetup compatibility.
           truecrypt_mode = 2
-      elif type_arg == 'luks':
+      elif type_value == 'luks':
         truecrypt_mode = 3
       else:
         # Cryptsetup also supports --type=plain and --type=loopaes.
@@ -2499,7 +2506,7 @@ def cmd_mount(args):
   import subprocess
 
   is_custom_name = False
-  pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = type_arg = name = None
+  pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = type_value = name = None
 
   i, value = 0, None
   while i < len(args):
@@ -2539,25 +2546,19 @@ def cmd_mount(args):
       is_custom_name = False
     elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
       if '=' in arg:
-        type_arg = arg[arg.find('=') + 1:].lower()
+        type_value = arg[arg.find('=') + 1:].lower()
       else:
-        type_arg = args[i]
+        type_value = args[i]
         i += 1
-      if type_arg == 'tcrypt':
+      if type_value == 'tcrypt':
         if truecrypt_mode is None:
           # --truecrypt. To open VeraCrypt, use `cryptsetup --type=tcrypt veracrypt'.
           truecrypt_mode = 2
-      elif type_arg == 'luks':
+      elif type_value == 'luks':
         truecrypt_mode = 3
       else:
         # Cryptsetup also supports --type=plain and --type=loopaes.
         raise UsageError('unsupported flag value: %s' % arg)
-    elif arg.startswith('--type='):
-      type_arg = arg[arg.find('=') + 1:].lower()
-      if type_arg != 'tcrypt':
-        raise UsageError('unsupported flag value: %s' % arg)
-      if truecrypt_mode is None:
-        truecrypt_mode = 2  # --truecrypt.
     elif arg.startswith('--slot='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -2782,10 +2783,12 @@ def cmd_create(args):
   do_passphrase_twice = True
   salt = ''
   is_any_luks_uuid = False
-  is_truecrypt = False
+  type_value = 'veracrypt'
   is_opened = False
-  keytable = fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  is_luks_allowed = True
+  keytable_arg = fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
+  key_size = 512
 
   i, value = 0, None
   while i < len(args):
@@ -2802,7 +2805,7 @@ def cmd_create(args):
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--keytable='):
-      keytable = parse_keytable_arg(arg, is_short_ok=False)
+      keytable_arg = arg
     elif arg.startswith('--salt='):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
@@ -2856,14 +2859,14 @@ def cmd_create(args):
       except ValueError:
         raise UsageError('unsupported flag value: %s' % arg)
       if (fat_cluster_size >> 9) not in (1, 2, 4, 8, 16, 32, 64, 128):
-        raise UsageError('FAT cluster size must be a power of 2: 512 ... 65536: %d' % arg)
+        raise UsageError('FAT cluster size must be a power of 2: 512 ... 65536, got: %s' % arg)
     elif arg.startswith('--fat-count='):
       value = arg[arg.find('=') + 1:]
       try:
-        fat_count = int(value)
+        fat_fat_count = int(value)
       except ValueError:
         raise UsageError('unsupported flag value: %s' % arg)
-      if fat_count not in (1, 2):
+      if fat_fat_count not in (1, 2):
         raise UsageError('FAT count must be 1 or 2, got: %s' % arg)
     elif arg.startswith('--volume-type='):
       value = arg[arg.find('=') + 1:].lower()
@@ -2876,11 +2879,18 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = value
     elif arg.startswith('--cipher='):
-      # TODO(pts): Add --key-size=512 and --key-size=256 for cryptsetup LUKS compatibility.
       value = arg[arg.find('=') + 1:].lower()
       if value != 'aes-xts-plain64':
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = 'aes'
+    elif arg.startswith('--key-size='):
+      value = arg[arg.find('=') + 1:]
+      try:
+        key_size = int(value)
+      except ValueError:
+        raise UsageError('unsupported flag value: %s' % arg)
+      if key_size not in (32 << 3, 48 << 3, 64 << 3):
+        raise UsageError('key size must be 256, 384 or 512 bits, got: %s' % arg)
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg)
     elif arg.startswith('--filesystem='):
@@ -2898,6 +2908,12 @@ def cmd_create(args):
       if value != '/dev/urandom':
         raise UsageError('unsupported flag value: %s' % arg)
       random_source = value
+    elif arg == '--use-urandom':  # `cryptsetup luksFormat'.
+      random_source = '/dev/urandom'
+    elif arg == '--use-random':  # `cryptsetup luksFormat'.
+      raise UsageError('unsupported flag value: %s' % arg)
+    elif arg == '--batch-mode':  # `cryptsetup luksFormat', ignored here.
+      pass
     elif arg.startswith('--size='):
       device_size = parse_device_size_arg(arg)
     elif arg.startswith('--ofs='):
@@ -2941,9 +2957,26 @@ def cmd_create(args):
     elif arg == '--passphrase-once':
       do_passphrase_twice = False
     elif arg == '--truecrypt':
-      is_truecrypt = True
+      type_value = 'truecrypt'
     elif arg in ('--no-truecrypt', '--veracrypt'):
-      is_truecrypt = False
+      type_value = 'veracrypt'
+    elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
+      if '=' in arg:
+        type_value = arg[arg.find('=') + 1:].lower()
+      else:
+        type_value = args[i]
+        i += 1
+      if type_value in ('tcrypt', 'truecrypt'):  # cryptsetup --type=tcrypt.
+        type_value = 'truecrypt'
+      elif type_value == 'veracrypt':
+        type_value = 'veracrypt'
+      elif type_value in ('luks', 'luks1'):  # cryptsetup --type=luks.
+        type_value = 'luks'
+      else:
+        # Cryptsetup also supports --type=plain and --type=loopaes.
+        raise UsageError('unsupported flag value: %s' % arg)
+    elif arg == '--no-luks':
+      is_luks_allowed = False
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -2969,10 +3002,49 @@ def cmd_create(args):
   if device_size is None:
     raise UsageError('missing flag: --size=...')
   if pim is None:  # For compatibility with `veracrypt --create'.
-    if is_truecrypt:
+    if type_value == 'truecrypt':
       pim = 0
     else:
       raise UsageError('missing flag --pim=..., recommended: --pim=0')
+  if fatfs_size is None:
+    if fat_label is not None:
+      raise UsageError('--fat-label needs --mkfat=...')
+    if fat_uuid is not None:
+      raise UsageError('--fat-uuid needs --mkfat=...')
+    if fat_rootdir_entry_count is not None:
+      raise UsageError('--fat-rootdir-entry-count needs --mkfat=...')
+    if fat_fat_count is not None:
+      raise UsageError('--fat-count needs --mkfat=...')
+    if fat_fstype is not None:
+      raise UsageError('--fat-fstype needs --mkfat=...')
+    if fat_cluster_size is not None:
+      raise UsageError('--fat-cluster-size needs --mkfat=...')
+  keytable = parse_keytable_arg(keytable_arg, is_short_ok=(type_value == 'luks'))
+  if key_size != 512 and type_value != 'luks':
+    raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
+  if type_value == 'luks':
+    if not is_luks_allowed:
+      raise UsageError('--type=luks not allowed for this command, try init')
+    if decrypted_ofs is None:
+      # TODO(pts): Add defaults closer to cryptsetup.
+      decrypted_ofs = 4096  # Minimal, smaller than cryptsetup.
+    if not isinstance(decrypted_ofs, (int, long)):
+      raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
+    if decrypted_ofs < 4096:
+      raise UsageError('--decrypted_ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
+    if is_opened:
+      raise UsageError('--type=luks conflicts with --is-opened')
+    if do_add_backup:
+      raise UsageError('--type=luks conflicts with --add-backup')
+    if do_add_full_header is False:
+      raise UsageError('--type=luks conflicts with --no-add-full-header')
+    if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths.
+      raise UsageError('--type=luks conflicts with --salt=...')
+    # TODO(pts): Use --uuid=... instead of --fake-luks-uuid=...
+    if fatfs_size is not None:
+      raise UsageError('--type=luks conflicts with --mkfat=...')
+    do_add_full_header = True
+    do_add_backup = False
 
   if is_opened:  # RAWDEVICE is a dm device pathname. Needs root access.
     # !! Add support for changing the passphrase without root.
@@ -3064,7 +3136,6 @@ def cmd_create(args):
 
     decrypted_ofs = sector_offset << 9
     if device_size == 'auto':
-      do_append = True
       f = open(device, 'rb')
       try:
         f.seek(0, 2)
@@ -3133,8 +3204,8 @@ def cmd_create(args):
   if do_add_full_header and decrypted_ofs == 0:
     raise UsageError('--add-full-header conflicts with --ofs=0')
 
-  if device_size == 'auto' or decrypted_ofs == 'fat':
-    do_append = True
+  need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
+  if need_read_first:
     f = open(device, 'rb')
     try:
       if decrypted_ofs == 'fat':
@@ -3144,8 +3215,6 @@ def cmd_create(args):
         device_size = f.tell()
     finally:
       f.close()
-  else:
-    do_append = False
   if decrypted_ofs in ('fat', 'mkfat'):
     if salt == '':
       do_randomize_salt = True
@@ -3158,65 +3227,83 @@ def cmd_create(args):
         device_size <= (decrypted_ofs << bool(do_add_backup))):
       raise UsageError('raw device too small for VeraCrypt volume, size: %d' % device_size)
 
-  if passphrase is None:
+  def prompt_passphrase_with_warning():
     sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
-    passphrase = prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
+    return prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
-  if decrypted_ofs == 'fat':
-    # Usage --salt=test to keep the oem_id etc. intact.
-    enchd, fatfs_size = build_veracrypt_fat(
-        decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
-        fat_header=fat_header, device_size=device_size, pim=pim,
-        do_include_all_header_sectors=False,
-        do_randomize_salt=do_randomize_salt, keytable=keytable, hash=hash)
-    assert len(enchd) == 512
-  elif decrypted_ofs == 'mkfat':
-    if not do_randomize_salt:
-      if fat_label is None:
-        fat_label = 'minifat3'
-      if fat_uuid is None:
-        fat_uuid = 'DEAD-BEE3'
-    enchd, fatfs_size2 = build_veracrypt_fat(
-        decrypted_size=device_size - (fatfs_size << bool(do_add_backup)),
-        passphrase=passphrase, do_include_all_header_sectors=True,
-        label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
-        rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
-        cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
-        keytable=keytable, hash=hash)
-    assert 2048 <= fatfs_size2 <= fatfs_size
-    assert len(enchd) >= 1536
-  else:
-    enchd = build_veracrypt_header(
-        decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
-        passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
-        is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
-    assert len(enchd) == 512
-  if do_add_full_header:
-    if decrypted_ofs == 'mkfat':
-      xofs = fatfs_size
-    else:
-      xofs = decrypted_ofs
-    assert xofs >= len(enchd)
-    enchd += get_random_bytes(xofs - len(enchd))
-    assert len(enchd) == xofs
-  if do_add_backup:
-    if decrypted_ofs == 'mkfat':
-      xofs = fatfs_size
-    else:
-      xofs = decrypted_ofs
-    # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
-    enchd_backup = build_veracrypt_header(
-        decrypted_size=device_size - (xofs << 1),
-        passphrase=passphrase, decrypted_ofs=xofs,
-        enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt,
-        keytable=keytable, hash=hash)
-    enchd_backup += get_random_bytes(xofs - 512)
-    assert len(enchd_backup) == xofs
-  else:
+  if type_value == 'luks':
+    if passphrase is None:
+      passphrase = prompt_passphrase_with_warning  # Callback to defer it after checks.
     enchd_backup = ''
-  if do_append:
-    open(device, 'ab').close()  # Create file if needed.
+    enchd = build_luks_header(
+        passphrase=passphrase, decrypted_ofs=decrypted_ofs,
+        uuid_str=fake_luks_uuid, pim=pim, keytable_iterations=None,
+        slot_iterations=None, hash=hash, keytable=keytable,
+        key_size=key_size,
+        keytable_salt=None,  # TODO(pts): Add command-line flag.
+        slot_salt=None,  # TODO(pts): Add command-line flag.
+        af_stripe_count=1,  # TODO(pts): Make command-line flag (`cryptsetup luksFormat' default is 4000).
+        af_salt=None,  # TODO(pts): Add command-line flag.
+        )
+  else:  # VeraCrypt or TrueCrypt.
+    if passphrase is None:
+      passphrase = prompt_passphrase_with_warning()  # Read it now.
+    is_truecrypt = type_value == 'truecrypt'
+    if decrypted_ofs == 'fat':
+      # Usage --salt=test to keep the oem_id etc. intact.
+      enchd, fatfs_size = build_veracrypt_fat(
+          decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
+          fat_header=fat_header, device_size=device_size, pim=pim,
+          do_include_all_header_sectors=False,
+          do_randomize_salt=do_randomize_salt, keytable=keytable, hash=hash)
+      assert len(enchd) == 512
+    elif decrypted_ofs == 'mkfat':
+      if not do_randomize_salt:
+        if fat_label is None:
+          fat_label = 'minifat3'
+        if fat_uuid is None:
+          fat_uuid = 'DEAD-BEE3'
+      enchd, fatfs_size2 = build_veracrypt_fat(
+          decrypted_size=device_size - (fatfs_size << bool(do_add_backup)),
+          passphrase=passphrase, do_include_all_header_sectors=True,
+          label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
+          rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
+          cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
+          keytable=keytable, hash=hash)
+      assert 2048 <= fatfs_size2 <= fatfs_size
+      assert len(enchd) >= 1536
+    else:
+      enchd = build_veracrypt_header(
+          decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
+          passphrase=passphrase, decrypted_ofs=decrypted_ofs,
+          enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
+          is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
+      assert len(enchd) == 512
+    if do_add_full_header:
+      if decrypted_ofs == 'mkfat':
+        xofs = fatfs_size
+      else:
+        xofs = decrypted_ofs
+      assert xofs >= len(enchd)
+      enchd += get_random_bytes(xofs - len(enchd))
+      assert len(enchd) == xofs
+    if do_add_backup:
+      if decrypted_ofs == 'mkfat':
+        xofs = fatfs_size
+      else:
+        xofs = decrypted_ofs
+      # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+      enchd_backup = build_veracrypt_header(
+          decrypted_size=device_size - (xofs << 1),
+          passphrase=passphrase, decrypted_ofs=xofs,
+          enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt,
+          keytable=keytable, hash=hash)
+      enchd_backup += get_random_bytes(xofs - 512)
+      assert len(enchd_backup) == xofs
+    else:
+      enchd_backup = ''
+  if not need_read_first:  # Create file if needed, check write permissions.
+    open(device, 'ab').close()
   f = open(device, 'rb+')
   try:
     f.write(enchd)
@@ -3319,12 +3406,15 @@ def main(argv):
     # Difference: --truecrypt is respected.
     # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
     # For --pim=0, --pim=485 is used with --hash=sha512.
-    cmd_create(argv[2:])
+    args = argv[2:]
+    args[:0] = ('--no-luks',)  # Use `init --type=luks' instead.
+    cmd_create(args)
   elif command == 'init':  # Like create, but with better (shorter) defaults.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
+    # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512 DEVICE.img
     # !! Add --label=... and --uuid=... from set_jfs_id.py.
     # !! init --opened (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
     args = argv[2:]
