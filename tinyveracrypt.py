@@ -3248,9 +3248,12 @@ def cmd_create(args):
     else:
       raise UsageError('specific --salt=... values conflict with --ofs=fat or --mkfat=...')
   else:
+    if type_value == 'luks' and device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
+      raise UsageError('raw device too small for LUKS volume, minimum should be 2066432, actual size: %d' %
+                       device_size)
     if (do_add_full_header and
         device_size <= (decrypted_ofs << bool(do_add_backup))):
-      raise UsageError('raw device too small for VeraCrypt volume, minimum should be %d, size: %d' %
+      raise UsageError('raw device too small for VeraCrypt volume, minimum should be %d, actual size: %d' %
                        ((decrypted_ofs << bool(do_add_backup)) + 512, device_size))
 
   def prompt_passphrase_with_warning():
