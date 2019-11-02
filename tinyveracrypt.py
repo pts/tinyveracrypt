@@ -702,7 +702,7 @@ def do_hmac(key, msg, digest_cons, blocksize):
 
 # Faster than `import pbkdf2' (available on pypi) or `import
 # Crypto.Protocol.KDF', because of less indirection.
-def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
+def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   """Computes an binary key from a passphrase using PBKDF2.
 
   This is deliberately slow (to make dictionary-based attacks on passphrase
@@ -717,6 +717,8 @@ def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   if digest_cons.__name__.startswith('Slow') and iterations > 10:
     # TODO(pts): Also show this earlier, before asking for a passphrase.
     sys.stderr.write('warning: running %d iterations of PBKDF2 using a very slow hash implementation, it may take hours; install a newer Python or hashlib to speed it up\n' % iterations)
+  elif iterations > 2000:
+    sys.stderr.write('warning: running %d iterations of PBKDF2 using a slow PBKDF2 implementation, it may take minutes; install a newer Python 2.7 with hashlib.pbkdf2_hmac or a newer hashlib to speed it up\n' % iterations)
   _do_hmac = do_hmac
   key, i, k = [], 1, size
   while k > 0:
@@ -731,6 +733,7 @@ def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   return ''.join(key)[:size]
 
 
+pbkdf2 = slow_pbkdf2
 try:
   if (has_sha512_openssl_hashlib and
       getattr(__import__('hashlib'), 'pbkdf2_hmac', None)):
@@ -745,6 +748,11 @@ try:
       hash_name = digest_cons.__name__.lower()
       if hash_name.startswith('openssl_'):
         hash_name = hash_name[hash_name.find('_') + 1:]
+      try:
+        hashlib.new(hash_name).digest()
+      except ValueError:
+        # Fallback if digest_cons isn't supported by hashlib.
+        return slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize)
       return hashlib.pbkdf2_hmac(hash_name, passphrase, salt, iterations, size)
 except ImportError:
   pass
