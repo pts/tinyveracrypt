@@ -52,7 +52,7 @@ Usage for TrueCrypt:
 
 Usage for LUKS:
 
-  $ ./tinyveracrypt.py init --type=luks --size=2049K luks.img
+  $ ./tinyveracrypt.py init --type=luks --size=2018K luks.img
   Enter passphrase:
   $ sudo ./tinyveracrypt.py open luks.img myvol
   Enter passphrase:
@@ -558,6 +558,18 @@ Options considered (and failed) to make it work:
 
   This works only if the user manually ignores the first 66048 bytes of the
   decrypted device, which is impractical.
+
+Q28. What is the minimum size of a LUKS encrypted volume?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+The minimum size of the raw device is 2018 * 1024 == 2066432 bytes, checked
+by `cryptsetup open' in cryptsetup-1.7.3.
+
+The minimum size of the LUKS headers (including PHDR and key material) is
+4096 bytes, also checked by `cryptsetup open' in cryptsetup-1.7.3.
+
+Without any checks in cryptsetup, 1536 bytes would work: 1024 bytes of LUKS
+PHDR, the 2nd half of it covering (overlapping with) the key material of
+slot 0, plus 512 bytes of encrypted data.
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
