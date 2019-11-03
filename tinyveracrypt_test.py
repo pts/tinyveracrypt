@@ -181,7 +181,7 @@ def test_luks():
       af_salt='xyzAB' * 4000,
       af_stripe_count=13,
       decrypted_ofs=decrypted_ofs,
-      uuid_str='40bf7c9f-12a6-403f-81da-c4bd2183b74a',
+      uuid='40bf7c9f-12a6-403f-81da-c4bd2183b74a',
       keytable_iterations=2, slot_iterations=3, # pim=-14,
       keytable=keytable,
       slot_salt=''.join(map(chr, xrange(6, 38))),

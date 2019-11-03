@@ -2214,9 +2214,19 @@ def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
       inactive_stripe_count)
 
 
+def check_luks_uuid(uuid):
+  # Any random 16 bytes will do, typically it looks like:
+  # '40bf7c9f-12a6-403f-81da-c4bd2183b74a'.
+  if '\0' in uuid:
+    raise ValueError('NUL not allowed in LUKS uuid: %r' % uuid)
+  if len(uuid) > 36:
+    raise ValueError(
+        'LUKS uuid must be at most 36 bytes: %r' % uuid)
+
+
 def build_luks_header(
     passphrase, decrypted_ofs=None, keytable_salt=None,
-    uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
+    uuid=None, pim=None, keytable_iterations=None, slot_iterations=None,
     cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
     af_stripe_count=None, af_salt=None, key_size=None):
   """Builds a LUKS1 header.
@@ -2275,18 +2285,11 @@ def build_luks_header(
     raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
                      ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
 
-  if not uuid_str:
-    uuid_str = get_random_bytes(16).encode('hex')
-    uuid_str = '-'.join((  # Add the dashes.
-        uuid_str[:8], uuid_str[8 : 12], uuid_str[12 : 16],
-        uuid_str[16 : 20], uuid_str[20:]))
-  # Any random 16 bytes will do, typically it looks like:
-  # '40bf7c9f-12a6-403f-81da-c4bd2183b74a'.
-  if '\0' in uuid_str:
-    raise ValueError('NUL not allowed in LUKS uuid: %r' % uuid_str)
-  if len(uuid_str) > 36:
-    raise ValueError(
-        'LUKS uuid must be at most 36 bytes: %r' % uuid_str)
+  if uuid is None:
+    uuid = get_random_bytes(16).encode('hex')
+    uuid = '-'.join((  # Add the dashes.
+        uuid[:8], uuid[8 : 12], uuid[12 : 16], uuid[16 : 20], uuid[20:]))
+  check_luks_uuid(uuid)
   if keytable_iterations is None:
     # `cryptsetup luksFormat' measures the CPU speed for this.
     total_iterations = get_iterations(pim, False, hash)
@@ -2342,7 +2345,7 @@ def build_luks_header(
   output = [struct.pack(
       '>6sH32s32s32sLL20s32sL40s',
       signature, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
-      keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str)]
+      keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid)]
   key_materials = []
   # Put key material as late as possible, make padding after PHDR as long as
   # possible so that autodetection tools (/sbin/blkid) won't mistakenly
@@ -2399,13 +2402,13 @@ def get_luks_keytable(f, passphrase):
   if not header.startswith('LUKS\xba\xbe\0\1'):
     raise ValueError('LUKS1 signature not found.')
   (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
-   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
+   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid,
   ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(header, 0, 208))
   decrypted_ofs = decrypted_sector_idx << 9
   cipher_name = cipher_name.rstrip('\0')
   cipher_mode = cipher_mode.rstrip('\0')
   hash = hash.rstrip('\0')
-  uuid_str = uuid_str.rstrip('\0')
+  uuid = uuid.rstrip('\0')  # ASCII-formatted, hex with dashes.
   if cipher_name.lower() != 'aes':
     raise ValueError('Unsupported cipher: %r' % cipher_name)
   if cipher_mode.lower().replace('-', '') != 'xtsplain64':  # 'xts-plain64'.
@@ -2476,14 +2479,14 @@ def is_luks1(enchd):
   if enchd[8 : 9] == '\0':  # --fake-luks-uuid=...
     return False
   (signature, version, cipher_name, cipher_mode, hash, decrypted_sector_idx,
-   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str,
+   keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid,
   ) = struct.unpack('>6sH32s32s32sLL20s32sL40s', buffer(enchd, 0, 208))
   decrypted_ofs = decrypted_sector_idx << 9
   cipher_name = cipher_name.rstrip('\0')
   cipher_mode = cipher_mode.rstrip('\0')
   hash = hash.rstrip('\0')
-  uuid_str = uuid_str.rstrip('\0')
-  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid_str) <= 36):
+  uuid = uuid.rstrip('\0')
+  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid) <= 36):
     return False
   if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').isalnum():
     return False
@@ -2864,6 +2867,33 @@ def cmd_open_table(args):
   ensure_block_device(device, block_device_callback)
 
 
+def parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid):
+  if is_any_luks_uuid:
+    # Any bytes can be used (not only hex), blkid recognizes them as UUID.
+    if '\0' in uuid_flag:
+      raise UsageError('NUL not allowed in LUKS uuid: %r' % uuid_flag)
+    if len(uuid_flag) > 36:
+      raise UsageError(
+          'LUKS uuid must be at most 36 bytes: %r' % uuid_flag)
+    return uuid_flag
+  if uuid_flag in ('random', 'new', 'rnd'):
+    uuid = ''
+  else:
+    uuid = uuid_flag.replace('-', '').lower()
+    try:
+      uuid = uuid.decode('hex')
+    except (TypeError, ValueError):
+      raise UsageError('LUKS uuid must be hex: %r' % uuid_flag)
+  if not uuid:
+    uuid = get_random_bytes(16)
+  if len(uuid) != 16:
+    raise UsageError(
+        'uuid must be 16 bytes, got: %d' % len(uuid))
+  uuid = uuid.encode('hex')
+  return '-'.join((  # Add the dashes.
+      uuid[:8], uuid[8 : 12], uuid[12 : 16], uuid[16 : 20], uuid[20:]))
+
+
 def cmd_create(args):
   is_quick = False
   do_passphrase_twice = True
@@ -2872,8 +2902,8 @@ def cmd_create(args):
   type_value = 'veracrypt'
   is_opened = False
   is_luks_allowed = True
-  keytable_arg = fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
-  af_stripe_count = None
+  keytable_arg = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = 512
 
@@ -2926,11 +2956,13 @@ def cmd_create(args):
       if len(fat_uuid) != 4:
         raise UsageError('FAT uuid must be 4 bytes: %s' % arg)
     elif arg.startswith('--fake-luks-uuid='):
-      fake_luks_uuid = arg[arg.find('=') + 1:]
+      fake_luks_uuid_flag = arg[arg.find('=') + 1:]
     elif arg == '--any-luks-uuid':
       is_any_luks_uuid = True
     elif arg == '--no-any-luks-uuid':
       is_any_luks_uuid = False
+    elif arg.startswith('--uuid='):
+      uuid_flag = arg[arg.find('=') + 1:]
     elif arg.startswith('--fat-rootdir-entry-count='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -3075,6 +3107,7 @@ def cmd_create(args):
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
+
   if device is None:
     if i >= len(args):
       raise UsageError('missing <device> hosting the encrypted volume')
@@ -3131,9 +3164,12 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --no-add-full-header')
     if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths.
       raise UsageError('--type=luks conflicts with --salt=...')
-    # TODO(pts): Use --uuid=... instead of --fake-luks-uuid=...
     if fatfs_size is not None:
       raise UsageError('--type=luks conflicts with --mkfat=...')
+    if fake_luks_uuid_flag is not None:
+      raise UsageError('--type=luks conflicts with --fake-luks-uuid=..., use --uuid=... instead')
+    if uuid_flag is not None:
+      uuid = parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid)
     do_add_full_header = True
     do_add_backup = False
   else:
@@ -3141,6 +3177,14 @@ def cmd_create(args):
       raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
     if af_stripe_count not in (1, None):
       raise UsageError('--type=%s conflicts with --af-stripe-count=...' % type_value)
+    if fake_luks_uuid_flag is not None:
+      if decrypted_ofs == 'fat':
+        raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
+      if decrypted_ofs == 'mkfat':
+        raise UsageError('--fake-luks-uuid=... conflicts with --mkfat=...')
+      uuid = parse_luks_uuid_flag(fake_luks_uuid_flag, is_any_luks_uuid)
+    if uuid_flag is not None:
+      raise UsageError('--type=%s conflicts with --uuid=..., maybe use --fake-looks-uuid=... instead' % type_value)
 
   if is_opened:  # RAWDEVICE is a dm device pathname. Needs root access.
     # !! Add support for changing the passphrase without root.
@@ -3257,36 +3301,6 @@ def cmd_create(args):
     if decrypted_ofs is not None:
       raise UsageError('--mkfat=... conflicts with --ofs=...')
     decrypted_ofs = 'mkfat'
-  if fake_luks_uuid is not None:
-    if decrypted_ofs == 'fat':
-      raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
-    if decrypted_ofs == 'mkfat':
-      raise UsageError('--fake-luks-uuid=... conflicts with --mkfat=...')
-    if is_any_luks_uuid:
-      # Any bytes can be used (not only hex), blkid recognizes them as UUID.
-      if '\0' in fake_luks_uuid:
-        raise UsageError('NUL not allowed in LUKS uuid: %r' % fake_luks_uuid)
-      if len(fake_luks_uuid) > 36:
-        raise UsageError(
-            'LUKS uuid must be at most 36 bytes: %r' % fake_luks_uuid)
-    else:
-      if fake_luks_uuid in ('random', 'new', 'rnd'):
-        fake_luks_uuid = ''
-      else:
-        fake_luks_uuid = fake_luks_uuid.replace('-', '').lower()
-        try:
-          fake_luks_uuid = fake_luks_uuid.decode('hex')
-        except (TypeError, ValueError):
-          raise UsageError('LUKS uuid must be hex: %s' % arg)
-      if not fake_luks_uuid:
-        fake_luks_uuid = get_random_bytes(16)
-      if len(fake_luks_uuid) != 16:
-        raise UsageError(
-            'LUKS uuid must be 16 bytes, got: %d' % len(fake_luks_uuid))
-      fake_luks_uuid = fake_luks_uuid.encode('hex')
-      fake_luks_uuid = '-'.join((  # Add the dashes.
-          fake_luks_uuid[:8], fake_luks_uuid[8 : 12], fake_luks_uuid[12 : 16],
-          fake_luks_uuid[16 : 20], fake_luks_uuid[20:]))
 
   need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
   read_device_size = None
@@ -3353,7 +3367,7 @@ def cmd_create(args):
     enchd_backup = ''
     enchd = build_luks_header(
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        uuid_str=fake_luks_uuid, pim=pim, af_stripe_count=af_stripe_count,
+        uuid=uuid, pim=pim, af_stripe_count=af_stripe_count,
         hash=hash, keytable=keytable, key_size=key_size,
         keytable_iterations=None,  # TODO(pts): Add command-line flag.
         slot_iterations=None,  # TODO(pts): Add command-line flag.
@@ -3400,7 +3414,7 @@ def cmd_create(args):
       enchd = build_veracrypt_header(
           decrypted_size=decrypted_size,
           passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-          enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
+          enchd_prefix=salt, pim=pim, fake_luks_uuid=uuid,
           is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
       assert len(enchd) == 512
     if do_add_full_header:
