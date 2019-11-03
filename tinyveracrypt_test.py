@@ -197,7 +197,7 @@ def test_luks():
   del full_header  # Save memory.
   assert tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, True) == (
       '0 4028 crypt aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 7:0 8 1 allow_discards\n')
-  decrypted_ofs2, keytable2 = tinyveracrypt.get_luks_keytable(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
+  decrypted_ofs2, keytable2 = tinyveracrypt.get_open_luks_info(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
   rec = tinyveracrypt.get_recommended_luks_decrypted_ofs
   assert rec(1 << 30) == 2 << 20  # No need for more than 2 MiB alignment.

@@ -41,7 +41,7 @@ def main(argv):
   open('mkluks_demo.bin', 'w+b').write(full_header)
   del full_header  # Save memory.
   sys.stdout.write(tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, True))
-  decrypted_ofs2, keytable2 = tinyveracrypt.get_luks_keytable(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
+  decrypted_ofs2, keytable2 = tinyveracrypt.get_open_luks_info(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
 
 

@@ -1441,7 +1441,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
         truecrypt_mode == 3):
       f.seek(0, 2)
       luks_device_size = f.tell()
-      decrypted_ofs, keytable = get_luks_keytable(f, passphrase)
+      decrypted_ofs, keytable = get_open_luks_info(f, passphrase)
   finally:
     f.close()
 
@@ -2233,22 +2233,20 @@ def build_luks_header(
 
   Similar to `cryptsetup luksFormat', with the following differences:
 
-  * Anti-forensic stripe count is 1, to make the header shorter. (This also
-    provides no protection against forensic analysis after key slot removal.)
+  * Calculation of default af_stripe_count is a bit different.
   * For decrypted_ofs=4096 (smaller than the default), the header supports
     only 6 key slots
     (instead of the `cryptsetup luksFormat' default of 8).
     Specify decrypted_ofs=4608 for 7 key slots, or secrypted_ofs>=5120 for 8
     key slots.
-  * Supports only --hash=sha512 and --cipher=aes-xts-plain64. The
+  * Supports only --cipher=aes-xts-plain64. The
     `cryptsetup luksFormat' default is --hash=sha1 --cipher=aes-xts-plain64.
   * Doesn't try to autodetect iteration count based on CPU speed.
   * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
     strong, randomly generated password of at least 64 bytes of entropy.
   * It's more configurable (e.g. decrypted_ofs and af_stripe_count).
-  * The default for af_stripe_count is smaller than the 4000 of
-    `cryptsetup luksFormat'.
-  * `cryptsetup luksAddKey' will fail if af_stripe_count < 4000 (default).
+  * `cryptsetup luksAddKey' will fail if af_stripe_count < 4000 (sometimes
+    default).
 
   Returns:
     String containing the LUKS1 partition header (phdr) and the key material.
@@ -2389,12 +2387,15 @@ def build_luks_header(
   return result
 
 
-def get_luks_keytable(f, passphrase):
-  """Returns (decrypted_ofs, keytable) or raises an exception."""
-  # This works with:
-  # /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512 mkluks_demo.bin
-  # /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=256 mkluks_demo.bin
-  # /sbin/cryptsetup luksFormat --batch-mode --use-urandom --hash=sha256 mkluks_demo.bin
+def get_open_luks_info(f, passphrase):
+  """Opens key slots with passphrase, returns keytable and other info.
+
+  This function works with --cipher=aes-xts-plain64, multiple hashes such as
+  --hash=sha512, and any key size such as --key-size=512.
+
+  Returns:
+    (decrypted_ofs, keytable).
+  """
   f.seek(0)
   header = f.read(592)
   if len(header) < 592:
@@ -2903,7 +2904,9 @@ def cmd_create(args):
   is_any_luks_uuid = False
   type_value = 'veracrypt'
   is_opened = False
-  is_luks_allowed = True
+  is_batch_mode = False
+  do_restrict_luksformat_defaults = False
+  is_luks_allowed = is_nonluks_allowed = True
   keytable_arg = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
@@ -3040,9 +3043,10 @@ def cmd_create(args):
     elif arg == '--use-urandom':  # `cryptsetup luksFormat'.
       random_source = '/dev/urandom'
     elif arg == '--use-random':  # `cryptsetup luksFormat'.
+      # TODO(pts): Support this is --random-source=/dev/random .
       raise UsageError('unsupported flag value: %s' % arg)
-    elif arg == '--batch-mode':  # `cryptsetup luksFormat', ignored here.
-      pass
+    elif arg == '--batch-mode':  # `cryptsetup luksFormat'.
+      is_batch_mode = True
     elif arg.startswith('--size='):
       device_size = parse_device_size_arg(arg)
     elif arg.startswith('--ofs='):
@@ -3104,8 +3108,16 @@ def cmd_create(args):
       else:
         # Cryptsetup also supports --type=plain and --type=loopaes.
         raise UsageError('unsupported flag value: %s' % arg)
-    elif arg == '--no-luks':
-      is_luks_allowed = False
+    elif arg.startswith('--restrict-type='):
+      value = arg[arg.find('=') + 1:].lower()
+      if value == 'no-luks':
+        is_luks_allowed = False
+      elif value == 'luks':
+        is_nonluks_allowed = False
+      else:
+        raise UsageError('unsupported flag value: %s' % arg)
+    elif arg == '--restrict-luksformat-defaults':
+      do_restrict_luksformat_defaults = True
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -3121,16 +3133,21 @@ def cmd_create(args):
     raise UsageError('missing flag: --volume-type=normal')
   if encryption != 'aes':
     raise UsageError('missing flag: --encryption=aes')
-  if hash is None:
-    raise UsageError('missing flag: --hash=...')
   if filesystem != 'none':
     raise UsageError('missing flag: --filesystem=none')
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
   if random_source != '/dev/urandom':
-    raise UsageError('missing flag: --random-source=/dev/urandm')
+    if do_restrict_luksformat_defaults:
+      raise UsageError('missing flag: --use-urandom')
+    else:
+      raise UsageError('missing flag: --random-source=/dev/urandom')
+  if not is_batch_mode and do_restrict_luksformat_defaults:
+      raise UsageError('missing flag: --batch-mode')
+  if hash is None:
+    raise UsageError('missing flag: --hash=...')
   if device_size is None:
-    raise UsageError('missing flag: --size=...')
+    raise UsageError('missing flag: --size=..., recommended but not compatible with veracrypt create: --size=auto')
   if pim is None:  # For compatibility with `veracrypt --create'.
     if type_value == 'truecrypt':
       pim = 0
@@ -3175,6 +3192,8 @@ def cmd_create(args):
     do_add_full_header = True
     do_add_backup = False
   else:
+    if not is_nonluks_allowed:
+      raise UsageError('--type=%s not allowed for this command, try init' % type_value)
     if key_size != 512:
       raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
     if af_stripe_count not in (1, None):
@@ -3512,6 +3531,12 @@ def main(argv):
   if len(argv) > 2 and argv[1] == '--truecrypt' and argv[2] == '--create':
     argv[1 : 3] = argv[2 : 0 : -1]
   open_default_args = ('--keyfiles=', '--protect-hidden=no', '--filesystem=none', '--encryption=aes', '--custom-name')
+  veracrypt_create_args = (
+      '--quick', '--volume-type=normal', '--size=auto',
+      '--encryption=aes', '--hash=sha512', '--filesystem=none',
+      '--pim=0', '--keyfiles=',
+      # '--random-source=/dev/urandom',
+      '--passphrase-once')
 
   command = argv[1].lstrip('-')
   del argv[:2]
@@ -3532,7 +3557,6 @@ def main(argv):
   elif command in ('close', 'remove'):
     # Emulates: `cryptsetup close <device>' and `dmsetup remove <device>'.
     cmd_close(argv)
-  # !! add `tcryptDump' (`cryptsetup tcryptDump')
   elif command == 'create':  # For compatibility with `veracrypt --create' and `cryptsetup create' (obsolete).
     # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
@@ -3549,22 +3573,22 @@ def main(argv):
       cmd_mount(open_default_args + ('--type=plain', '--', argv[1], argv[0]))  # `cryptsetup create' (obsolete syntax).
     else:
       # Use `init --type=luks' instead for LUKS.
-      cmd_create(('--no-luks',) + tuple(argv))
+      cmd_create(('--restrict-type=no-luks',) + tuple(argv))
+  elif command in ('luksFormat', 'luks-format'):  # For compatibility with `cryptsetup luksFormat'.
+    # This is a legacy command, use `./tinyveracrypt.py init --type=luks' for better defaults.
+    # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512
+    # Defaults from `--hash=sha256 --key-size=256' below are from cryptsetup-1.7.3 in Debian.
+    cmd_create(veracrypt_create_args + ('--type=luks', '--hash=sha256', '--key-size=256', '--restrict-type=luks', '--restrict-luksformat-defaults') + tuple(argv))
   elif command == 'init':  # Like create, but with better (shorter) defaults.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
-    # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512 DEVICE.img
-    # !! Add luksFormat, default is --hash=sha256 --key-size=256 for cryptsetup-1.7.3 (?)
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
     # !! init --opened (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
-    cmd_create(('--quick', '--volume-type=normal', '--size=auto',
-                '--encryption=aes', '--hash=sha512', '--filesystem=none',
-                '--pim=0', '--keyfiles=', '--random-source=/dev/urandom',
-                '--passphrase-once') +
-               tuple(argv))
+    cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
+    # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add help.
     # !! Add `cat' command, inline crypt_aes_xts_sectors for 512 bytes.
     # !! Add `open-fuse' command.
