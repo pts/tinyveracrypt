@@ -328,7 +328,9 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
       raise ValueError('ofs must be nonnegative, got: %d' % ofs)
   if sector_idx < 0:
     raise ValueError('sector_idx must be nonnegative, got: %d' % ofs)
-  if ofs >= len(data):
+  if not data:
+    if not isinstance(aes_xts_key, tuple):
+      check_aes_xts_key(aes_xts_key)
     return ''
 
   # This would work instead of inlining:
