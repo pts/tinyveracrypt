@@ -10,6 +10,8 @@ filesystem in front of the encrypted volume.
 
 Features
 ~~~~~~~~
+* tinyveracrypt can create VeraCrypt, TrueCrypt and LUKS encrypted volumes
+  (neither veracrypt nor cryptsetup can do all these as a single tool)
 * tinyveracrypt is easier to install from source than VeraCrypt or
   cryptsetup.
 * tinyveracrypt works offline: it can be run on one machine, and the effect
@@ -591,6 +593,19 @@ for a multiple of 4096, but for SSDs a multiple of 1 MiB (--ofs=1M) or even
 more is recommended. (By default Linux and Windows partitioning tools use 1
 MiB alignment since about the beginning of 2010.) See also
 https://www.thomas-krenn.com/en/wiki/Partition_Alignment .
+
+Q30. How to create encrypted volumes tinyveracrypt in offline mode?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Example:
+
+  $ rm -f DEVICE.img
+  $ ./tinyveracrypt.py init --no-add-backup --no-truncate --size=10G DEVICE.img
+  Enter passphrase:
+  $ ssh root@HOST 'cat >/dev/sdX' <DEVICE.img
+
+This will compute the VeraCrypt headers from the passphrase locally, and
+transfer the resultig DEVICE.img file (of 2 MiB seemingly random data) to
+the remote host HOST.
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

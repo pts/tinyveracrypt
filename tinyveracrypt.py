@@ -3084,6 +3084,7 @@ def cmd_create(args):
   is_batch_mode = False
   do_restrict_luksformat_defaults = False
   is_luks_allowed = is_nonluks_allowed = True
+  do_truncate = True
   keytable_arg = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
@@ -3265,6 +3266,10 @@ def cmd_create(args):
       is_opened = True
     elif arg == '--no-opened':
       is_opened = False
+    elif arg == '--truncate':
+      do_truncate = True
+    elif arg == '--no-truncate':
+      do_truncate = False
     elif arg == '--passphrase-twice':
       do_passphrase_twice = True
     elif arg == '--verify-passphrase':  # cryptsetup create.
@@ -3670,10 +3675,11 @@ def cmd_create(args):
     elif enchd_backup:
       xf.seek(device_size - len(enchd_backup))
       xf.write(enchd_backup)
-    try:
-      xf.truncate(device_size)
-    except IOError:
-      pass
+    if do_truncate:
+      try:
+        xf.truncate(device_size)
+      except IOError:
+        pass
     # This is useful so that changes in /dev/loop0 are copied back to DEVICE.img.
     fsync_loop_device(xf)
   finally:
