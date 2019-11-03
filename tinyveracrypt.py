@@ -2649,6 +2649,8 @@ def cmd_mount(args):
       else:
         type_value = args[i]
         i += 1
+      if type_value in ('plain', 'loopaes', 'luks2'):
+        raise UsageError('unsupported type, run this instead: cryptsetup open --type=%s ...' % type_value)
       truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
     elif arg.startswith('--slot='):
       value = arg[arg.find('=') + 1:]
@@ -3509,31 +3511,29 @@ def main(argv):
     del argv[2]
   if len(argv) > 2 and argv[1] == '--truecrypt' and argv[2] == '--create':
     argv[1 : 3] = argv[2 : 0 : -1]
+  open_default_args = ('--keyfiles=', '--protect-hidden=no', '--filesystem=none', '--encryption=aes', '--custom-name')
 
   command = argv[1].lstrip('-')
+  del argv[:2]
   if command == 'get-table':  # !! Add --showkeys.
     # Doesn't emulates: dmsetup table [--showkeys] NAME
-    cmd_get_table(argv[2:])
+    cmd_get_table(argv)
   elif command == 'mount':
     # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
     # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
     #
     # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
-    cmd_mount(argv[2:])
+    cmd_mount(argv)
   elif command == 'open':
     # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME  # Creates /dev/mapper/NAME
-    args = argv[2:]
-    args[:0] = ('--keyfiles=', '--protect-hidden=no',
-                '--filesystem=none', '--encryption=aes',
-                '--custom-name')
-    cmd_mount(args)
+    cmd_mount(open_default_args + tuple(argv))
   elif command == 'open-table':
-    cmd_open_table(argv[2:])
+    cmd_open_table(argv)
   elif command in ('close', 'remove'):
     # Emulates: `cryptsetup close <device>' and `dmsetup remove <device>'.
-    cmd_close(argv[2:])
+    cmd_close(argv)
   # !! add `tcryptDump' (`cryptsetup tcryptDump')
-  elif command == 'create':  # For compatibility with `veracrypt --create'.
+  elif command == 'create':  # For compatibility with `veracrypt --create' and `cryptsetup create' (obsolete).
     # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
     # Difference; --quick is also respected for disk images (not only actual block devices).
@@ -3545,9 +3545,11 @@ def main(argv):
     # Difference: --truecrypt is respected.
     # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
     # For --pim=0, --pim=485 is used with --hash=sha512.
-    args = argv[2:]
-    args[:0] = ('--no-luks',)  # Use `init --type=luks' instead.
-    cmd_create(args)
+    if len(argv) == 2 and not argv[0].startswith('-') and not argv[1].startswith('-'):
+      cmd_mount(open_default_args + ('--type=plain', '--', argv[1], argv[0]))  # `cryptsetup create' (obsolete syntax).
+    else:
+      # Use `init --type=luks' instead for LUKS.
+      cmd_create(('--no-luks',) + tuple(argv))
   elif command == 'init':  # Like create, but with better (shorter) defaults.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
@@ -3557,12 +3559,11 @@ def main(argv):
     # !! Add luksFormat, default is --hash=sha256 --key-size=256 for cryptsetup-1.7.3 (?)
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
     # !! init --opened (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
-    args = argv[2:]
-    args[:0] = ('--quick', '--volume-type=normal', '--size=auto',
+    cmd_create(('--quick', '--volume-type=normal', '--size=auto',
                 '--encryption=aes', '--hash=sha512', '--filesystem=none',
                 '--pim=0', '--keyfiles=', '--random-source=/dev/urandom',
-                '--passphrase-once')
-    cmd_create(args)
+                '--passphrase-once') +
+               tuple(argv))
   else:
     # !! Add help.
     # !! Add `cat' command, inline crypt_aes_xts_sectors for 512 bytes.
