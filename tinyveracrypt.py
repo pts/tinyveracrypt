@@ -3140,6 +3140,9 @@ def cmd_create(args):
     elif arg.startswith('--fake-luks-uuid='):
       fake_luks_uuid_flag = arg[arg.find('=') + 1:]
     elif arg == '--any-luks-uuid':
+      # If you specify a UUID in the wrong format,
+      # `cryptsetup open' in cryptsetup-1.7.3 will fail with:
+      # `Requested UUID Hello, has invalid format.'.
       is_any_luks_uuid = True
     elif arg == '--no-any-luks-uuid':
       is_any_luks_uuid = False
