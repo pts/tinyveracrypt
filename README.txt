@@ -607,6 +607,17 @@ This will compute the VeraCrypt headers from the passphrase locally, and
 transfer the resultig DEVICE.img file (of 2 MiB seemingly random data) to
 the remote host HOST.
 
+Q31. How to open encrypted volumes with tinyveracrypt in offline mode?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Run
+
+  $ ./tinyveracrypt.py get-table --showkeys --display-device=/dev/sdX RAWDEVICE |
+    ssh root@HOST dmsetup create NAME
+
+This will get the encryption key (and offsets) from RAWDEVICE on the local
+machine, and open /dev/sdX on the remote host HOST using the local
+encryption key, as /dev/mapper/NAME .
+
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 $ dmsetup table --showkeys rr

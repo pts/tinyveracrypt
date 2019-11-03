@@ -1209,12 +1209,12 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 
 def build_table(
-    keytable, decrypted_size, decrypted_ofs, raw_device, iv_ofs, do_showkeys,
+    keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, do_showkeys,
     opt_params=('allow_discards',)):
   check_aes_xts_key(keytable)
   check_decrypted_size(decrypted_size)
-  if isinstance(raw_device, (list, tuple)):
-    raw_device = '%d:%s' % tuple(raw_device)
+  if isinstance(display_device, (list, tuple)):
+    display_device = '%d:%d' % tuple(display_device)
   cipher = 'aes-xts-plain64'
   offset = decrypted_ofs
   start_offset_on_logical = 0
@@ -1229,7 +1229,7 @@ def build_table(
   return '%d %d %s %s %s %d %s %s%s\n' % (
       start_offset_on_logical, decrypted_size >> 9, target_type,
       cipher, keytable.encode('hex'),
-      iv_ofs >> 9, raw_device, offset >> 9, opt_params_str)
+      iv_ofs >> 9, display_device, offset >> 9, opt_params_str)
 
 
 def encrypt_header(dechd, header_key):
@@ -1428,7 +1428,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
-def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys):
+def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys, display_device=None):
   luks_device_size = None
   f = open(device)
   try:
@@ -1458,7 +1458,9 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
   else:
     decrypted_size = luks_device_size - decrypted_ofs
     iv_ofs = 0
-  return build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, do_showkeys)
+  if display_device is None:
+    display_device = device_id
+  return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, do_showkeys)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -2708,7 +2710,7 @@ def cmd_get_table(args):
   # are not supported. See the README.txt for more limitations.
 
   truecrypt_mode = None
-  pim = device = passphrase = hash = None
+  pim = device = passphrase = hash = display_device = None
   do_showkeys = False
 
   i, value = 0, None
@@ -2743,6 +2745,8 @@ def cmd_get_table(args):
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg)
+    elif arg.startswith('--display-device='):
+      display_device = arg[arg.find('=') + 1:]
     elif arg == '--showkeys':  # Similar to `dmsetup table --showkeys'.
       do_showkeys = True
     elif arg == '--no-showkeys':
@@ -2762,7 +2766,7 @@ def cmd_get_table(args):
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
-  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=do_showkeys))
+  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=do_showkeys, display_device=display_device))
   sys.stdout.flush()
 
 
