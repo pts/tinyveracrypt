@@ -2811,7 +2811,7 @@ def cmd_mount(args):
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--keyfiles='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      value = arg[arg.find('=') + 1:]
       if value != '':
         raise UsageError('unsupported flag value: %s' % arg)
       keyfiles = value
@@ -2855,11 +2855,6 @@ def cmd_mount(args):
       if value != 'none':
         raise UsageError('unsupported flag value: %s' % arg)
       filesystem = value
-    elif arg.startswith('--keyfiles='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
-      if value != '':
-        raise UsageError('unsupported flag value: %s' % arg)
-      keyfiles = value
     elif arg.startswith('--pim='):
       pim = parse_pim_arg(arg)
     else:
@@ -3212,12 +3207,12 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       filesystem = value
     elif arg.startswith('--keyfiles='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      value = arg[arg.find('=') + 1:]
       if value != '':
         raise UsageError('unsupported flag value: %s' % arg)
       keyfiles = value
     elif arg.startswith('--random-source='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
+      value = arg[arg.find('=') + 1:]
       if value != '/dev/urandom':
         raise UsageError('unsupported flag value: %s' % arg)
       random_source = value
