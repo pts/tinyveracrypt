@@ -238,10 +238,11 @@ Create the encrypted filesytem like this:
   $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
   $ sudo ./tinyveracrypt.py open-table --keytable=random --ofs=0 --end-ofs=0 DEVICE.img NAME
   $ sudo mkfs.ext2 /dev/mapper/NAME
+  $ #sudo mount /dev/mapper/NAME /media/NAMEDIR  # Optional.
   $ sudo ./tinyveracrypt.py init --opened --fake-luks-uuid=random /dev/mapper/NAME
-  warning: abort now, otherwise all data on /dev/loop0 will be lost
+  warning: abort now, otherwise the first 512 bytes of /dev/loop0 will be overwritten, destroying filesystems such as vfat, ntfs, xfs
+  warning: abort now, otherwise encryption headers on /dev/loop0 will be replaced by a new veracrypt, old passwords will be lost, encrypted data will be kept intact
   Enter passphrase:
-  $ sudo fsck.ext2 /dev/mapper/NAME
   $ /sbin/blkid DEVICE.img
   DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
 
@@ -249,23 +250,12 @@ The advantage of this is that the UUID above is detectable without opening
 the encrypted volume.
 
 The reason why mkfs was run before `tinyveracrypt.py init' is that mkfs
-would otherwise overwrite the first 512 bytes, and we want to keep there
-the VeraCrypt header written by tinyveracrypt.py writes.
+(including mkfs.ext2 and mkfs.minix) would otherwise overwrite the first 512
+bytes, and we want to keep there the VeraCrypt header written by
+tinyveracrypt.py.
 
-If you have an mkfs command which doesn't modify the first 512 bytes of the
-device (it doesn't work with mkfs.ext2), you can do it the other way around:
-
-  $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
-  $ ./tinyveracrypt.py init --ofs=0 --fake-luks-uuid=random DEVICE.img
-  warning: abort now, otherwise all data on /dev/loop0 will be lost
-  Enter passphrase:
-  $ /sbin/blkid DEVICE.img
-  DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
-  $ sudo ./tinyveracrypt.py open DEVICE.img NAME
-  Enter passphrase:
-  $ sudo mkfs.MYFS /dev/mapper/NAME
-  $ /sbin/blkid DEVICE.img
-  DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
+`tinyveracrypt.py init --opened' does the correct block device buffer and
+page table flushing no matter the filesystem is mounted or not.
 
 Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?
