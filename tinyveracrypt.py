@@ -3267,23 +3267,25 @@ def cmd_create(args):
       is_opened = False
     elif arg == '--passphrase-twice':
       do_passphrase_twice = True
+    elif arg == '--verify-passphrase':  # cryptsetup create.
+      do_passphrase_twice = True
     elif arg == '--passphrase-once':
       do_passphrase_twice = False
     elif arg == '--truecrypt':
       type_value = 'truecrypt'
     elif arg in ('--no-truecrypt', '--veracrypt'):
       type_value = 'veracrypt'
-    elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup.
+    elif (arg in ('--type', '-M') and i < len(args)) or arg.startswith('--type='):  # cryptsetup create.
       if '=' in arg:
         type_value = arg[arg.find('=') + 1:].lower()
       else:
         type_value = args[i]
         i += 1
-      if type_value in ('tcrypt', 'truecrypt'):  # cryptsetup --type=tcrypt.
+      if type_value in ('tcrypt', 'truecrypt'):  # cryptsetup create --type=tcrypt.
         type_value = 'truecrypt'
       elif type_value == 'veracrypt':
         type_value = 'veracrypt'
-      elif type_value in ('luks', 'luks1'):  # cryptsetup --type=luks.
+      elif type_value in ('luks', 'luks1'):  # cryptsetup create --type=luks.
         type_value = 'luks'
       else:
         # Cryptsetup also supports --type=plain and --type=loopaes.
@@ -3541,6 +3543,7 @@ def cmd_create(args):
         do_randomize_salt = False
       else:
         raise UsageError('specific --salt=... values conflict with --ofs=fat or --mkfat=...')
+
     def prompt_passphrase_with_warning():
       prompt_device_size = read_device_size
       if prompt_device_size is None:
@@ -3766,6 +3769,7 @@ def main(argv):
     # This is a legacy command, use `./tinyveracrypt.py init --type=luks' for better defaults.
     # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512
     # Defaults from `--hash=sha256 --key-size=256' below are from cryptsetup-1.7.3 in Debian.
+    # Difference: `cryptsetup luksFormat' silently ignores `--type=tcrypt', we refuse it.
     cmd_create(veracrypt_create_args + ('--type=luks', '--hash=sha256', '--key-size=256', '--restrict-type=luks', '--restrict-luksformat-defaults') + tuple(argv))
   elif command == 'init':  # Like create, but with better (shorter) defaults.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
