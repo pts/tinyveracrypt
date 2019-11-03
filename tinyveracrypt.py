@@ -1556,6 +1556,18 @@ def build_veracrypt_header(
   return enchd
 
 
+def get_recommended_veracrypt_decrypted_ofs(device_size, do_add_full_header):
+  if device_size < (1 << 20):
+    return (512, 0x20000)[bool(do_add_full_header)]  # VeraCrypt minimum, small overhead.
+  device_size = min(device_size, 512 << 20)
+  result = (4 << 10, 0x20000)[bool(do_add_full_header)]
+  while device_size >= (result << 9):
+    result <<= 1
+  # At most 0.4% overhead, at most 2 MiB (default LUKS header size, >1 MiB
+  # default partition alignment).
+  return result
+
+
 def get_fat_sizes(fat_header):
   import struct
   if len(fat_header) < 64:
@@ -2080,6 +2092,33 @@ def check_luks_slot_salt(slot_salt):
                      len(slot_salt))
 
 
+def get_recommended_luks_decrypted_ofs(device_size):
+  device_size = min(device_size, 512 << 20)
+  result = 8 << 10  # Larger than LUKS cryptsetup minimum (4096), can store all 8 slots, good SSD page alignment.
+  while device_size >= (result << 9):
+    result <<= 1
+  # At most 0.4% overhead if device_size >= 2 << 20, at most 2 MiB (default
+  # LUKS header size, >1 MiB default partition alignment).
+  return result
+
+
+def get_recommended_luks_af_stripe_size(decrypted_ofs):
+  if not isinstance(decrypted_ofs, (int, long)):
+    raise TypeError
+  if decrypted_ofs >= (2001 << 10):
+    # Use at most 2000 KiB for slots. This corresponds to the cryptsetup
+    # default of af_stripe_count == 4000, slot_count == 8, cipher ==
+    # 'aes-xts-plain64'.
+    af_stripe_size = (2000 << 10) >> (3 + 9) << 9
+    assert 1 <= af_stripe_size <= 256000
+    return af_stripe_size
+  header_size = 1024  # Minimum LUKS PHDR size.
+  while decrypted_ofs >= header_size * 10 and header_size < (32 << 10):
+    header_size <<= 1
+  # af_stripe_count <= 0 is an error, `slot_count <= 0' below will report it.
+  return (decrypted_ofs - header_size) >> (3 + 9) << 9
+
+
 def luks_af_hash_h1(data, output_size, digest_cons):
   if output_size <= 0:
     raise ValueError('af_hash_h1 output_size must be at least 1, got: %d' %
@@ -2179,7 +2218,7 @@ def build_luks_header(
     passphrase, decrypted_ofs=None, keytable_salt=None,
     uuid_str=None, pim=None, keytable_iterations=None, slot_iterations=None,
     cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
-    af_stripe_count=1, af_salt=None, key_size=None):
+    af_stripe_count=None, af_salt=None, key_size=None):
   """Builds a LUKS1 header.
 
   Similar to `cryptsetup luksFormat', with the following differences:
@@ -2212,21 +2251,30 @@ def build_luks_header(
     cipher_name, cipher_mode = 'aes', 'xts-plain64'
     if key_size & 7:  # Number of bits.
       raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
-    keytable_size = min(255, key_size >> 3 or 64)
+    keytable_size = min(257, key_size >> 3 or 64)
     check_aes_xts_key('\0' * keytable_size)
   else:
     raise ValueError('Unsupported LUKS cipher: %s' % cipher)
-  key_material_sector_count = (af_stripe_count * keytable_size + 511) >> 9
-  if decrypted_ofs is None:
+
+  # If the caller has alignment requirements, then it should specify a large
+  # enough decrypted_ofs (e.g. multiple of 1 MiB for good SSD block
+  # alignment) based on device_size.
+  if decrypted_ofs is None:  # Make it as small as possible with 8 key slots.
+    if af_stripe_count is None:
+      af_stripe_count = 512 // keytable_size  # Fit to 1 sector.
     # Make room for all 8 key slots.
-    decrypted_ofs = (2 + 8 * key_material_sector_count) << 9
+    decrypted_ofs = (2 + 8) << 9
   check_luks_decrypted_ofs(decrypted_ofs)
 
+  if af_stripe_count is None:
+    af_stripe_count = get_recommended_luks_af_stripe_size(decrypted_ofs) // keytable_size
+  key_material_sector_count = max(1, (af_stripe_count * keytable_size + 511) >> 9)
   # 6 slots for the default decrypted_ofs == 4096.
   slot_count = min(8, ((decrypted_ofs >> 9) - 2) // key_material_sector_count)
   if slot_count <= 0:
     raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
                      ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
+
   if not uuid_str:
     uuid_str = get_random_bytes(16).encode('hex')
     uuid_str = '-'.join((  # Add the dashes.
@@ -2296,8 +2344,14 @@ def build_luks_header(
       signature, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
       keytable_size, mk_digest, keytable_salt, keytable_iterations, uuid_str)]
   key_materials = []
+  # Put key material as late as possible, make padding after PHDR as long as
+  # possible so that autodetection tools (/sbin/blkid) won't mistakenly
+  # detect the LUKS volume as another filesystem. If the raw device is long
+  # enough, total size of PHDR + padding will be 48 KiB.
+  key_material_sector_base = (decrypted_ofs >> 9) - slot_count * key_material_sector_count
+  assert key_material_sector_base >= 2
   for i in xrange(8):
-    key_material_ofs = (2 + min(i, slot_count - 1) * key_material_sector_count) << 9
+    key_material_ofs = (key_material_sector_base + min(i, slot_count - 1) * key_material_sector_count) << 9
     if i < len(passphrases):
       # Let build_luks_active_key_slot generate random slot_salt values if
       # needed.
@@ -2318,7 +2372,9 @@ def build_luks_header(
           slot_iterations, key_material_ofs))
       if i < slot_count:
         key_materials.append('\0' * (key_material_sector_count << 9))
-  output.append('\0' * 432)
+  output.append('\0' * 432)  # Align PHDR to sector boundary.
+  # Padding between PHDR and key_material_sector_base.
+  output.append('\0' * ((key_material_sector_base - 2) << 9))
   output.extend(key_materials)
   output_size = sum(map(len, output))
   padded_output_size = min(decrypted_ofs, 65536 + 1024)
@@ -2817,6 +2873,7 @@ def cmd_create(args):
   is_opened = False
   is_luks_allowed = True
   keytable_arg = fake_luks_uuid = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  af_stripe_count = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = 512
 
@@ -2921,6 +2978,14 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
       if key_size not in (32 << 3, 48 << 3, 64 << 3):
         raise UsageError('key size must be 256, 384 or 512 bits, got: %s' % arg)
+    elif arg.startswith('--af-stripes='):  # LUKS anti-forensic stripe count.
+      value = arg[arg.find('=') + 1:]
+      try:
+        af_stripe_count = int(value)
+      except ValueError:
+        raise UsageError('unsupported flag value: %s' % arg)
+      if af_stripe_count <= 0:
+        raise UsageError('af stripe count must be positive, got: %s' % arg)
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg)
     elif arg.startswith('--filesystem='):
@@ -3050,18 +3115,14 @@ def cmd_create(args):
     if fat_cluster_size is not None:
       raise UsageError('--fat-cluster-size needs --mkfat=...')
   keytable = parse_keytable_arg(keytable_arg, is_short_ok=(type_value == 'luks'))
-  if key_size != 512 and type_value != 'luks':
-    raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
   if type_value == 'luks':
     if not is_luks_allowed:
       raise UsageError('--type=luks not allowed for this command, try init')
-    if decrypted_ofs is None:
-      # TODO(pts): Add defaults closer to cryptsetup.
-      decrypted_ofs = 4096  # Minimal, smaller than cryptsetup.
-    if not isinstance(decrypted_ofs, (int, long)):
-      raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
-    if decrypted_ofs < 4096:
-      raise UsageError('--decrypted_ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
+    if decrypted_ofs is not None:
+      if not isinstance(decrypted_ofs, (int, long)):
+        raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
+      if decrypted_ofs < 4096:
+        raise UsageError('--decrypted_ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
     if is_opened:
       raise UsageError('--type=luks conflicts with --is-opened')
     if do_add_backup:
@@ -3075,6 +3136,11 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --mkfat=...')
     do_add_full_header = True
     do_add_backup = False
+  else:
+    if key_size != 512:
+      raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
+    if af_stripe_count not in (1, None):
+      raise UsageError('--type=%s conflicts with --af-stripe-count=...' % type_value)
 
   if is_opened:  # RAWDEVICE is a dm device pathname. Needs root access.
     # !! Add support for changing the passphrase without root.
@@ -3191,9 +3257,6 @@ def cmd_create(args):
     if decrypted_ofs is not None:
       raise UsageError('--mkfat=... conflicts with --ofs=...')
     decrypted_ofs = 'mkfat'
-  elif decrypted_ofs is None:
-    assert type_value != 'luks'
-    decrypted_ofs = 0x20000  # VeraCrypt default.
   if fake_luks_uuid is not None:
     if decrypted_ofs == 'fat':
       raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
@@ -3224,16 +3287,6 @@ def cmd_create(args):
       fake_luks_uuid = '-'.join((  # Add the dashes.
           fake_luks_uuid[:8], fake_luks_uuid[8 : 12], fake_luks_uuid[12 : 16],
           fake_luks_uuid[16 : 20], fake_luks_uuid[20:]))
-  if do_add_full_header is None:
-    do_add_full_header = decrypted_ofs not in ('fat', 'mkfat', 0)
-  if do_add_backup is None:
-    do_add_backup = do_add_full_header
-  if do_add_backup and not do_add_full_header:
-      raise UsageError('--add-backup needs --add-full-header')
-  if do_add_full_header and decrypted_ofs == 'fat':
-    raise UsageError('--add-backup conflicts with --ofs=fat')
-  if do_add_full_header and decrypted_ofs == 0:
-    raise UsageError('--add-full-header conflicts with --ofs=0')
 
   need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
   read_device_size = None
@@ -3248,6 +3301,23 @@ def cmd_create(args):
         device_size = read_device_size
     finally:
       f.close()
+  assert isinstance(device_size, (int, long))
+
+  if do_add_full_header is None:
+    assert type_value != 'luks'
+    if decrypted_ofs is None:
+      do_add_full_header = device_size >= (4 << 20)  # 4 MiB, At most 0.4% overhead.
+    else:
+      do_add_full_header = decrypted_ofs not in ('fat', 'mkfat') and decrypted_ofs >= 0x20000 and device_size >= (0x20000 << bool(do_add_backup))
+  if do_add_backup is None:
+    do_add_backup = do_add_full_header
+  if do_add_backup and not do_add_full_header:
+      raise UsageError('--add-backup needs --add-full-header')
+  if do_add_full_header and decrypted_ofs == 'fat':
+    raise UsageError('--add-backup conflicts with --ofs=fat')
+  if do_add_full_header and decrypted_ofs == 0:
+    raise UsageError('--add-full-header conflicts with --ofs=0')
+
   if decrypted_ofs in ('fat', 'mkfat'):
     if salt == '':
       do_randomize_salt = True
@@ -3255,17 +3325,6 @@ def cmd_create(args):
       do_randomize_salt = False
     else:
       raise UsageError('specific --salt=... values conflict with --ofs=fat or --mkfat=...')
-  elif type_value == 'luks':
-      if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
-        raise UsageError('raw device too small for LUKS volume, minimum is 2066432, actual size: %d' %
-                         device_size)
-  else:
-    minimum_device_size = (decrypted_ofs << bool(do_add_backup)) + 512
-    if device_size < minimum_device_size:
-      raise UsageError('raw device too small for %s volume, minimum is %d, actual size: %d' %
-                       (('TrueCrypt', 'VeraCrypt')[type_value == 'veracrypt'],
-                        minimum_device_size, device_size))
-
   def prompt_passphrase_with_warning():
     prompt_device_size = read_device_size
     if prompt_device_size is None:
@@ -3284,17 +3343,22 @@ def cmd_create(args):
     return prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
   if type_value == 'luks':
+    if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
+      raise UsageError('raw device too small for LUKS volume, minimum is 2066432 (2018K), actual size: %d' %
+                       device_size)
+    if decrypted_ofs is None:
+      decrypted_ofs = get_recommended_luks_decrypted_ofs(device_size)
     if passphrase is None:
       passphrase = prompt_passphrase_with_warning  # Callback to defer it after checks.
     enchd_backup = ''
     enchd = build_luks_header(
         passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-        uuid_str=fake_luks_uuid, pim=pim, keytable_iterations=None,
-        slot_iterations=None, hash=hash, keytable=keytable,
-        key_size=key_size,
-        keytable_salt=None,  # TODO(pts): Add command-line flag.
+        uuid_str=fake_luks_uuid, pim=pim, af_stripe_count=af_stripe_count,
+        hash=hash, keytable=keytable, key_size=key_size,
+        keytable_iterations=None,  # TODO(pts): Add command-line flag.
+        slot_iterations=None,  # TODO(pts): Add command-line flag.
+        keytable_salt=None,  # TODO(pts): Add command-line flag (--random-source=... ?)
         slot_salt=None,  # TODO(pts): Add command-line flag.
-        af_stripe_count=1,  # TODO(pts): Make command-line flag (`cryptsetup luksFormat' default is 4000).
         af_salt=None,  # TODO(pts): Add command-line flag.
         )
   else:  # VeraCrypt or TrueCrypt.
@@ -3326,8 +3390,15 @@ def cmd_create(args):
       assert 2048 <= fatfs_size2 <= fatfs_size
       assert len(enchd) >= 1536
     else:
+      if decrypted_ofs is None:
+        decrypted_ofs = get_recommended_veracrypt_decrypted_ofs(
+            device_size, do_add_full_header)
+      decrypted_size = device_size - (decrypted_ofs << bool(do_add_backup))
+      if decrypted_size < 512:
+        raise UsageError('raw device too small for %s volume, minimum is %d (use --ofs=512 or --no-add-full-header to decrease), actual size: %d' %
+                         (('VeraCrypt', 'TrueCrypt')[is_truecrypt], 512 + (decrypted_ofs << bool(do_add_backup)), device_size))
       enchd = build_veracrypt_header(
-          decrypted_size=device_size - (decrypted_ofs << bool(do_add_backup)),
+          decrypted_size=decrypted_size,
           passphrase=passphrase, decrypted_ofs=decrypted_ofs,
           enchd_prefix=salt, pim=pim, fake_luks_uuid=fake_luks_uuid,
           is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
@@ -3345,6 +3416,7 @@ def cmd_create(args):
         xofs = fatfs_size
       else:
         xofs = decrypted_ofs
+      xofs = min(0x20000, xofs)
       # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
       enchd_backup = build_veracrypt_header(
           decrypted_size=device_size - (xofs << 1),
@@ -3468,7 +3540,8 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512 DEVICE.img
-    # !! Add --label=... and --uuid=... from set_jfs_id.py.
+    # !! Add luksFormat, default is --hash=sha256 --key-size=256 for cryptsetup-1.7.3 (?)
+    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
     # !! init --opened (e.g. convert from TrueCrypt to VeraCrypt) Reuse the keytable of an existing open encrypted volume (specified /dev/mapper/... or a mount point), and create a VeraCrypt header based on it. For this, flush the volume first.
     args = argv[2:]
     args[:0] = ('--quick', '--volume-type=normal', '--size=auto',
@@ -3478,6 +3551,8 @@ def main(argv):
     cmd_create(args)
   else:
     # !! Add help.
+    # !! Add `cat' command, inline crypt_aes_xts_sectors for 512 bytes.
+    # !! Add `open-fuse' command.
     raise UsageError('unknown command: %s' % command)
 
 

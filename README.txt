@@ -34,7 +34,10 @@ Features
   if AES encryption and SHA-512 hash is used, then tinyveracrypt can also
   open encrypted encrypted volumes created by the other tools.
 * tinyveracrypt can create encrypted volumes with custom header values
-  (e.g. the encrypted volume starting at any offset within the raw device).
+  (e.g. the encrypted volume starting at any offset within the raw device,
+  LUKS anti-forensic stripe count can be specified).
+* tinyveracrypt can create encrypted volumes deterministically by using
+  a pregenerated file as a random source
 
 Usage for VeraCrypt:
 
@@ -564,12 +567,40 @@ Q28. What is the minimum size of a LUKS encrypted volume?
 The minimum size of the raw device is 2018 * 1024 == 2066432 bytes, checked
 by `cryptsetup open' in cryptsetup-1.7.3.
 
+Q29. What is the minimum overhead of headers?
+"""""""""""""""""""""""""""""""""""""""""""""
 The minimum size of the LUKS headers (including PHDR and key material) is
-4096 bytes, also checked by `cryptsetup open' in cryptsetup-1.7.3.
+4096 bytes, also checked by `cryptsetup open' in cryptsetup-1.7.3. To use
+the minimum, run:
+
+  $ ./tinyveracrypt.py init --type=luks --ofs=4096 ...
+
+Please not that the minimum supports only 6 slots (out of 8). The minimum
+for 8 slots is 5120 bytes:
+
+  $ ./tinyveracrypt.py init --type=luks --ofs=5120 ...
 
 Without any checks in cryptsetup, 1536 bytes would work: 1024 bytes of LUKS
 PHDR, the 2nd half of it covering (overlapping with) the key material of
 slot 0, plus 512 bytes of encrypted data.
+
+The minimum size of VeraCrypt and TrueCrypt headers is 512 bytes. To use the
+minimum, run:
+
+  $ ./tinyveracrypt.py init --type=veracrypt --ofs=512 ...
+  $ ./tinyveracrypt.py init --type=truecrypt --ofs=512 ...
+
+With some filesystems (including ext2, ext3, ext4 on Linux, but excluding
+ntfs and vfat) it's possible to use 0 overhead in VeraCrypt and TrueCrypt
+headers, see Q13 how.
+
+Please note that if the header size (--ofs=...) is not a multiple of 4096
+bytes, reads and writes on the encrypted volume will be slow on SSDs but
+also on many HDDs because of block and page alignment issues. HDDs work well
+for a multiple of 4096, but for SSDs a multiple of 1 MiB (--ofs=1M) or even
+more is recommended. (By default Linux and Windows partitioning tools use 1
+MiB alignment since about the beginning of 2010.) See also
+https://www.thomas-krenn.com/en/wiki/Partition_Alignment .
 
 Some developer documentation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

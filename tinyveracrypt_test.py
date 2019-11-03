@@ -144,6 +144,27 @@ def test_veracrypt():
     i += 1
   # print 'CHANGED', i
   assert i == 32, i
+  rec = tinyveracrypt.get_recommended_veracrypt_decrypted_ofs
+  assert rec(1 << 30, False) == 2 << 20  # No need for more than 2 MiB alignment.
+  assert rec(512 << 20, False) == 2 << 20  # At most 0.4% overhead, good SSD block alignment (same as default 2 MiB LUKS header size by cryptsetup).
+  assert rec(256 << 20, False) == 1 << 20  # At most 0.4% overhead, good SSD block alignment (same as default 1 MiB partition alignment).
+  assert rec(128 << 20, False) == 512 << 10
+  assert rec(4 << 20, False) == 16 << 10  # At most 0.4% overhead, good SSD page alignment.
+  assert rec((4 << 20) - 1, False) == 8 << 10
+  assert rec(2 << 20, False) == 8 << 10  # At most 0.4% overhead, good SSD page alignment.
+  assert rec((2 << 20) - 1, False) == 4 << 10
+  assert rec(1 << 20, False) == 4 << 10  # At most 0.4% overhead, good SSD page alignment.
+  assert rec((1 << 20) - 1, False) == 512  # Small overhead.
+  assert rec(0, False) == 512
+  assert rec(1 << 30, True) == 2 << 20
+  assert rec(512 << 20, True) == 2 << 20
+  assert rec(256 << 20, True) == 1 << 20
+  assert rec(128 << 20, True) == 512 << 10
+  assert rec(64 << 20, True) == 256 << 10
+  assert rec((64 << 20) - 1, True) == 128 << 10
+  assert rec(32 << 20, True) == 128 << 10
+  assert rec((32 << 20) - 1, True) == 128 << 10
+  assert rec(0, True) == 128 << 10
 
 
 def test_luks():
@@ -178,6 +199,40 @@ def test_luks():
       '0 4028 crypt aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 7:0 8 1 allow_discards\n')
   decrypted_ofs2, keytable2 = tinyveracrypt.get_luks_keytable(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
+  rec = tinyveracrypt.get_recommended_luks_decrypted_ofs
+  assert rec(1 << 30) == 2 << 20  # No need for more than 2 MiB alignment.
+  assert rec(512 << 20) == 2 << 20  # At most 0.4% overhead, good SSD block alignment (same as default 2 MiB LUKS header size by cryptsetup).
+  assert rec(256 << 20) == 1 << 20  # At most 0.4% overhead, good SSD block alignment (same as default 1 MiB partition alignment).
+  assert rec(128 << 20) == 512 << 10
+  assert rec(4 << 20) == 16 << 10
+  assert rec((4 << 20) - 1) == 8 << 10
+  assert rec(2 << 20) == 8 << 10  # At most 0.4% overhead, >= 8192 (so it can store all blocks), good SSD page alignment.
+  assert rec((2 << 20) - 1) == 8 << 10  # LUKS cryptsetup minimum, can store at most 6 slots, good SSD page alignment.
+  assert rec(1 << 20) == 8 << 10
+  assert rec((1 << 20) - 1) == 8 << 10
+  assert rec(0) == 8 << 10
+  rec = tinyveracrypt.get_recommended_luks_af_stripe_size
+  assert rec(1 << 21) == 256000
+  assert rec(2001 << 10) == 256000
+  assert rec((2001 << 10) - 1) == 251904
+  assert rec(160 << 10) == 16 << 10
+  assert rec((160 << 10) - 1) == 17920
+  assert rec(80 << 10) == 8 << 10
+  assert rec(40 << 10) == 4 << 10
+  assert rec(28 << 10) == 3 << 10
+  assert rec((28 << 10) - 1) == 2560
+  assert rec(24 << 10) == 2560
+  assert rec((24 << 10) - 1) == 2 << 10
+  assert rec(20 << 10) == 2 << 10
+  assert rec(18 << 10) == 2 << 10
+  assert rec((18 << 10) - 1) == 1536
+  assert rec(10 << 10) == 1 << 10
+  assert rec((10 << 10) - 1) == 1 << 10
+  assert rec(9 << 10) == 1 << 10
+  assert rec((9 << 10) - 1) == 512
+  assert rec(5 << 10) == 512
+  assert rec((5 << 10) - 1) == 0
+  assert rec(0) == -512
 
 
 def test():
