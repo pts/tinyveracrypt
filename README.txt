@@ -279,7 +279,19 @@ filesystems and data structures which don't work safely (because they use
 the first 512 bytes of the raw device in their headers) include vfat, ntfs,
 xfs, exfat, Linux swap, Linux RAID, LUKS.
 
-Create the encrypted filesytem like this:
+Please note that cryptsetup 1.7.3 can't open such 0-overhead encrypted
+volumes, it reports the error `Device ... is too small.'. Use
+`tinyveracrypt' or `veracrypt' to open the encrypted volume.
+
+Most convenient way to an encrypted filesystem with 0 overhead:
+
+  $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 DEVICE.img
+
+You can pass flags to mkfs.ext2 (e.g. -L) like this:
+
+  $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 -- -L MYLABEL -b 1024 DEVICE.img
+
+Alternative, manual way to create the encrypted filesytem like this:
 
   $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
   $ sudo ./tinyveracrypt.py open-table --keytable=random --ofs=0 --end-ofs=0 DEVICE.img NAME
@@ -302,6 +314,8 @@ tinyveracrypt.py.
 
 `tinyveracrypt.py init --opened' does the correct block device buffer and
 page table flushing no matter the filesystem is mounted or not.
+
+
 
 Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?

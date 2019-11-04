@@ -17,6 +17,7 @@ versions of Python or Python 3.x.
 import binascii
 import itertools
 import os
+import os.path
 import stat
 import struct
 import sys
@@ -900,26 +901,52 @@ def run_and_read_stdout(cmd, is_dmsetup=False):
       raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
 
 
-def run_and_write_stdin(cmd, data, is_dmsetup=False):
+def run_and_write_stdin(cmd, data, is_dmsetup=False, do_show_failure=True, retry_count=0, retry_interval=1):
+  import subprocess
+  import time
+
+  if not isinstance(cmd, (list, tuple)):
+    raise TypeError
+
+  had_retry = False
+  while 1:
+    try:
+      p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    except OSError, e:
+      # Don't retry this.
+      raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
+    try:
+      p.stdin.write(data)
+    finally:
+      p.stdin.close()
+      exit_code = p.wait()
+      if exit_code and do_show_failure and retry_count <= 0:
+        if is_dmsetup:
+          try:
+            open('/dev/mapper/control', 'r+b').close()
+          except IOError:
+            raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
+        raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], exit_code))
+    if not exit_code or retry_count <= 0:
+      if had_retry:
+        print >>sys.stderr, 'info: command %s succeeded after retry' % cmd[0]
+      return exit_code or 0
+    retry_count -= 1
+    had_retry = True
+    time.sleep(retry_interval)
+
+
+def run_command(cmd):
   import subprocess
 
   if not isinstance(cmd, (list, tuple)):
     raise TypeError
   try:
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    p = subprocess.Popen(cmd)
   except OSError, e:
     raise RuntimeError('Command %s failed to start: %s' % (cmd[0], e))
-  try:
-    p.stdin.write(data)
-  finally:
-    p.stdin.close()
-    if p.wait():
-      if is_dmsetup:
-        try:
-          open('/dev/mapper/control', 'r+b').close()
-        except IOError:
-          raise SystemExit('command %s failed, rerun as root with sudo' % cmd[0])
-      raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
+  if p.wait():
+    raise RuntimeError('Command %s failed with exit code %d' % (cmd[0], p.wait()))
 
 
 def _losetup_add_cmd(filename):
@@ -1868,7 +1895,7 @@ def build_veracrypt_fat(
   data = ''.join(output)
   assert len(data) == reserved_size + fat_size * fat_count + rootdir_size
   assert len(data) <= fatfs_size
-  return data, fatfs_size
+  return data, fatfs_size, decrypted_size
 
 
 def parse_byte_size(size_str):
@@ -1960,9 +1987,21 @@ def yield_dm_crypt_devices():
     yield (name, parse_device_id(items[6]))
 
 
-def setup_path_for_dmsetup():
-  # For /sbin/dmsetup.
-  os.environ['PATH'] = os.getenv('PATH', '/bin:/usr/bin') + ':/sbin'
+def setup_path_for_dmsetup(do_add_usr=False):
+  """Idempotent."""
+  path = os.getenv('PATH', '/bin:/usr/bin')
+  path_split = path.split(os.path.pathsep)
+  if do_add_usr:
+    if ('/usr/local/sbin' in path_split and
+        '/usr/sbin' in path_split and
+        '/sbin' in path_split):
+      return
+    extra = ':/usr/local/sbin:/usr/sbin:/sbin'
+  else:
+    if '/sbin' in path_split:
+      return
+    extra = ':/sbin'
+  os.environ['PATH'] += extra.replace(':', os.path.pathsep)
 
 
 def fsync_loop_device(f):
@@ -2008,12 +2047,12 @@ def parse_decrypted_ofs_arg(arg):
   return value
 
 
-def parse_keytable_arg(arg, is_short_ok):
+def parse_keytable_arg(arg, keytable_size, is_short_ok):
   if arg is None:
     return None
   value = arg[arg.find('=') + 1:].lower()
   if value in ('random', 'new', 'rnd'):
-    value = get_random_bytes(64)
+    value = get_random_bytes(keytable_size)
   else:
     try:
       value = value.decode('hex')
@@ -2151,6 +2190,13 @@ class DmCryptFlushingFile(object):
       finally:
         self._f = None
 
+  def full_flush(self):
+    self._df.flush()
+    self._fsync(self._df.fileno())
+    self._f.flush()
+    self._fsync(self._f.fileno())
+    self._ioctl(self._f.fileno(), self._BLKFLSBUF)
+
   def __del__(self):
     self.close()
 
@@ -2198,6 +2244,33 @@ class DmCryptFlushingFile(object):
         self._f.write(data)
       ofs += size
       data = buffer(data, size)
+
+
+def find_on_path(progname):
+  if os.path.sep in progname:
+    return progname
+  for dirname in os.getenv('PATH', '').split(os.path.pathsep):
+    if dirname:
+      pathname = os.path.join(dirname, progname)
+      if os.path.isfile(pathname):
+        return pathname
+  return None
+
+
+try:
+  shell_escape = __import__('pipes').quote
+  if not callable(shell_escape):
+    raise TypeError
+except (ImportError, AttributeError, TypeError):
+  def shell_escape(string):
+    """Escapes shell metacharacters on Unix."""
+    if '\0' in string:
+      raise ValueError('NUL not allowed in command-line argument.')
+    # TODO(pts): Add -+,:/
+    # We don't use `import re' to avoid the dependency.
+    if string and (string.replace('_', '').replace('.', '').replace('/', '') or 'x').isalnum():
+      return string
+    return "'%s'" % string.replace("'", "'\\''")
 
 
 # --- LUKS.
@@ -2465,6 +2538,7 @@ def build_luks_header(
     uuid = '-'.join((  # Add the dashes.
         uuid[:8], uuid[8 : 12], uuid[12 : 16], uuid[16 : 20], uuid[20:]))
   check_luks_uuid(uuid)
+  slot_iterations_orig = slot_iterations
   if keytable_iterations is None:
     # `cryptsetup luksFormat' measures the CPU speed for this.
     total_iterations = get_iterations(pim, False, hash)
@@ -2477,7 +2551,7 @@ def build_luks_header(
   check_iterations(keytable_iterations)
   if slot_iterations is None:
     slot_iterations = max(1000, keytable_iterations << 3)
-  elif pim:
+  elif pim and slot_iterations_orig is not None:
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
   if not keytable_salt:
@@ -3002,7 +3076,8 @@ def cmd_open_table(args):
     elif arg.startswith('--iv-ofs='):  # --iv-ofs=0 for LUKS, unspecified for VeraCrypt.
       iv_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--keytable='):
-      keytable = parse_keytable_arg(arg, is_short_ok=True)
+      # TODO(pts): Add --key-size=...
+      keytable = parse_keytable_arg(arg, keytable_size=64, is_short_ok=True)
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -3206,10 +3281,9 @@ def cmd_create(args):
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg)
     elif arg.startswith('--filesystem='):
-      value = arg[arg.find('=') + 1:].lower().replace('-', '')
-      if value != 'none':
-        raise UsageError('unsupported flag value: %s' % arg)
-      filesystem = value
+      filesystem = arg[arg.find('=') + 1:]
+      if filesystem.lower().replace('-', '') == 'none':
+        filesystem = 'none'
     elif arg.startswith('--keyfiles='):
       value = arg[arg.find('=') + 1:]
       if value != '':
@@ -3307,13 +3381,36 @@ def cmd_create(args):
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
-  if device is None:
-    if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume')
-    device = args[i]
-    i += 1
-  if i != len(args):
-    raise UsageError('too many command-line arguments')
+
+  if filesystem == 'none':
+    if (i < len(args) and
+        (args[i].startswith('mkfs.') or '/mkfs.' in args[i])):
+      mkfs_args = list(args[i:])
+      if device is None:
+        if i + 1 == len(args):
+          raise UsageError(
+              'missing raw <device> hosting the encrypted volume, after mkfs')
+        device = mkfs_args.pop()
+    elif device is None:
+      if i >= len(args):
+        raise UsageError('missing raw <device> hosting the encrypted volume')
+      device = args[i]
+      i += 1
+      mkfs_args = []
+      if i != len(args):
+        raise UsageError('too many command-line arguments')
+  elif filesystem is None:
+    raise UsageError('missing flag: --filesystem=...')
+  else:
+    mkfs_args = list(args[i:])
+    mkfs_args[:0] = ('mkfs.' + filesystem,)
+    if device is None:
+      if i >= len(args):
+        raise UsageError('missing raw <device> hosting the encrypted volume')
+      device = mkfs_args.pop()
+  # Now mkfs_args is a non-empty list iff we need mkfs. mkfs_args starts with
+  # the command to run (e.g. 'mkfs.ext2'), and in the end it doesn't contain
+  # the device filename or the filesystem size.
 
   if key_size is None and not is_opened:
     key_size = 512
@@ -3321,8 +3418,6 @@ def cmd_create(args):
     raise UsageError('missing flag: --volume-type=normal')
   if encryption != 'aes':
     raise UsageError('missing flag: --encryption=aes')
-  if filesystem != 'none':
-    raise UsageError('missing flag: --filesystem=none')
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
   if random_source != '/dev/urandom':
@@ -3354,7 +3449,8 @@ def cmd_create(args):
       raise UsageError('--fat-fstype needs --mkfat=...')
     if fat_cluster_size is not None:
       raise UsageError('--fat-cluster-size needs --mkfat=...')
-  keytable = parse_keytable_arg(keytable_arg, is_short_ok=(type_value == 'luks'))
+  # This also generates random bytes if needed.
+  keytable = parse_keytable_arg(keytable_arg, keytable_size=(key_size or 512) >> 3, is_short_ok=(type_value == 'luks'))
   if type_value == 'luks':
     if not is_luks_allowed:
       raise UsageError('--type=luks not allowed for this command, try init')
@@ -3362,7 +3458,7 @@ def cmd_create(args):
       if not isinstance(decrypted_ofs, (int, long)):
         raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
       if decrypted_ofs < 4096:
-        raise UsageError('--decrypted_ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
+        raise UsageError('--ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
     if do_add_backup:
       raise UsageError('--type=luks conflicts with --add-backup')
     if do_add_full_header is False:
@@ -3392,7 +3488,15 @@ def cmd_create(args):
       uuid = parse_luks_uuid_flag(fake_luks_uuid_flag, is_any_luks_uuid)
     if uuid_flag is not None:
       raise UsageError('--type=%s conflicts with --uuid=..., maybe use --fake-looks-uuid=... instead' % type_value)
-
+  if mkfs_args:
+    setup_path_for_dmsetup(do_add_usr=True)
+    # This also fails if not run as root. Good.
+    list(yield_dm_devices())
+  if mkfs_args and '/' not in mkfs_args[0]:
+    pathname = find_on_path(mkfs_args[0])
+    if pathname is None:
+      raise UsageError('mkfs program not found on PATH: %s' % mkfs_args[0])
+    mkfs_args[0] = pathname
   xf = read_device_size = None
   try:
     decrypted_size = None  # is_opened will override it.
@@ -3511,6 +3615,9 @@ def cmd_create(args):
       if decrypted_ofs is not None:
         raise UsageError('--mkfat=... conflicts with --ofs=...')
       decrypted_ofs = 'mkfat'
+    if keytable is None:
+      keytable = get_random_bytes(key_size >> 3)
+    assert isinstance(keytable, str)
 
     need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
     read_device_size = None
@@ -3587,6 +3694,8 @@ def cmd_create(args):
           slot_salt=None,  # TODO(pts): Add command-line flag.
           af_salt=None,  # TODO(pts): Add command-line flag.
           )
+      if decrypted_size is None:
+        decrypted_size = device_size - decrypted_ofs
     else:  # VeraCrypt or TrueCrypt.
       if passphrase is None:
         # Read it now, to prevent multiple prompts below.
@@ -3594,12 +3703,13 @@ def cmd_create(args):
       is_truecrypt = type_value == 'truecrypt'
       if decrypted_ofs == 'fat':
         # Usage --salt=test to keep the oem_id etc. intact.
-        enchd, fatfs_size = build_veracrypt_fat(
+        enchd, fatfs_size, decrypted_size = build_veracrypt_fat(
             decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
             fat_header=fat_header, device_size=device_size, pim=pim,
             do_include_all_header_sectors=False,
             do_randomize_salt=do_randomize_salt, keytable=keytable, hash=hash)
         assert len(enchd) == 512
+        decrypted_ofs = fatfs_size
       elif decrypted_ofs == 'mkfat':
         if not do_randomize_salt:
           if fat_label is None:
@@ -3607,22 +3717,24 @@ def cmd_create(args):
           if fat_uuid is None:
             fat_uuid = 'DEAD-BEE3'
         if decrypted_size is None:
-          decrypted_size = device_size - (fatfs_size + min(0x20000, fatfs_size) * bool(do_add_backup))
-        enchd, fatfs_size2 = build_veracrypt_fat(
+          decrypted_size = device_size - fatfs_size - min(0x20000, fatfs_size) * bool(do_add_backup)
+        enchd, fatfs_size2, decrypted_size2 = build_veracrypt_fat(
             decrypted_size=decrypted_size,
             passphrase=passphrase, do_include_all_header_sectors=True,
             label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
             rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
             cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
             keytable=keytable, hash=hash)
+        assert decrypted_size2 == decrypted_size
         assert 2048 <= fatfs_size2 <= fatfs_size
         assert len(enchd) >= 1536
+        decrypted_ofs = fatfs_size
       else:
         if decrypted_ofs is None:
           decrypted_ofs = get_recommended_veracrypt_decrypted_ofs(
               device_size, do_add_full_header)
         if decrypted_size is None:
-          decrypted_size = device_size - (decrypted_ofs + min(0x20000, decrypted_ofs) * bool(do_add_backup))
+          decrypted_size = device_size - decrypted_ofs - min(0x20000, decrypted_ofs) * bool(do_add_backup)
         if decrypted_size < 512:
           raise UsageError('raw device too small for %s volume, minimum is %d (use --ofs=512 or --no-add-full-header to decrease), actual size: %d' %
                            (('VeraCrypt', 'TrueCrypt')[is_truecrypt], 512 + (decrypted_ofs + min(0x20000, decrypted_ofs) * bool(do_add_backup)), device_size))
@@ -3632,23 +3744,17 @@ def cmd_create(args):
             enchd_prefix=salt, pim=pim, fake_luks_uuid=uuid,
             is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
         assert len(enchd) == 512
+      assert isinstance(decrypted_ofs, (int, long))
+      assert isinstance(decrypted_size, (int, long))
       if do_add_full_header:
-        if decrypted_ofs == 'mkfat':
-          xofs = fatfs_size
-        else:
-          xofs = decrypted_ofs
-        assert xofs >= len(enchd)
-        enchd += get_random_bytes(xofs - len(enchd))
-        assert len(enchd) == xofs
+        assert decrypted_ofs >= len(enchd)
+        enchd += get_random_bytes(decrypted_ofs - len(enchd))
+        assert len(enchd) == decrypted_ofs
       if do_add_backup:
-        if decrypted_ofs == 'mkfat':
-          xofs = fatfs_size
-        else:
-          xofs = decrypted_ofs
-        xofs = min(0x20000, xofs)
+        xofs = min(0x20000, decrypted_ofs)
         # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
         enchd_backup = build_veracrypt_header(
-            decrypted_size=device_size - (xofs << 1),
+            decrypted_size=device_size - decrypted_ofs - xofs,
             passphrase=passphrase, decrypted_ofs=xofs,
             enchd_prefix=salt, pim=pim, is_truecrypt=is_truecrypt,
             keytable=keytable, hash=hash)
@@ -3656,6 +3762,8 @@ def cmd_create(args):
         assert len(enchd_backup) == xofs
       else:
         enchd_backup = ''
+    assert isinstance(decrypted_ofs, (int, long))
+    assert isinstance(decrypted_size, (int, long))
     if not need_read_first:  # Create file if needed, check write permissions.
       open(device, 'ab').close()
     if xf is None:
@@ -3679,8 +3787,47 @@ def cmd_create(args):
         xf.truncate(device_size)
       except IOError:
         pass
-    # This is useful so that changes in /dev/loop0 are copied back to DEVICE.img.
-    fsync_loop_device(xf)
+    if isinstance(xf, DmCryptFlushingFile):
+      xf.full_flush()
+    else:
+      xf.flush()
+      # This is useful so that changes in /dev/loop0 are copied back to DEVICE.img.
+      fsync_loop_device(xf)
+    if mkfs_args:
+      # TODO(pts): Reuse existing dm device if is_opened.
+      name = 'tinyveracrypt.mkfs.%d' % os.getpid()
+
+      def block_device_callback(block_device, fd, device_id):
+        table = build_table(
+            keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs=decrypted_ofs * bool(type_value != 'luks'), do_showkeys=True)
+        run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
+        is_ok = False
+        try:
+          mkfs_args.append('/dev/mapper/%s' % name)
+          try:
+            stat_obj = os.stat(mkfs_args[-1])
+          except OSError:
+            stat_obj = None
+          if not (stat_obj and stat.S_ISBLK(stat_obj.st_mode)):
+            raise SystemExit('dm table device not found: %s' % mkfs_arg[-1])
+          print >>sys.stderr, 'info: running mkfs: ' + ' '.join(map(shell_escape, mkfs_args))
+          run_command(mkfs_args)
+          is_ok = True
+          import time
+          time.sleep(0.2)  # Avoid early race conditions in dmsetup remove.
+        finally:
+          # We need to retry the dmsetup remove, because other commands (e.g. udev) may be busy processing them.
+          run_and_write_stdin(('dmsetup', 'remove', name), '', is_dmsetup=True, do_show_failure=is_ok, retry_count=5, retry_interval=0.5)
+
+      ensure_block_device(device, block_device_callback)
+      if decrypted_ofs == 0:
+        xf.seek(0)
+        # Write VeraCrypt header again in case mkfs has overwritten it
+        # (mkfs.ext2 and mkfs.minix do overwrite it).
+        xf.write(enchd[:512])  # mkfs.minix has only room for 512 bytes.
+        xf.flush()
+        if not isinstance(xf, DmCryptFlushingFile):
+          fsync_loop_device(xf)
   finally:
     if xf:
       xf.close()
@@ -3782,6 +3929,7 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
+    # !! Make `cryptsetup open' able to open --ofs=0 VeraCrypt encrypted volumes.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
