@@ -168,6 +168,15 @@ def test_veracrypt():
   assert rec(32 << 20, True) == 128 << 10
   assert rec((32 << 20) - 1, True) == 128 << 10
   assert rec(0, True) == 128 << 10
+  utm = tinyveracrypt.update_truecrypt_mode
+  assert utm(0, 'tcrypt') == 0
+  assert utm(1, 'tcrypt') == 2
+  assert utm(2, 'tcrypt') == 2
+  assert utm(3, 'tcrypt') == 2
+  assert utm(None, 'tcrypt') == 2
+  assert utm(0, 'truecrypt') == 2
+  assert utm(2, 'veracrypt') == 0
+  assert utm(0, 'luks') == 3
 
 
 def test_luks():

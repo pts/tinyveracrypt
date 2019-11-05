@@ -2761,15 +2761,16 @@ TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce
 
 def update_truecrypt_mode(truecrypt_mode, type_value):
   if type_value == 'tcrypt':
-    if truecrypt_mode is None:
-      # --truecrypt. To open VeraCrypt, use `cryptsetup --type=tcrypt veracrypt'.
-      truecrypt_mode = 2
+    if truecrypt_mode == 0:  # Keep --veracrypt.
+      return 0
+    # --truecrypt. To open VeraCrypt, use `--type=tcrypt --veracrypt'.
+    return 2
   elif type_value == 'truecrypt':
-    truecrypt_mode = 2
+    return 2
   elif type_value == 'veracrypt':
-    truecrypt_mode = 0
+    return 0
   elif type_value == 'luks':
-    truecrypt_mode = 3
+    return 3
   else:
     # Cryptsetup also supports --type=plain and --type=loopaes.
     raise UsageError('unsupported flag value: --type=%s' % type_value)
