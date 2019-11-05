@@ -1099,6 +1099,14 @@ def check_table_name(name):
     raise UsageError('disallowed dmsetup table name: %r' % name)
 
 
+# Position-independent boot code starting at boot sector offset 0x17c
+# (memory 0x7d1c) to display an error message, wait for a keypress and
+# reboot. Based on fat16_boot_tvc.nasm.
+FAT_NO_BOOT_CODE = '\x0e\x1f\xe8d\x00This is not a bootable disk.  Please insert a bootable floppy and\r\npress any key to try again ...\r\n\x00^\xac"\xc0t\x0bV\xb4\x0e\xbb\x07\x00\xcd\x10^\xeb\xf02\xe4\xcd\x16\xcd\x19\xeb\xfeU\xaa'
+
+assert len(FAT_NO_BOOT_CODE) == 132
+
+
 def build_dechd(
     salt, keytable, decrypted_size, sector_size, decrypted_ofs=None,
     zeros_data=None, zeros_ofs=None, is_truecrypt=False):
@@ -1153,7 +1161,7 @@ def build_dechd(
   if zeros_data is not None:
     if zeros_ofs < 132 or zeros_ofs + len(zeros_data) > 252:
       raise ValueError('zeros_data and zeros_ofs in wrong interval.')
-    zeros120 = ''.join(('\0' * (zeros_ofs - 132), zeros_data))
+    zeros120 = ''.join(('\0' * (zeros_ofs - len(FAT_NO_BOOT_CODE)), zeros_data))
   elif zeros_ofs is not None:
     raise ValueError('zeros_ofs implies zeros_data.')
   else:
@@ -1231,7 +1239,7 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
   #  raise ValueError('Missing NUL padding at 132.')
   if dechd[132 : 132 + 28].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
-    raise ValueError('Missing NUL padding at 132.')
+    raise ValueError('Missing NUL padding at %d.' % len(FAT_NO_BOOT_CODE))
   if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
     # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
     raise ValueError('Missing NUL padding after keytable.')
@@ -1454,8 +1462,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
     header_key, passphrase = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
     dechd = decrypt_header(enchd, header_key)
     try:
-      # enchd_suffix_size=132 is for --mkfat=... .
-      check_full_dechd(dechd, enchd_suffix_size=132, is_truecrypt=not is_veracrypt)
+      check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
       return dechd
     except ValueError, e:
       # We may want to put str(e) to the debug log, if requested.
@@ -1533,6 +1540,8 @@ def build_veracrypt_header(
   if len(enchd_prefix) > 64:
     raise ValueError('enchd_prefix too long, got: %d' % len(enchd_prefix))
   if len(enchd_suffix) > 192:
+    # keytable is at dechd[256 : 512 - 192], no room for >192 bytes of
+    # suffix.
     raise ValueError('enchd_suffix too long, got: %d' % len(enchd_suffix))
   check_decrypted_size(decrypted_size)
   check_decrypted_ofs(decrypted_ofs)
@@ -1571,12 +1580,14 @@ def build_veracrypt_header(
   check_full_dechd(dechd, is_truecrypt=is_truecrypt)
   enchd = encrypt_header(dechd, header_key)
   assert len(enchd) == 512
-  do_reenc = not enchd.endswith(enchd_suffix)
-  if do_reenc:
+  if not enchd.endswith(enchd_suffix):
+    # This is a bit complicated, because keytablep_crc32 has to be
+    # recomputed in build_dechd.
     keytablep_enc = enchd[256 : -len(enchd_suffix)] + enchd_suffix
+    assert len(keytablep_enc) == 256  # 2nd half of enchd.
     assert keytablep_enc.endswith(enchd_suffix)
     keytablep = crypt_aes_xts(header_key, keytablep_enc, do_encrypt=False, ofs=192)
-    assert crypt_aes_xts(header_key, keytablep, do_encrypt=True, ofs=192) == keytablep_enc
+    #assert crypt_aes_xts(header_key, keytablep, do_encrypt=True, ofs=192) == keytablep_enc
     dechd2 = build_dechd(
         salt, keytablep, decrypted_size, sector_size,
         decrypted_ofs=decrypted_ofs, is_truecrypt=is_truecrypt)
@@ -1586,9 +1597,11 @@ def build_veracrypt_header(
     enchd = encrypt_header(dechd2, header_key)
     assert len(enchd) == 512
     assert enchd.endswith(keytablep_enc)
-    assert enchd.endswith(enchd_suffix)
+    #assert enchd.endswith(enchd_suffix)  # Implied from .endswith(keytablep_enc).
     dechd = dechd2
+  assert enchd.startswith(enchd_prefix)
   assert decrypt_header(enchd, header_key) == dechd
+  assert len(enchd) == 512
   return enchd
 
 
@@ -1605,7 +1618,6 @@ def get_recommended_veracrypt_decrypted_ofs(device_size, do_add_full_header):
 
 
 def get_fat_sizes(fat_header):
-  import struct
   if len(fat_header) < 64:
     raise ValueError('FAT header shorter than 64 bytes, got: %d' % len(fat_header))
   data = fat_header
@@ -1629,6 +1641,7 @@ def get_fat_sizes(fat_header):
   if sector_count1:
     sector_count = sector_count1
   fstype = fstype.rstrip(' ')
+  label = label.lstrip(' ')
   del sector_count1
   #assert 0, sorted((k, v) for k, v in locals().iteritems() if k not in ('data', 'struct'))
   if fstype not in ('FAT12', 'FAT16'):
@@ -1655,7 +1668,7 @@ def get_fat_sizes(fat_header):
   if fstype == 'FAT16' and cluster_count > 65518:
     raise ValueError('cluster_count too large for FAT16: %d' % cluster_count)
   fatfs_size, fat_count, fat_size, rootdir_size, reserved_size = sector_count * sector_size, fat_count, sectors_per_fat * sector_size, rootdir_sector_count * sector_size, reserved_sector_count * sector_size
-  return fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype
+  return fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype, label
 
 
 def recommend_fat_parameters(fd_sector_count, fat_count, fstype=None, sectors_per_cluster=None):
@@ -1722,9 +1735,13 @@ def get_random_fat_salt():
   return oem_id, code0, code1
 
 
-def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None):
+def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None, boot_code_size=None, do_randomize_salt=False):
   """Builds a 64-byte header for a FAT12 or FAT16 filesystem."""
-  import struct
+  # FAT12 filesystem header based on minifat3.
+  # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
+  # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
+  # dd if=/dev/zero bs=1024 count=128 of=minifat3.img && mkfs.vfat -f 1 -F 12 -i deadbee3 -n minifat3 -r 16 -s 1 minifat3.img  # 128 KiB FAT12.
+  # dd if=/dev/zero bs=1K  count=2052 of=minifat5.img && mkfs.vfat -f 1 -F 16 -i deadbee5 -n minifat5 -r 16 -s 1 minifat5.img  # 2052 KiB FAT16.
   if label is not None:
     label = label.strip()
     if len(label) > 11:
@@ -1787,15 +1804,22 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   fstype, sectors_per_cluster, fd_sector_count, sectors_per_fat = recommend_fat_parameters(
       fd_sector_count, fat_count, fstype, sectors_per_cluster)
   sector_count = fd_sector_count + reserved_sector_count + rootdir_sector_count
-  jmp0, jmp1, jmp2 = 0xeb, 0x3c, 0x90
-  oem_id = 'mkfs.fat'
+  if boot_code_size is None:
+    jmp_data = '\xeb\x3c\x90'  # Smallest `jmp near' jump to offset 62.
+  else:  # Position-independent boot code at end of boot sector.
+    if not 3 <= boot_code_size <= 512 - 64:
+      raise ValueError('boot_code size out of range, got: %d' % boot_code_size)
+    jmp_data = struct.pack('<BH', 0xe9, (512 - 3) - boot_code_size)  # jmp strict near boot_code.
   media_descriptor = 0xf8
   sectors_per_track = 1  # Was 32. 0 indicates LBA, mtools doesn't support it.
   heads = 1  # Was 64. 0 indicates LBA, mtools doesn't support it.
   hidden_count = 0
   drive_number = 0x80
   bpb_signature = 0x29
-  code0, code1 = 0x0e, 0x1f
+  if do_randomize_salt:
+    oem_id, code0, code1 = get_random_fat_salt()
+  else:
+    oem_id, code0, code1 = 'mkfs.fat', 0x0e, 0x1f
   header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
   cluster_count, wasted_sector_count = divmod(((fatfs_size >> 9) - header_sector_count), sectors_per_cluster)
   free_size = (cluster_count * sectors_per_cluster) << 9
@@ -1822,69 +1846,49 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
     sector_count1, sector_count = sector_count, 0
   label1 = label or 'NO NAME    '
   fat_header = struct.pack(
-      '<3B8sHBHBHHBHHHLLHB4s11s8s2B',
-      jmp0, jmp1, jmp2, oem_id, sector_size, sectors_per_cluster,
+      '<3s8sHBHBHHBHHHLLHB4s11s8s2B',
+      jmp_data, oem_id, sector_size, sectors_per_cluster,
       reserved_sector_count, fat_count, rootdir_entry_count, sector_count1,
       media_descriptor, sectors_per_fat, sectors_per_track, heads,
       hidden_count, sector_count, drive_number, bpb_signature, uuid_bin,
       label1, fstype, code0, code1)
   assert len(fat_header) == 64
   assert label is None or len(label) == 11
-  return fat_header, label
+  return fat_header
 
 
-def build_veracrypt_fat(
-    decrypted_size, passphrase, do_include_all_header_sectors, fat_header=None,
-    device_size=None, pim=None, do_randomize_salt=False, is_truecrypt=False,
-    keytable=None, hash='sha512', **kwargs):
-  # FAT12 filesystem header based on minifat3.
-  # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
-  # dd if=/dev/zero bs=512  count=342 of=minifat2.img && mkfs.vfat -f 1 -F 12 -i deadbee2 -n minifat2 -r 16 -s 1 minifat2.img  # Largest FAT12 with 1536 bytes of overhead.
-  # dd if=/dev/zero bs=1024 count=128 of=minifat3.img && mkfs.vfat -f 1 -F 12 -i deadbee3 -n minifat3 -r 16 -s 1 minifat3.img  # 128 KiB FAT12.
-  # dd if=/dev/zero bs=1K  count=2052 of=minifat5.img && mkfs.vfat -f 1 -F 16 -i deadbee5 -n minifat5 -r 16 -s 1 minifat5.img  # 2052 KiB FAT16.
-  if fat_header is None:
-    if 'fatfs_size' not in kwargs:
-      if (not isinstance(device_size, (int, long)) or
-          not isinstance(decrypted_size, (int, long))):
-        raise ValueError('Could not infer fatfs_size, missing device_size or decrypted_size.')
-      kwargs['fatfs_size'] = device_size - decrypted_size
-    fat_header, label = build_fat_header(**kwargs)
-  elif kwargs:
-    raise ValueError('Both fat_header and FAT parameters (%s) specified.' % sorted(kwargs))
+def build_fat_boot_sector(fat_header, boot_code):
+  if boot_code is None:
+    boot_code = boot_code  # Must be position-independent.
+  if len(fat_header) + len(boot_code) > 512:
+    raise ValueError('fat_header and boot_code too long.')
+  return ''.join((
+      struct.pack('<BH', 0xe9, (512 - 3) - len(boot_code)),  # jmp strict near boot_code
+      fat_header[3 : 512 - len(boot_code)],
+      '\0' * (512 - len(fat_header) - len(boot_code)),
+      boot_code))
+
+
+def check_fat_boot_sector(boot_sector_data):
+  if len(boot_sector_data) != 512:
+    raise ValueError('boot_sector_data must be 512 bytes, got: %d' % len(boot_sector_data))
+  if boot_sector_data[0] not in '\xe9\xeb':
+    # TODO(pts): Check the jump offset as well.
+    raise ValueError('Bad jump instruction in FAT header.')
+  if boot_sector_data[510 : 512] != 'U\xaa':
+    raise ValueError('FAT boot sector signature not found.')
+
+
+def build_empty_fat(fat_header, boot_sector_data=None):
+  fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype, label = get_fat_sizes(fat_header)
+  if boot_sector_data:
+    pass
+  elif len(fat_header) < 512:
+    boot_sector_data = build_fat_boot_sector(fat_header, FAT_NO_BOOT_CODE)
   else:
-    label = None
-  if len(fat_header) != 64:
-    raise ValueError('fat_header must be 64 bytes, got: %d' % len(fat_header))
-  if do_randomize_salt:
-    oem_id, code0, code1 = get_random_fat_salt()
-    fat_header = ''.join((
-        '\xe9\x79\x01',  # jmp strict near boot_code, to offset 0x71c.
-        oem_id, fat_header[11 : 62], chr(code0), chr(code1)))
-  fatfs_size, fat_count, fat_size, rootdir_size, reserved_size, fstype = get_fat_sizes(fat_header)
-  if decrypted_size is None:
-    if not isinstance(device_size, (int, long)):
-      raise TypeError
-    decrypted_size = device_size - fatfs_size
-    if decrypted_size < 512:
-      raise ValueError('FAT filesystem too large, no room for encrypted volume after it.')
-  if device_size is not None:
-    if decrypted_size != device_size - fatfs_size:
-      raise ValueError('Inconsistent device_size, decrypted_size and fatfs_size.')
-    device_size = None
-  enchd = build_veracrypt_header(
-      decrypted_size=decrypted_size, passphrase=passphrase,
-      enchd_prefix=fat_header,
-      # Position-independent boot code starting at 0x17c (memory 0x7d1c) to
-      # display an error message, wait for a keypress and reboot.
-      # Based on fat16_boot_tvc.nasm.
-      enchd_suffix='\x0e\x1f\xe8d\x00This is not a bootable disk.  Please insert a bootable floppy and\r\npress any key to try again ...\r\n\x00^\xac"\xc0t\x0bV\xb4\x0e\xbb\x07\x00\xcd\x10^\xeb\xf02\xe4\xcd\x16\xcd\x19\xeb\xfeU\xaa',
-      decrypted_ofs=fatfs_size, pim=pim, is_truecrypt=is_truecrypt,
-      keytable=keytable, hash=hash)
-  assert len(enchd) == 512
-  assert enchd.startswith(fat_header)
-  if not do_include_all_header_sectors:
-    return enchd, fatfs_size
-  output = [enchd]
+    boot_sector_data = fat_header
+  check_fat_boot_sector(boot_sector_data)
+  output = [boot_sector_data]
   output.append('\0' * (reserved_size - 512))
   if fstype == 'FAT12':
     empty_fat = '\xf8\xff\xff' + '\0' * (fat_size - 3)
@@ -1904,7 +1908,14 @@ def build_veracrypt_fat(
   data = ''.join(output)
   assert len(data) == reserved_size + fat_size * fat_count + rootdir_size
   assert len(data) <= fatfs_size
-  return data, fatfs_size, decrypted_size
+  return data
+
+
+def randomize_fat_header(fat_header):
+  if len(fat_header) < 62:
+    raise ValueError('fat_header must be at least 62 bytes, got: %d' % len(fat_header))
+  oem_id, code0, code1 = get_random_fat_salt()
+  return ''.join((fat_header[:3], oem_id, fat_header[11 : 62], chr(code0), chr(code1)))
 
 
 def parse_byte_size(size_str):
@@ -3178,6 +3189,7 @@ def cmd_create(args):
   af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = None
+  do_skip_dash_dash = False
 
   i, value = 0, None
   while i < len(args):
@@ -3186,7 +3198,10 @@ def cmd_create(args):
       break
     i += 1
     if arg == '--':
-      break
+      if do_skip_dash_dash:
+        do_skip_dash_dash = False
+      else:
+        break
     elif arg.startswith('--password='):
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
@@ -3199,6 +3214,8 @@ def cmd_create(args):
       value = arg[arg.find('=') + 1:]
       if value == 'test':
         salt = TEST_SALT
+      elif value in ('random', 'new', 'rnd'):
+        salt = ''
       else:
         try:
           salt = value.decode('hex')
@@ -3299,6 +3316,8 @@ def cmd_create(args):
       filesystem = arg[arg.find('=') + 1:]
       if filesystem.lower().replace('-', '') == 'none':
         filesystem = 'none'
+      if filesystem == 'fat1':
+        do_skip_dash_dash = True
     elif arg.startswith('--keyfiles='):
       value = arg[arg.find('=') + 1:]
       if value != '':
@@ -3400,6 +3419,7 @@ def cmd_create(args):
   if filesystem == 'none':
     if (i < len(args) and
         (args[i].startswith('mkfs.') or '/mkfs.' in args[i])):
+      filesystem = 'mkfs'  # Placeholder, change from 'none'.
       mkfs_args = list(args[i:])
       if device is None:
         if i + 1 == len(args):
@@ -3423,6 +3443,23 @@ def cmd_create(args):
       if i >= len(args):
         raise UsageError('missing raw <device> hosting the encrypted volume')
       device = mkfs_args.pop()
+  if fatfs_size is not None:
+    if decrypted_ofs is not None:
+      raise UsageError('--mkfat=... conflicts with --ofs=...')
+    decrypted_ofs = 'mkfat'
+  if filesystem == 'fat1':
+    if mkfs_args != ['mkfs.fat1']:
+      # This happens only after double --.
+      raise UsageError('too many arguments after --filesystem=fat1')
+    if decrypted_ofs == 'fat':
+      # TODO(pts): Make it work for decrypted_ofs != 0.
+      raise UsageError('--filesystem=fat1 conflicts with --ofs=fat')
+    if decrypted_ofs == 'mkfat':
+      # TODO(pts): Make it work for decrypted_ofs != 0, with separate flags.
+      raise UsageError('--filesystem=fat1 conflicts with --mkfat=...')
+    if fake_luks_uuid_flag is not None and decrypted_ofs == 0:
+      raise UsageError('--filesystem=fat1 conflicts with --fake-luks-uuid=... --ofs=0')
+    del mkfs_args[:]
   # Now mkfs_args is a non-empty list iff we need mkfs. mkfs_args starts with
   # the command to run (e.g. 'mkfs.ext2'), and in the end it doesn't contain
   # the device filename or the filesystem size.
@@ -3451,7 +3488,7 @@ def cmd_create(args):
       pim = 0
     else:
       raise UsageError('missing flag --pim=..., recommended: --pim=0')
-  if fatfs_size is None:
+  if fatfs_size is None and filesystem != 'fat1':
     if fat_label is not None:
       raise UsageError('--fat-label needs --mkfat=...')
     if fat_uuid is not None:
@@ -3480,7 +3517,9 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --no-add-full-header')
     if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths.
       raise UsageError('--type=luks conflicts with --salt=...')
-    if fatfs_size is not None:
+    if decrypted_ofs == 'fat':
+      raise UsageError('--type=luks conflicts with --ofs=fat')
+    if decrypted_ofs == 'mkfat':
       raise UsageError('--type=luks conflicts with --mkfat=...')
     if fake_luks_uuid_flag is not None:
       raise UsageError('--type=luks conflicts with --fake-luks-uuid=..., use --uuid=... instead')
@@ -3628,13 +3667,17 @@ def cmd_create(args):
         if decrypted_ofs == 0:
           sys.stderr.write('warning: abort now, otherwise the first 512 bytes of %s will be overwritten, destroying filesystems such as vfat, ntfs, xfs\n' % device)
 
-    if fatfs_size is not None:
-      if decrypted_ofs is not None:
-        raise UsageError('--mkfat=... conflicts with --ofs=...')
-      decrypted_ofs = 'mkfat'
     if keytable is None:
       keytable = get_random_bytes(key_size >> 3)
     assert isinstance(keytable, str)
+
+    if decrypted_ofs in ('fat', 'mkfat') or filesystem == 'fat1':
+      if salt == '':
+        do_randomize_salt = True
+      elif salt == TEST_SALT:
+        do_randomize_salt = False
+      else:
+        raise UsageError('specific --salt=... value conflicts with --ofs=fat or --mkfat=... or --filesystem=fat1')
 
     need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
     read_device_size = None
@@ -3643,6 +3686,10 @@ def cmd_create(args):
         xf = open(device, 'r+b')
       if decrypted_ofs == 'fat':
         fat_header = xf.read(64)
+        fatfs_size = get_fat_sizes(fat_header)[0]
+        # Use --salt=test to keep the oem_id etc. intact.
+        if do_randomize_salt:
+          fat_header = randomize_fat_header(fat_header)
       xf.seek(0, 2)
       read_device_size = xf.tell()
       if device_size == 'auto':
@@ -3664,14 +3711,55 @@ def cmd_create(args):
     if do_add_full_header and decrypted_ofs == 0:
       raise UsageError('--add-full-header conflicts with --ofs=0')
 
+    decrypted_ofs_any = decrypted_ofs
     if decrypted_ofs in ('fat', 'mkfat'):
-      if salt == '':
-        do_randomize_salt = True
-      elif salt == TEST_SALT:
-        do_randomize_salt = False
+      assert isinstance(fatfs_size, (int, long))
+      decrypted_ofs = fatfs_size
+    elif decrypted_ofs is None:
+      if type_value == 'luks':
+        decrypted_ofs = get_recommended_luks_decrypted_ofs(device_size)
       else:
-        raise UsageError('specific --salt=... values conflict with --ofs=fat or --mkfat=...')
+        decrypted_ofs = get_recommended_veracrypt_decrypted_ofs(
+            device_size, do_add_full_header)
+    assert isinstance(decrypted_ofs, (int, long))
 
+    if decrypted_size is None:
+      decrypted_size = device_size - decrypted_ofs - min(0x20000, decrypted_ofs) * bool(do_add_backup)
+    assert isinstance(decrypted_size, (int, long))
+    if type_value != 'luks' and decrypted_size < 512:
+      raise UsageError('raw device too small for %s volume, minimum is %d (use --ofs=512 or --no-add-full-header to decrease), actual size: %d' %
+                       (('VeraCrypt', 'TrueCrypt')[is_truecrypt], 512 + (decrypted_ofs + min(0x20000, decrypted_ofs) * bool(do_add_backup)), device_size))
+
+    if (filesystem == 'fat1' or decrypted_ofs_any == 'mkfat') and not do_randomize_salt:
+      if fat_label is None:
+        fat_label = 'minifat3'
+      if fat_uuid is None:
+        fat_uuid = 'DEAD-BEE3'
+
+    if decrypted_ofs_any == 'mkfat':
+      fat_header = build_fat_header(
+          label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size,
+          fat_count=fat_fat_count,
+          rootdir_entry_count=fat_rootdir_entry_count, fstype=fat_fstype,
+          cluster_size=fat_cluster_size, do_randomize_salt=do_randomize_salt)
+
+    if filesystem == 'fat1':
+      fat1_header = build_fat_header(
+          label=fat_label, uuid=fat_uuid, fatfs_size=decrypted_size, fstype=fat_fstype,
+          rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
+          cluster_size=fat_cluster_size, do_randomize_salt=(do_randomize_salt and decrypted_ofs == 0))
+      fat1_header = build_fat_boot_sector(fat1_header, FAT_NO_BOOT_CODE)
+      fatfs_size2 = get_fat_sizes(fat1_header)[0]  # Also checks fat1_header.
+      if fatfs_size2 > decrypted_size:
+        raise ValueError('FAT header (size %d) longer than encrypted volume (size %d).' %
+                         (len(fat1_header), len(decrypted_size)))
+      # TODO(pts): Use a generator (?) for sector_idx > 1 on large filesystems.
+      mkfs_data = build_empty_fat(fat1_header)
+      mkfs_suffix_size = len(FAT_NO_BOOT_CODE)
+      assert len(mkfs_data) >= 1536
+      del fat1_header
+    else:
+      mkfs_data = None
     def prompt_passphrase_with_warning():
       prompt_device_size = read_device_size
       if prompt_device_size is None:
@@ -3696,8 +3784,6 @@ def cmd_create(args):
       if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
         raise UsageError('raw device too small for LUKS volume, minimum is 2066432 (2018K), actual size: %d' %
                          device_size)
-      if decrypted_ofs is None:
-        decrypted_ofs = get_recommended_luks_decrypted_ofs(device_size)
       if passphrase is None:
         passphrase = prompt_passphrase_with_warning  # Callback to defer it after checks.
       enchd_backup = ''
@@ -3711,58 +3797,32 @@ def cmd_create(args):
           slot_salt=None,  # TODO(pts): Add command-line flag.
           af_salt=None,  # TODO(pts): Add command-line flag.
           )
-      if decrypted_size is None:
-        decrypted_size = device_size - decrypted_ofs
     else:  # VeraCrypt or TrueCrypt.
       if passphrase is None:
         # Read it now, to prevent multiple prompts below.
         passphrase = prompt_passphrase_with_warning()
       is_truecrypt = type_value == 'truecrypt'
-      if decrypted_ofs == 'fat':
-        # Usage --salt=test to keep the oem_id etc. intact.
-        enchd, fatfs_size, decrypted_size = build_veracrypt_fat(
-            decrypted_size=None, passphrase=passphrase, is_truecrypt=is_truecrypt,
-            fat_header=fat_header, device_size=device_size, pim=pim,
-            do_include_all_header_sectors=False,
-            do_randomize_salt=do_randomize_salt, keytable=keytable, hash=hash)
-        assert len(enchd) == 512
-        decrypted_ofs = fatfs_size
-      elif decrypted_ofs == 'mkfat':
-        if not do_randomize_salt:
-          if fat_label is None:
-            fat_label = 'minifat3'
-          if fat_uuid is None:
-            fat_uuid = 'DEAD-BEE3'
-        if decrypted_size is None:
-          decrypted_size = device_size - fatfs_size - min(0x20000, fatfs_size) * bool(do_add_backup)
-        enchd, fatfs_size2, decrypted_size2 = build_veracrypt_fat(
-            decrypted_size=decrypted_size,
-            passphrase=passphrase, do_include_all_header_sectors=True,
-            label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size, fstype=fat_fstype,
-            rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
-            cluster_size=fat_cluster_size, pim=pim, do_randomize_salt=do_randomize_salt,
-            keytable=keytable, hash=hash)
-        assert decrypted_size2 == decrypted_size
-        assert 2048 <= fatfs_size2 <= fatfs_size
-        assert len(enchd) >= 1536
-        decrypted_ofs = fatfs_size
+      if decrypted_ofs_any in ('fat', 'mkfat'):
+        boot_sector_data = build_fat_boot_sector(fat_header, FAT_NO_BOOT_CODE)
+        assert boot_sector_data.endswith(FAT_NO_BOOT_CODE)
+        enchd_prefix = boot_sector_data[:64]
+        enchd_suffix = FAT_NO_BOOT_CODE
+      elif mkfs_data and decrypted_ofs == 0:
+        enchd_prefix = crypt_aes_xts(keytable, mkfs_data[:64], do_encrypt=True, ofs=0)
+        padded_mkfs_suffix = '\0' * (-mkfs_suffix_size & 15) + mkfs_data[512 - mkfs_suffix_size : 512]
+        enchd_suffix = crypt_aes_xts(keytable, padded_mkfs_suffix, do_encrypt=True, ofs=512 - len(padded_mkfs_suffix))
       else:
-        if decrypted_ofs is None:
-          decrypted_ofs = get_recommended_veracrypt_decrypted_ofs(
-              device_size, do_add_full_header)
-        if decrypted_size is None:
-          decrypted_size = device_size - decrypted_ofs - min(0x20000, decrypted_ofs) * bool(do_add_backup)
-        if decrypted_size < 512:
-          raise UsageError('raw device too small for %s volume, minimum is %d (use --ofs=512 or --no-add-full-header to decrease), actual size: %d' %
-                           (('VeraCrypt', 'TrueCrypt')[is_truecrypt], 512 + (decrypted_ofs + min(0x20000, decrypted_ofs) * bool(do_add_backup)), device_size))
-        enchd = build_veracrypt_header(
-            decrypted_size=decrypted_size,
-            passphrase=passphrase, decrypted_ofs=decrypted_ofs,
-            enchd_prefix=salt, pim=pim, fake_luks_uuid=uuid,
-            is_truecrypt=is_truecrypt, keytable=keytable, hash=hash)
-        assert len(enchd) == 512
-      assert isinstance(decrypted_ofs, (int, long))
-      assert isinstance(decrypted_size, (int, long))
+        enchd_prefix = salt
+        enchd_suffix = ''
+      enchd = build_veracrypt_header(
+          decrypted_size=decrypted_size, passphrase=passphrase,
+          enchd_prefix=enchd_prefix, enchd_suffix=enchd_suffix,
+          decrypted_ofs=decrypted_ofs, pim=pim, is_truecrypt=is_truecrypt,
+          keytable=keytable, hash=hash)
+      assert len(enchd) == 512
+      if decrypted_ofs_any == 'mkfat':
+        enchd = build_empty_fat(enchd)  # Same as enchd --> boot_sector_data.
+        assert len(enchd) >= 1536
       if do_add_full_header:
         assert decrypted_ofs >= len(enchd)
         enchd += get_random_bytes(decrypted_ofs - len(enchd))
@@ -3779,16 +3839,25 @@ def cmd_create(args):
         assert len(enchd_backup) == xofs
       else:
         enchd_backup = ''
-    assert isinstance(decrypted_ofs, (int, long))
-    assert isinstance(decrypted_size, (int, long))
+
     if not need_read_first:  # Create file if needed, check write permissions.
       open(device, 'ab').close()
     if xf is None:
       xf = open(device, 'r+b')
     xf.write(enchd)
+    random_size = device_size - len(enchd) - len(enchd_backup)
+    if mkfs_data and decrypted_ofs == 0:
+      random_size -= len(mkfs_data) - 512
+      sector_idx = 1
+      aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
+      for i in xrange(512, len(mkfs_data), 512):
+        # TODO(pts): Buffer 65536 bytes for writing.
+        xf.write(crypt_aes_xts(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
+        sector_idx += 1
+      mkfs_data = None
     if not is_quick:
       print >>sys.stderr, 'info: overwriting device with random data'
-      i = device_size - len(enchd) - len(enchd_backup)
+      i = random_size
       while i > 0:
         # TODO(pts): Generate faster random.
         data = get_random_bytes(min(i, 65536))
@@ -3804,12 +3873,29 @@ def cmd_create(args):
         xf.truncate(device_size)
       except IOError:
         pass
+    if mkfs_data:
+      if not decrypted_ofs:
+        raise ValueError('New filesystem overlaps with encrypted volume header.')
+      if len(mkfs_data) & 511:
+        raise ValueError('mkfs_data size must be divisible by 512, got: %d' % len(mkfs_data))
+      xf.seek(decrypted_ofs)
+      # TODO(pts): For DmCryptFlushingFile, avoid encryption round-trip.
+      if type_value == 'luks':
+        sector_idx = 0
+      else:
+        sector_idx = decrypted_ofs >> 9
+      aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
+      for i in xrange(0, len(mkfs_data), 512):
+        # TODO(pts): Buffer 65536 bytes for writing.
+        xf.write(crypt_aes_xts(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
+        sector_idx += 1
     if isinstance(xf, DmCryptFlushingFile):
       xf.full_flush()
     else:
       xf.flush()
       # This is useful so that changes in /dev/loop0 are copied back to DEVICE.img.
       fsync_loop_device(xf)
+
     if mkfs_args:
       # TODO(pts): Reuse existing dm device if is_opened.
       name = 'tinyveracrypt.mkfs.%d' % os.getpid()

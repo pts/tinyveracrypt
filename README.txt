@@ -291,16 +291,8 @@ misbehaves.
 
 If done carefully, this works with the following filesystems without data
 loss: ext2, ext3, ext4, btrfs, reiserfs, jfs, nilfs, hfsplus, iso9660, udf,
-minix and ocfs2, because they don't use the first 512 bytes. Some other
-filesystems and data structures which don't work safely (because they use
-the first 512 bytes of the raw device in their headers) include vfat, ntfs,
-xfs, exfat, Linux swap, Linux RAID, LUKS.
-
-Please note that cryptsetup 1.7.3 can't open such 0-overhead encrypted
-volumes, it reports the error `Device ... is too small.'. Use
-`tinyveracrypt' or `veracrypt' to open the encrypted volume.
-
-Most convenient way to an encrypted filesystem with 0 overhead:
+minix and ocfs2, because they don't use the first 512 bytes of the volume.
+Example:
 
   $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 DEVICE.img
 
@@ -308,7 +300,21 @@ You can pass flags to mkfs.ext2 (e.g. -L) like this:
 
   $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 -- -L MYLABEL -b 1024 DEVICE.img
 
-Alternative, manual way to create the encrypted filesytem like this:
+tinyveracrypt has special code to make --ofs=0 work with FAT12 and FAT16
+filesystems (but no FAT32 or NTFS). Use --filesystem=fat1:
+
+  $ ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=fat1 DEVICE.img
+
+Some other filesystems and data structures which don't work safely (because
+they use the first 512 bytes of the raw device in their headers) include
+vfat (FAT32 or without --filesystem=fat1), ntfs, xfs, exfat, Linux swap,
+Linux RAID, LUKS.
+
+Please note that cryptsetup 1.7.3 can't open such 0-overhead encrypted
+volumes created with --ofs=0: it reports the error `Device ... is too
+small.'. Use `tinyveracrypt' or `veracrypt' to open the encrypted volume.
+
+Alternative, manual way to create the encrypted filesytem with --ofs=0:
 
   $ dd if=/dev/zero bs=1M count=10 of=DEVICE.img
   $ sudo ./tinyveracrypt.py open-table --keytable=random --ofs=0 --end-ofs=0 DEVICE.img NAME
@@ -321,16 +327,20 @@ Alternative, manual way to create the encrypted filesytem like this:
   $ /sbin/blkid DEVICE.img
   DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
 
-The advantage of this is that the UUID above is detectable without opening
-the encrypted volume.
+The advantage of --fake-luks-uuid=random is that /sbin/blkid is able to
+detect the UUID above without opening the encrypted volume (i.e. without
+knowing the passphrase).
+
+The simple `tinyveracrypt.py init --ofs=0 --filesystem=...' commands above
+also support `--fake-luks-uuid=...'.
 
 The reason why mkfs was run before `tinyveracrypt.py init' is that mkfs
 (including mkfs.ext2 and mkfs.minix) would otherwise overwrite the first 512
 bytes, and we want to keep there the VeraCrypt header written by
-tinyveracrypt.py.
+tinyveracrypt.
 
 `tinyveracrypt.py init --opened' does the correct block device buffer and
-page table flushing no matter the filesystem is mounted or not.
+page table flushing no matter if the filesystem is mounted or not.
 
 Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?
