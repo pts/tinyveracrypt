@@ -269,8 +269,25 @@ Q13. Can tinyveracrypt create an encrypted filesystem on a VeraCrypt or
 TrueCrypt encryped volume without using any extra disk space for the
 VeraCrypt or TrueCrypt header?
 """"""""""""""""""""""""""""""
-Don't do this unless you know what you are doing and you are ready to lose
-data in case you were wrong.
+It works only for VeraCrypt encrypted volumes. The command-line flag
+is `tinyveracrypt.py init --ofs=0', but unfortunately most existing
+tools won't be able to open the encrypted volume:
+
+* For VeraCrypt encrypted volumes, `tinyveracrypt.py open' and `veracrypt
+  --text --mount' are able to open them. `truecrypt' isn't able to open
+  VeraCrypt encrypted volumes, and `cryptsetup open --type=tcrypt
+  --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
+  decrypted volume size) and it fails with `Device ... is too small'.
+
+* For TrueCrypt encrypted volumes, `truecrypt --text --mount' interprets
+  --ofs=0 as --ofs=512, and `tinyveracrypt.py open' copies this behavior.
+  `cryptsetup open' interprets --ofs=0 as --ofs=512,
+  but it has a bug (it doesn't decrease the decrypted volume size) and it
+  fails with `Device ... is too small'.
+
+Don't do this unless you know the risks, and you are ready to lose
+the VeraCrypt header (first 512 bytes of the raw device) if some tool
+misbehaves.
 
 If done carefully, this works with the following filesystems without data
 loss: ext2, ext3, ext4, btrfs, reiserfs, jfs, nilfs, hfsplus, iso9660, udf,
@@ -314,8 +331,6 @@ tinyveracrypt.py.
 
 `tinyveracrypt.py init --opened' does the correct block device buffer and
 page table flushing no matter the filesystem is mounted or not.
-
-
 
 Q14. Can tinyveracrypt create and encrypted volume with plaintext volume
 label and/or UUID, recognized by blkid?

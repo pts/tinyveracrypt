@@ -1204,15 +1204,17 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
     # Hidden volume detected here, but currently this tool doesn't support
     # hidden volumes.
     raise ValueError('Unexpected hidden volume.')
-  decrypted_size, = struct.unpack('>Q', dechd[100 : 100 + 8])
+  decrypted_size, decrypted_ofs, encrypted_area_size = struct.unpack('>QQQ', dechd[100 : 100 + 24])
   if decrypted_size >> 50:  # Larger than 1 PB is insecure.
     raise ValueError('Volume too large.')
-  check_decrypted_size(decrypted_size)
-  decrypted_ofs, = struct.unpack('>Q', dechd[108 : 108 + 8])
-  check_decrypted_ofs(decrypted_ofs)
-  encrypted_area_size, = struct.unpack('>Q', dechd[116 : 116 + 8])
   if encrypted_area_size != decrypted_size:
     raise ValueError('encrypted_area_size mismatch.')
+  if decrypted_ofs == 0 and signature == 'TRUE':
+    # Created with old TrueCrypt.
+    decrypted_ofs = 512
+    decrypted_size -= 512  # Can become negative, we check it below.
+  check_decrypted_size(decrypted_size)
+  check_decrypted_ofs(decrypted_ofs)
   flag_bits, = struct.unpack('>L', dechd[124 : 124 + 4])
   if flag_bits:
     raise ValueError('flag_bits mismatch.')
@@ -1372,6 +1374,11 @@ def parse_dechd(dechd):
   check_dechd(dechd)
   keytable = dechd[256 : 256 + 64]
   decrypted_size, decrypted_ofs = struct.unpack('>QQ', buffer(dechd, 100, 16))
+  if decrypted_ofs == 0 and dechd[64 : 64 + 4] == 'TRUE':
+    # Created with old TrueCrypt. Emulates `truecrypt --text --mount'.
+    decrypted_ofs = 512
+    decrypted_size -= 512
+    check_decrypted_size(decrypted_size)  # Check for negative.
   return keytable, decrypted_size, decrypted_ofs
 
 
@@ -1443,6 +1450,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
     # TODO(pts): Reuse the partial output of the smaller iterations.
     #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
     # Slow.
+    #print (is_veracrypt, hash, iterations)
     header_key, passphrase = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
     dechd = decrypt_header(enchd, header_key)
     try:
@@ -1451,6 +1459,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
       return dechd
     except ValueError, e:
       # We may want to put str(e) to the debug log, if requested.
+      #print str(e)
       pass
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
@@ -1466,7 +1475,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
         truecrypt_mode == 3):
       f.seek(0, 2)
       luks_device_size = f.tell()
-      decrypted_ofs, keytable = get_open_luks_info(f, passphrase)
+      decrypted_ofs, keytable = get_open_luks_info(f, passphrase)  # Slow.
   finally:
     f.close()
 
@@ -1479,7 +1488,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
       else:
         what = 'VeraCrypt/TrueCrypt'
       sys.stderr.write('warning: raw device has LUKS header, trying to open it as %s will likely fail\n' % what)
-    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)
+    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)  # Slow.
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
     iv_ofs = decrypted_ofs
   else:
@@ -3048,6 +3057,11 @@ def cmd_close(args):
   # semop(3473408, [{0, -1, IPC_NOWAIT}], 1) = 0
   # semop(3473408, [{0, 0, 0}], 1)    = 0
   # semctl(3473408, 0, IPC_RMID, 0)   = 0
+  #
+  # TODO(pts): Kill the corresponding truecrypt or veracrypt process. In /proc/mounts:
+  #            truecrypt /tmp/.truecrypt_aux_mnt1 fuse.truecrypt rw,nosuid,nodev,relatime,user_id=0,group_id=0,allow_other 0 0
+  #            Why does it emulate /tmp/.truecrypt_aux_mnt1/volume (which is the plaintext, decrypted device as a file)?
+  #            There is also /tmp/.truecrypt_aux_mnt1/control . Should we use this to kill?
   run_and_write_stdin(('dmsetup', 'remove') + tuple(args), '', is_dmsetup=True)
   # TODO(pts): If the encrypted volume was created on /dev/loop/... without
   # autoclear, then run `losetup -d'.
@@ -3489,6 +3503,8 @@ def cmd_create(args):
       uuid = parse_luks_uuid_flag(fake_luks_uuid_flag, is_any_luks_uuid)
     if uuid_flag is not None:
       raise UsageError('--type=%s conflicts with --uuid=..., maybe use --fake-looks-uuid=... instead' % type_value)
+    if decrypted_ofs == 0 and type_value == 'truecrypt':
+      raise UsageError('--ofs=0 too small for --type=truecrypt, minimum is 512')
   if mkfs_args:
     setup_path_for_dmsetup(do_add_usr=True)
     # This also fails if not run as root. Good.
