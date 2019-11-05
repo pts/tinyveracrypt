@@ -3813,6 +3813,7 @@ def cmd_create(args):
     if mkfs_args:
       # TODO(pts): Reuse existing dm device if is_opened.
       name = 'tinyveracrypt.mkfs.%d' % os.getpid()
+      after_data_ary = []
 
       def block_device_callback(block_device, fd, device_id):
         table = build_table(
@@ -3821,6 +3822,12 @@ def cmd_create(args):
         is_ok = False
         try:
           mkfs_args.append('/dev/mapper/%s' % name)
+          if decrypted_ofs == 0:
+            f = open(mkfs_args[-1], 'r+b')
+            try:
+              f.write('\1' * 512)  # Canary, we'll check it after mkfs.
+            finally:
+              f.close()
           try:
             stat_obj = os.stat(mkfs_args[-1])
           except OSError:
@@ -3830,6 +3837,11 @@ def cmd_create(args):
           print >>sys.stderr, 'info: running mkfs: ' + ' '.join(map(shell_escape, mkfs_args))
           run_command(mkfs_args)
           is_ok = True
+          f = open(mkfs_args[-1], 'rb')
+          try:
+            after_data_ary.append(f.read(512))
+          finally:
+            f.close()
           import time
           time.sleep(0.2)  # Avoid early race conditions in dmsetup remove.
         finally:
@@ -3838,9 +3850,15 @@ def cmd_create(args):
 
       ensure_block_device(device, block_device_callback)
       if decrypted_ofs == 0:
+        if len(after_data_ary[0]) != 512:
+          raise RuntimeError('Raw device read too short.')
+        if after_data_ary[0].rstrip('\1') and after_data_ary[0].rstrip('\0'):
+          # This should fire for mkfs.vfat, but not for mkfs.ext2 or mkfs.minix.
+          raise RuntimeError('mkfs %r wrote unexpected value to the first 512 bytes, maybe filesystem is incompatible with --ofs=0, not writing %s header' %
+                             (mkfs_args[0], ('VeraCrypt', 'TrueCrypt')[is_truecrypt]))
         xf.seek(0)
-        # Write VeraCrypt header again in case mkfs has overwritten it
-        # (mkfs.ext2 and mkfs.minix do overwrite it).
+        # Write VeraCrypt header again, it was overwritten by the canary and
+        # maybe mkfs.
         xf.write(enchd[:512])  # mkfs.minix has only room for 512 bytes.
         xf.flush()
         if not isinstance(xf, DmCryptFlushingFile):
