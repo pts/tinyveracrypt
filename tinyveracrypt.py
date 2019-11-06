@@ -299,10 +299,68 @@ def get_best_new_aes(_cache=[]):
 
 new_aes = get_best_new_aes()
 
-# --- AES XTS stream cipher.
+aes_strxor_16 = make_strxor(16)
 
-strxor_16 = make_strxor(16)
 
+# --- AES CBC stream cipher.
+
+
+def check_aes_key(aes_key):
+  if len(aes_key) not in (16, 24, 32):
+    raise ValueError('aes_key must be 16, 24 or 32 bytes, got: %d' % len(aes_key))
+
+
+def crypt_aes_cbc(aes_key, data, do_encrypt, iv):
+  if len(iv) != 16:
+    raise ValueError('aes_iv must be 16 bytes, got: %d' % len(iv))
+  if isinstance(aes_key, str):
+    check_aes_key(aes_key)
+    codebook = new_aes(aes_key)
+  else:
+    codebook = aes_key
+  do_decrypt = not do_encrypt
+  codebook_crypt = (codebook.encrypt, codebook.decrypt)[do_decrypt]
+  if len(data) & 15:
+    raise ValueError('data size must be divisible by 16, got: %d' % len(data))
+
+  if do_decrypt:
+    def yield_crypt_blocks(codebook_crypt, prev):
+      for i in xrange(0, len(data), 16):
+        prev2 = data[i : i + 16]
+        yield aes_strxor_16(prev, codebook_crypt(prev2))
+        prev = prev2
+  else:
+    def yield_crypt_blocks(codebook_crypt, prev):
+      for i in xrange(0, len(data), 16):
+        prev = codebook_crypt(aes_strxor_16(prev, data[i : i + 16]))
+        yield prev
+
+  return ''.join(yield_crypt_blocks(codebook_crypt, iv))
+
+
+def get_aes_cbc_essiv_sha256_codebooks(aes_key):
+  if isinstance(aes_key, tuple) and len(aes_key) == 2:
+    return aes_key
+  check_aes_key(aes_key)
+  hash_key = get_hash_digest_params('sha256')[0](aes_key).digest()
+  return new_aes(aes_key), new_aes(hash_key)
+
+
+def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
+  codebook, hash_codebook = get_aes_cbc_essiv_sha256_codebooks(aes_key)
+  hash_encrypt = hash_codebook.encrypt
+  pack = struct.pack
+
+  def yield_crypt_sectors(sector_idx):
+    for i in xrange(0, len(data), 512):
+      iv = hash_encrypt(pack('<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 64))
+      yield crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
+      sector_idx += 1
+
+  return ''.join(yield_crypt_sectors(sector_idx))
+
+
+# --- AES XTS seekable stream cipher.
 
 def check_aes_xts_key(aes_xts_key):
   if len(aes_xts_key) not in (32, 48, 64):
@@ -373,7 +431,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
     for i in xrange(0, len(data) - 31, 16):
       # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
       t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i : i + 16])))
+      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i : i + 16])))
       t <<= 1
       if t >= 0x100000000000000000000000000000000:
         t ^=  0x100000000000000000000000000000087
@@ -386,13 +444,13 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
       if do_decrypt:
         t0, t1 = t1, t0
       t_str = struct.pack('<QQ', t0 & 0xffffffffffffffff, t0 >> 64)
-      pp = strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i - 16 : i])))
+      pp = aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i - 16 : i])))
       t_str = struct.pack('<QQ', t1 & 0xffffffffffffffff, t1 >> 64)
-      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[i:] + pp[lm15:])))
+      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i:] + pp[lm15:])))
       yield pp[:lm15]
     else:
       t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-      yield strxor_16(t_str, codebook1_crypt(strxor_16(t_str, data[-16:])))
+      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[-16:])))
 
   # TODO(pts): Use even less memory by using an array.array('B', ...).
   return ''.join(yield_crypt_blocks(t))
@@ -1045,6 +1103,20 @@ def ensure_block_device(filename, block_device_callback):
 # --- VeraCrypt crypto.
 
 
+def get_crypt_sectors_funcs(cipher, keytable_size=None):
+  cipher = cipher.lower()
+  if cipher == 'aes-xts-plain64':
+    func, get_codebooks_func, keytable_sizes = crypt_aes_xts_sectors, get_aes_xts_codebooks, (32, 48, 64)
+  elif cipher == 'aes-cbc-essiv:sha256':
+    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_essiv_sha256_sectors, get_aes_cbc_essiv_sha256_codebooks, (16, 24, 32)
+  else:
+    raise ValueError('Unsupported cipher: %s' % cipher)
+  if keytable_size is not None and keytable_size not in keytable_sizes:
+    raise ValueError('keytable_size must be any of %s for cipher %s, got: %d' %
+                     (', '.join(map(str, keytable_sizes)), cipher, keytable_size))
+  return func, get_codebooks_func
+
+
 def check_veracrypt_keytable(keytable):
   # Not the same as check_as_xts_key, this is strict 64 bytes.
   if len(keytable) != 64:
@@ -1246,13 +1318,12 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 
 def build_table(
-    keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, do_showkeys,
-    opt_params=('allow_discards',)):
+    keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher,
+    do_showkeys, opt_params=('allow_discards',)):
   check_aes_xts_key(keytable)
   check_decrypted_size(decrypted_size)
   if isinstance(display_device, (list, tuple)):
     display_device = '%d:%d' % tuple(display_device)
-  cipher = 'aes-xts-plain64'
   offset = decrypted_ofs
   start_offset_on_logical = 0
   if opt_params:
@@ -1448,6 +1519,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
       setup_modes.append((0, 0, 'pbkdf2', hash, get_iterations(pim, True, hash)))
     if truecrypt_mode in (0, 1):
       setup_modes.append((0, 1, 'pbkdf2', hash, get_iterations(pim, False, hash)))
+  cipher = 'aes-xts-plain64'
 
   for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
     # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
@@ -1463,7 +1535,7 @@ def get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash):
     dechd = decrypt_header(enchd, header_key)
     try:
       check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
-      return dechd
+      return dechd, cipher
     except ValueError, e:
       # We may want to put str(e) to the debug log, if requested.
       #print str(e)
@@ -1482,7 +1554,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
         truecrypt_mode == 3):
       f.seek(0, 2)
       luks_device_size = f.tell()
-      decrypted_ofs, keytable = get_open_luks_info(f, passphrase)  # Slow.
+      decrypted_ofs, keytable, cipher = get_open_luks_info(f, passphrase)  # Slow.
   finally:
     f.close()
 
@@ -1495,7 +1567,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
       else:
         what = 'VeraCrypt/TrueCrypt'
       sys.stderr.write('warning: raw device has LUKS header, trying to open it as %s will likely fail\n' % what)
-    dechd = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)  # Slow.
+    dechd, cipher = get_dechd_for_table(enchd, passphrase, pim, truecrypt_mode, hash)  # Slow.
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd)
     iv_ofs = decrypted_ofs
   else:
@@ -1503,7 +1575,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
     iv_ofs = 0
   if display_device is None:
     display_device = device_id
-  return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, do_showkeys)
+  return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher, do_showkeys)
 
 
 def get_random_bytes(size, _functions=[]):
@@ -2449,7 +2521,7 @@ def luks_af_join(data, stripe_count, digest_cons):
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
     digest_cons, digest_blocksize, key_material_ofs, stripe_count,
-    af_salt=None):
+    crypt_sectors_func, af_salt=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
   if not slot_salt:
@@ -2466,7 +2538,7 @@ def build_luks_active_key_slot(
   header_key = pbkdf2(  # Slow.
       passphrase, slot_salt, len(keytable), slot_iterations, digest_cons,
       digest_blocksize)
-  key_material = crypt_aes_xts_sectors(header_key, split_key, do_encrypt=True)
+  key_material = crypt_sectors_func(header_key, split_key, do_encrypt=True)
   assert len(key_material) == key_material_size
   key_slot_data = struct.pack(
       '>LL32sLL', active_tag, slot_iterations, slot_salt, key_material_ofs >> 9,
@@ -2509,7 +2581,7 @@ def build_luks_header(
     (instead of the `cryptsetup luksFormat' default of 8).
     Specify decrypted_ofs=4608 for 7 key slots, or secrypted_ofs>=5120 for 8
     key slots.
-  * Supports only --cipher=aes-xts-plain64. The
+  * Supports only --cipher=aes-xts-plain64 and --cipher=aes-cbc-essiv:sha256.
     `cryptsetup luksFormat' default is --hash=sha1 --cipher=aes-xts-plain64.
   * Doesn't try to autodetect iteration count based on CPU speed.
   * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
@@ -2525,14 +2597,14 @@ def build_luks_header(
   """
   # Based on https://gitlab.com/cryptsetup/cryptsetup/blob/master/docs/on-disk-format.pdf
   # version 1.2.3.
-  if cipher == 'aes-xts-plain64':
-    cipher_name, cipher_mode = 'aes', 'xts-plain64'
-    if key_size & 7:  # Number of bits.
-      raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
-    keytable_size = min(257, key_size >> 3 or 64)
-    check_aes_xts_key('\0' * keytable_size)
-  else:
+  if key_size & 7:  # Number of bits.
+    raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
+  keytable_size = key_size >> 3
+  cipher = cipher.lower()
+  if cipher not in ('aes-xts-plain64', 'aes-cbc-essiv:sha256'):
     raise ValueError('Unsupported LUKS cipher: %s' % cipher)
+  crypt_sectors_func, _ = get_crypt_sectors_funcs(cipher, keytable_size)
+  cipher_name, cipher_mode = cipher.split('-', 1)
 
   # If the caller has alignment requirements, then it should specify a large
   # enough decrypted_ofs (e.g. multiple of 1 MiB for good SSD block
@@ -2630,7 +2702,7 @@ def build_luks_header(
       key_slot_data, key_material = build_luks_active_key_slot(
           slot_iterations, slot_salt, keytable, passphrases[i],
           digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
-          af_salt)
+          crypt_sectors_func, af_salt)
       assert key_material
       key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
       assert key_material_padding_size >= 0
@@ -2661,8 +2733,9 @@ def build_luks_header(
 def get_open_luks_info(f, passphrase):
   """Opens key slots with passphrase, returns keytable and other info.
 
-  This function works with --cipher=aes-xts-plain64, multiple hashes such as
-  --hash=sha512, and any key size such as --key-size=512.
+  This function works with multiple ciphers (--cipher=aes-xts-plain64 and
+  --cipher=aes-cbc-essiv:sha256), multiple hashes such as --hash=sha512, and
+  any key size such as --key-size=512.
 
   Returns:
     (decrypted_ofs, keytable).
@@ -2683,13 +2756,9 @@ def get_open_luks_info(f, passphrase):
   uuid = uuid.rstrip('\0')  # ASCII-formatted, hex with dashes.
   if cipher_name.lower() != 'aes':
     raise ValueError('Unsupported cipher: %r' % cipher_name)
-  if cipher_mode.lower().replace('-', '') != 'xtsplain64':  # 'xts-plain64'.
-    # TODO(pts): Support cipher_mode == 'cbc-essiv:sha256' with 16-byte
-    # keytable. cryptsetup on Ubuntu Lucid (or even earlier) used it.
-    raise ValueError('Unsupported cipher mode: %r' % cipher_mode)
+  cipher = '-'.join((cipher_name, cipher_mode)).lower()
+  crypt_sectors_func, _ = get_crypt_sectors_funcs(cipher, keytable_size)
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
-  if keytable_size not in (32, 48, 64):
-    raise ValueError('keytable_size must be 32 or 64 for aes-xts-plain64, got: %d' % keytable_size)
   if decrypted_sector_idx < 3:  # `cryptsetup open' also checks this.
     raise ValueError('decrypted_sector_idx must be at leasst 3, got: %d' % decrypted_sector_idx)
   active_slots = []
@@ -2729,7 +2798,7 @@ def get_open_luks_info(f, passphrase):
     slot_header_key = pbkdf2(  # Slow.
         passphrase, slot_salt, keytable_size, slot_iterations, digest_cons,
         digest_blocksize)
-    slot_split_key = crypt_aes_xts_sectors(slot_header_key, slot_key_material, do_encrypt=False)
+    slot_split_key = crypt_sectors_func(slot_header_key, slot_key_material, do_encrypt=False)
     slot_keytable = luks_af_join(slot_split_key, slot_stripe_count, digest_cons)
     slot_mk_digest = pbkdf2(  # Slow.
         slot_keytable, keytable_salt, 20, keytable_iterations,
@@ -2744,7 +2813,7 @@ def get_open_luks_info(f, passphrase):
   f.seek(decrypted_ofs)
   if len(f.read(512)) != 512:
     raise ValueError('decrypted_ofs beyond end of raw device.')
-  return decrypted_ofs, slot_keytable
+  return decrypted_ofs, slot_keytable, cipher
 
 
 def is_luks1(enchd):
@@ -2762,7 +2831,7 @@ def is_luks1(enchd):
   uuid = uuid.rstrip('\0')
   if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid) <= 36):
     return False
-  if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').isalnum():
+  if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').replace(':', '').isalnum():
     return False
   # It looks like enchd is a LUKS1 encrypted volume header.
   return True
@@ -2942,7 +3011,7 @@ def cmd_mount(args):
       if value != 'aes':
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = value
-    elif arg.startswith('--cipher='):
+    elif arg.startswith('--cipher='):  # Ignored for LUKS.
       value = arg[arg.find('=') + 1:].lower()
       if value != 'aes-xts-plain64':
         raise UsageError('unsupported flag value: %s' % arg)
@@ -3084,6 +3153,7 @@ def cmd_open_table(args):
 
   device_size = 'auto'
   keytable = device = name = decrypted_ofs = end_ofs = iv_ofs = None
+  cipher = 'aes-xts-plain64'
 
   i, value = 0, None
   while i < len(args):
@@ -3104,6 +3174,8 @@ def cmd_open_table(args):
     elif arg.startswith('--keytable='):
       # TODO(pts): Add --key-size=...
       keytable = parse_keytable_arg(arg, keytable_size=64, is_short_ok=True)
+    elif arg.startswith('--cipher='):
+      cipher = arg[arg.find('=') + 1:].lower()
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -3141,7 +3213,7 @@ def cmd_open_table(args):
     iv_ofs = decrypted_ofs
 
   def block_device_callback(block_device, fd, device_id):
-    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, True)
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, cipher, True)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
@@ -3185,8 +3257,8 @@ def cmd_create(args):
   do_restrict_luksformat_defaults = False
   is_luks_allowed = is_nonluks_allowed = True
   do_truncate = True
-  keytable_arg = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = encryption = hash = filesystem = pim = keyfiles = random_source = passphrase = None
-  af_stripe_count = uuid_flag = uuid = None
+  keytable_arg = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  cipher = af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = None
   do_skip_dash_dash = False
@@ -3288,20 +3360,15 @@ def cmd_create(args):
       value = arg[arg.find('=') + 1:].lower()
       if value != 'aes':
         raise UsageError('unsupported flag value: %s' % arg)
-      encryption = value
+      cipher = 'aes-xts-plain64'
     elif arg.startswith('--cipher='):
-      value = arg[arg.find('=') + 1:].lower()
-      if value != 'aes-xts-plain64':
-        raise UsageError('unsupported flag value: %s' % arg)
-      encryption = 'aes'
+      cipher = arg[arg.find('=') + 1:].lower()
     elif arg.startswith('--key-size='):
       value = arg[arg.find('=') + 1:]
       try:
         key_size = int(value)
       except ValueError:
         raise UsageError('unsupported flag value: %s' % arg)
-      if key_size not in (32 << 3, 48 << 3, 64 << 3):
-        raise UsageError('key size must be 256, 384 or 512 bits, got: %s' % arg)
     elif arg.startswith('--af-stripes='):  # LUKS anti-forensic stripe count.
       value = arg[arg.find('=') + 1:]
       try:
@@ -3465,10 +3532,10 @@ def cmd_create(args):
   # the device filename or the filesystem size.
 
   if key_size is None and not is_opened:
-    key_size = 512
+    key_size = 256 << (cipher == 'aes-xts-plain64')
   if volume_type != 'normal':
     raise UsageError('missing flag: --volume-type=normal')
-  if encryption != 'aes':
+  if cipher is None:
     raise UsageError('missing flag: --encryption=aes')
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
@@ -3503,9 +3570,17 @@ def cmd_create(args):
       raise UsageError('--fat-cluster-size needs --mkfat=...')
   # This also generates random bytes if needed.
   keytable = parse_keytable_arg(keytable_arg, keytable_size=(key_size or 512) >> 3, is_short_ok=(type_value == 'luks'))
+
   if type_value == 'luks':
     if not is_luks_allowed:
       raise UsageError('--type=luks not allowed for this command, try init')
+    if key_size and key_size & 3:
+      raise UsageError('--key-size=... must be divisible by 8, got --key-size=%d' % key_size)
+    try:
+      get_crypt_sectors_funcs(cipher, key_size and key_size >> 3)  # key_size can be None here, good.
+    except ValueError, e:
+      e = str(e)
+      raise UsageError(e[:1].lower() + e[1:].rstrip('.'))
     if decrypted_ofs is not None:
       if not isinstance(decrypted_ofs, (int, long)):
         raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
@@ -3530,6 +3605,9 @@ def cmd_create(args):
   else:
     if not is_nonluks_allowed:
       raise UsageError('--type=%s not allowed for this command, try init' % type_value)
+    if cipher != 'aes-xts-plain64':
+      # --ofs=mkfat, --filesystem=fat1 doesn't work with any other cipher.
+      raise UsageError('--type=%s needs --cipher=aes-xts-plain64, got --cipher=%s' % (type_value, cipher))
     if key_size not in (512, None):
       raise UsageError('--type=%s needs --key-size=512, got --key-size=%d' % (type_value, key_size))
     if af_stripe_count not in (1, None):
@@ -3591,6 +3669,7 @@ def cmd_create(args):
         raise ValueError('sector count must be positive, got: %d' % sector_count)
       decrypted_size = sector_count << 9
       if sector_format != 'aes-xts-plain64':
+        # TODO(pts): Support other ciphers here for LUKS.
         raise ValueError('sector_format must be aes-xts-plain64, got: %r' % sector_format)
       try:
         keytable = keytable.decode('hex')
@@ -3790,7 +3869,7 @@ def cmd_create(args):
       enchd = build_luks_header(
           passphrase=passphrase, decrypted_ofs=decrypted_ofs,
           uuid=uuid, pim=pim, af_stripe_count=af_stripe_count,
-          hash=hash, keytable=keytable, key_size=key_size,
+          hash=hash, keytable=keytable, key_size=key_size, cipher=cipher,
           keytable_iterations=None,  # TODO(pts): Add command-line flag.
           slot_iterations=None,  # TODO(pts): Add command-line flag.
           keytable_salt=None,  # TODO(pts): Add command-line flag (--random-source=... ?)
@@ -3884,11 +3963,19 @@ def cmd_create(args):
         sector_idx = 0
       else:
         sector_idx = decrypted_ofs >> 9
-      aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
-      for i in xrange(0, len(mkfs_data), 512):
-        # TODO(pts): Buffer 65536 bytes for writing.
-        xf.write(crypt_aes_xts(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
-        sector_idx += 1
+      if cipher == 'aes-xts-plain64':
+        aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
+        for i in xrange(0, len(mkfs_data), 512):
+          # TODO(pts): Buffer 65536 bytes for writing.
+          xf.write(crypt_aes_xts(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
+          sector_idx += 1
+      else:
+        crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher)
+        codebooks = get_codebooks_func(keytable)
+        for i in xrange(0, len(mkfs_data), 512):
+          # TODO(pts): Buffer 65536 bytes for writing.
+          xf.write(crypt_sectors_func(codebooks, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
+          sector_idx += 1
     if isinstance(xf, DmCryptFlushingFile):
       xf.full_flush()
     else:
@@ -3903,7 +3990,9 @@ def cmd_create(args):
 
       def block_device_callback(block_device, fd, device_id):
         table = build_table(
-            keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs=decrypted_ofs * bool(type_value != 'luks'), do_showkeys=True)
+            keytable, decrypted_size, decrypted_ofs, device_id,
+            iv_ofs=decrypted_ofs * bool(type_value != 'luks'),
+            cipher='aes-xts-plain64', do_showkeys=True)
         run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
         is_ok = False
         try:
@@ -4053,6 +4142,7 @@ def main(argv):
     # !! Make `cryptsetup open' able to open --ofs=0 VeraCrypt encrypted volumes.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
+    # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
     # !! Add `cat' command, inline crypt_aes_xts_sectors for 512 bytes.

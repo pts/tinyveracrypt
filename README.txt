@@ -33,7 +33,7 @@ Features
   encrypted volumes, and no other tools for creating encrypted volumes.
 * tinyveracrypt interoperates with veracrypt, truecrypt and cryptsetup:
   other tools can open encrypted volumes created by tinyveracrypt, and,
-  if AES XTS encryption is used, then tinyveracrypt can also
+  if the supported cipher and hash is used, then tinyveracrypt can also
   open encrypted encrypted volumes created by the other tools.
 * tinyveracrypt can create encrypted volumes with custom header values
   (e.g. the encrypted volume can start at any offset within the raw device,
@@ -89,13 +89,28 @@ Yes, just specify the `--truecrypt' or `--type=truecrypt' flag for the
 
 Q4. Does tinyveracrypt support multiple hashes and ciphers?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-No, it supports only PBKDF2 of some hashes (SHA-512, SHA-1 and whatever
-Python hashlib supports, which includes SHA-256 and RIPEMD-160), and AES in
-XTS mode (i.e. aes-xts-plain64). Support for others is easy to add.
+Yes, but not as many as cryptsetup (LUKS) or TrueCrypt or VeraCrypt.
 
-The number of iterations is confiugrable (`--pim=...'), the default is
-500000 iterations (`--pim=485') for VeraCrypt and LUKS, and 1000 iterations
-(`--pim=-14') for TrueCrypt (`--truecrypt').
+Supported ciphers:
+
+* aes-xts-plain64. This is the default and the most common for TrueCrypt
+  (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup 1.7.3).
+* aes-cbc-essiv:sha256 (only for LUKS). This used to be most common for
+  LUKS1 (earlier versions of cryptsetup).
+
+Supported hashes:
+
+* sha512
+* sha1
+* whatever Python hashlib supports (which includes sha256 and ripemd160)
+
+Supported key derivation (secret-to-key):
+
+* PBKDF2. TrueCrypt, VeraCrypt and LUKS1 only supports this.
+
+  The number of iterations is confiugrable (`--pim=...'), the default is
+  500000 iterations (`--pim=485') for VeraCrypt and LUKS, and 1000 iterations
+  (`--pim=-14') for TrueCrypt (`--truecrypt').
 
 Q5. Should I use the VeraCrypt or the LUKS on-disk format?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -124,11 +139,7 @@ tinyveracrypt can open encrypted volumes created by tinyveracrypt.
 
 tinyveracrypt can open VeraCrypt, TrueCrypt and LUKS1 encrypted volumes
 (created by the `veracrypt', `truecrypt' and `cryptsetup luksFormat'
-commands) if the aes-xts-plain64 cipher is used (e.g. the default of
-VeraCrypt 1.17 and cryptsetup 1.7.3) and a supported hash (e.g. SHA-512,
-SHA-1  and whatever Python hashlib supports, which includes SHA-256 and
-RIPEMD-160) is used.
-
+commands) if the cipher and hash is suppored (see Q4).
 The default ciphers and hashes of VeraCrypt 1.17, TrueCrypt >= 5.0 and
 cryptsetup 1.7.3 are good for all 3 encrypted volume types.
 
@@ -721,7 +732,8 @@ real block encryption key.
 
 Q32. Which crypto backend library does tinyveracrypt use?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
-The crypto code for aes-xts-plain64 encryption, SHA-512 and SHA-1 hashes and
+The crypto code for aes-xts-plain64 and aes-cbc-essiv:sha256
+ciphers, SHA-512 and SHA-1 hashes and
 key splitting to anti-forensic stripes is embedded to tinyveracrypt.py as
 Python code. In addition to that, tinyveracrypt can uses hashes in the
 standard hashlib Python module. To speed up AES crypto, tinyveracrypt uses

@@ -107,6 +107,28 @@ def test_crypt_aes_xts():
   assert tinyveracrypt.crypt_aes_xts_sectors(HEADER_KEY[:48], tinyveracrypt.crypt_aes_xts_sectors(HEADER_KEY[:48], decstr1, True), False) == decstr1
 
 
+def test_crypt_aes_cbc():
+  crypt_aes_cbc = tinyveracrypt.crypt_aes_cbc
+  key, iv = '\xaa' * 32, '\xbb' * 16
+  decstr1, encstr1 = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n', '39e3eada19066384fb90b9262d108f7476c8eefda65e1995c8c8481a826f64ec4695bd5dacca4a89e4d894cd18710bcb'.decode('hex')
+  decstr2, encstr2 = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n', '8c178626a94130779366ccef39f3c3a06569b37511e04d8a853a19fb8a47928b0612ccf644352cbc78e7ceb2c5662c3d'.decode('hex')
+  assert crypt_aes_cbc(key, '', True, iv) == ''
+  assert crypt_aes_cbc(key, '', False, iv) == ''
+  assert crypt_aes_cbc(key, decstr1, True,  iv) == encstr1
+  assert crypt_aes_cbc(key, encstr1, False, iv) == decstr1
+  assert crypt_aes_cbc(key, encstr1, True,  iv) != decstr1
+  assert crypt_aes_cbc(key, decstr1[:16], True,  iv) == encstr1[:16]
+  assert crypt_aes_cbc(key, encstr1[:16], False, iv) == decstr1[:16]
+  assert crypt_aes_cbc(key, decstr1[:32], True,  iv) == encstr1[:32]
+  assert crypt_aes_cbc(key, encstr1[:32], False, iv) == decstr1[:32]
+  crypt_aes_cbc_essiv_sha256_sectors = tinyveracrypt.crypt_aes_cbc_essiv_sha256_sectors
+  assert crypt_aes_cbc_essiv_sha256_sectors(HEADER_KEY[:32], decstr2, True,  sector_idx=333) == encstr2
+  assert crypt_aes_cbc_essiv_sha256_sectors(HEADER_KEY[:32], encstr2, False, sector_idx=333) == decstr2
+  assert crypt_aes_cbc_essiv_sha256_sectors(HEADER_KEY[:32], decstr2, True,  sector_idx=334) != encstr2
+  assert crypt_aes_cbc_essiv_sha256_sectors(HEADER_KEY[:32], decstr2[:32], True,  sector_idx=333) == encstr2[:32]
+  assert crypt_aes_cbc_essiv_sha256_sectors(HEADER_KEY[:32], encstr2[:32], False, sector_idx=333) == decstr2[:32]
+
+
 def test_veracrypt():
   check_full_dechd = tinyveracrypt.check_full_dechd
   build_dechd = tinyveracrypt.build_dechd
@@ -134,9 +156,9 @@ def test_veracrypt():
   check_full_dechd(dechd)
   assert build_dechd(SALT, keytable, decrypted_size, sector_size) == dechd
   assert parse_dechd(dechd) == (keytable, decrypted_size, decrypted_ofs)
-  table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device, decrypted_ofs, True)
+  table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device, decrypted_ofs, 'aes-xts-plain64', True)
   expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256 1 allow_discards\n'
-  assert tinyveracrypt.build_table('K' * 32, 51200, 12800, 'raw.img', 8, False) == '0 100 crypt aes-xts-plain64 0000000000000000000000000000000000000000000000000000000000000000 0 raw.img 25 1 allow_discards\n'
+  assert build_table('K' * 32, 51200, 12800, 'raw.img', 8, 'aes-xts-plain64', False) == '0 100 crypt aes-xts-plain64 0000000000000000000000000000000000000000000000000000000000000000 0 raw.img 25 1 allow_discards\n'
   assert table == expected_table
   assert encrypt_header(dechd, HEADER_KEY) == enchd
   assert decrypt_header(enchd, HEADER_KEY) == dechd
@@ -207,9 +229,10 @@ def test_luks():
   # Accepted by: ./mkluks_demo.py && /sbin/cryptsetup luksDump --debug mkluks_demo.bin
   #open('mkluks_demo.bin', 'w+b').write(full_header)
   del full_header  # Save memory.
-  assert tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, True) == (
+  assert tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, 'aes-xts-plain64', True) == (
       '0 4028 crypt aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 7:0 8 1 allow_discards\n')
-  decrypted_ofs2, keytable2 = tinyveracrypt.get_open_luks_info(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
+  decrypted_ofs2, keytable2, cipher = tinyveracrypt.get_open_luks_info(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
+  assert cipher == 'aes-xts-plain64'
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
   rec = tinyveracrypt.get_recommended_luks_decrypted_ofs
   assert rec(1 << 30) == 2 << 20  # No need for more than 2 MiB alignment.
@@ -252,6 +275,7 @@ def test():
   test_sha512()
   test_sha1()
   test_crypt_aes_xts()
+  test_crypt_aes_cbc()
   test_veracrypt()
   test_luks()
 
