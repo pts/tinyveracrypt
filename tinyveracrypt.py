@@ -3014,7 +3014,7 @@ def update_truecrypt_mode(truecrypt_mode, type_value):
     return 2
   elif type_value == 'veracrypt':
     return 0
-  elif type_value == 'luks':
+  elif type_value in ('luks', 'luks1'):
     return 3
   else:
     # Cryptsetup also supports --type=plain and --type=loopaes.
@@ -3151,6 +3151,8 @@ def cmd_mount(args):
       else:
         type_value = args[i]
         i += 1
+      if type_value == 'luks1':
+        type_value = 'luks'
       if type_value in ('plain', 'loopaes', 'luks2'):
         raise UsageError('unsupported type, run this instead: cryptsetup open --type=%s ...' % type_value)
       truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
