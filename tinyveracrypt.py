@@ -669,7 +669,7 @@ del _sha256_rotr32, _sha256_k  # Unpollute namespace.
 
 # Fallback pure Python implementation of SHA-256 based on
 # https://github.com/thomdixon/pysha2/blob/master/sha2/sha256.py
-# It is about 400 times slower than OpenSSL's C implementation.
+# It is about 400+ times slower than OpenSSL's C implementation.
 #
 # This is used in Python 2.4 by default. (Python 2.5 already has
 # hashlib.sha256.)
@@ -774,7 +774,7 @@ def _sha1_rotl32(x, y):
 def slow_sha1_process(chunk, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
   w = [0] * 80
   w[:16] = struct.unpack('>16L', chunk)
-  for i in range(16, 80):
+  for i in xrange(16, 80):
     w[i] = _rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
   a, b, c, d, e = hh
   for i in xrange(0, 20):
