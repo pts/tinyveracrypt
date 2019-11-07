@@ -40,6 +40,11 @@ Features
   any LUKS anti-forensic stripe count can be specified).
 * tinyveracrypt can create encrypted volumes deterministically by using
   a pregenerated file as a random source.
+* tinyveracrypt can recover a corrupt volume header (including setting a new
+  passphrase without knowing any of the old passphrases) if the encrypted
+  volume is currently open
+* tinyveracrypt can convert between TrueCrypt and VeraCrypt if the cipher
+  matches
 
 See FAQ entry Q23 for features of cryptsetup, VeraCrypt and TrueCrypt not
 supported by tinyveracrypt.
@@ -598,17 +603,17 @@ tinyveracrypt?
 * verbose debug info similar to `cryptsetup --debug -v -v -v'
 * volume diagnostics similar to `cryptsetup luksDump'
 
-Q24. Can tinyveracrypt convert between VeraCrypt and TrueCrypt headers, or
-from LUKS?
-""""""""""
+Q24. Can tinyveracrypt regenerate the volume header or convert between
+VeraCrypt and TrueCrypt headers, or from LUKS?
+""""""""""""""""""""""""""""""""""""""""""""""
 Yes. To regenerate the TrueCrypt/VeraCrypt/LUKS header, open the encrypted
 volume (as NAME), and then run:
 
-  $ sudo ./tinyveracrypt.py init --opened /dev/mapper/NAME
+  $ sudo ./tinyveracrypt.py init --opened --type=TYPE /dev/mapper/NAME
 
-Pass flag `--truecrypt' to `init' if you want to generate a TrueCrypt header
-or `--type=luks' if you want to generate a LUKS header.
-Pass any flags (e.g. --mkfat=...), specify any passphrase.
+Pass flag `--type=truecrypt' to `init' if you want to generate a TrueCrypt
+header or `--type=luks' if you want to generate a LUKS header. Pass any
+other flag (e.g. --mkfat=...), specify any passphrase.
 
 Please note that the hidden volume, if any, will be destroyed as part of
 this.

@@ -3827,42 +3827,43 @@ def cmd_create(args):
       if sector_count <= 0:
         raise ValueError('sector count must be positive, got: %d' % sector_count)
       decrypted_size = sector_count << 9
-      if sector_format != 'aes-xts-plain64':
-        # TODO(pts): Support other ciphers here for LUKS.
-        raise ValueError('sector_format must be aes-xts-plain64, got: %r' % sector_format)
       try:
         keytable = keytable.decode('hex')
       except (TypeError, ValueError):
         raise ValueError('keytable must be hex, got: %s' % keytable)
-      check_aes_xts_key(keytable)
       key_size = len(keytable) << 3
-      if type_value != 'luks' and len(keytable) != 64:
-        raise ValueError('key size must be 512 for --type=%s; try specifying --type=luks' % type_value)
+      cipher = sector_format
       try:
         iv_offset = int(iv_offset)
       except ValueError:
         raise ValueError('iv_ofs must be an integer, got: %r' % iv_offset)
       if iv_offset < 0:
         raise ValueError('iv_offset must be nonnegative, got: %d' % iv_offset)
-      device_id = parse_device_id(device_id)  # (major, minor)
-      if expected_device_id is not None and device_id != expected_device_id:
-        raise ValueError('Unexpected device_id, expecting %r, got: %r' % (expected_device_id, device_id))
       try:
         sector_offset = int(sector_offset)
       except ValueError:
         raise ValueError('sector_offset must be an integer, got: %r' % sector_offset)
       if sector_offset < 0:
         raise ValueError('sector count must be nonnegative, got: %d' % sector_offset)
-      decrypted_ofs = sector_offset << 9
-      if iv_offset not in (0, sector_offset):
-        raise ValueError('Sector offset mismatch: iv_offset=%d sector_offset=%d' % (iv_offset, sector_offset))
       if type_value == 'luks':
+        try:
+          get_crypt_sectors_funcs(cipher, key_size >> 3)  # key_size can be None here, good.
+        except ValueError, e:
+          e = str(e)
+          raise UsageError(e[:1].lower() + e[1:].rstrip('.'))
         if iv_offset != 0:
           raise ValueError('iv_offset must be 0 for --type=luks; try specifying --type=veracrypt')
       else:
+        if cipher != 'aes-xts-plain64':
+          raise ValueError('cipher must be aes-xts-plain64 for --type=%s, got: %r; try specifying --type=luks' % (type_value, sector_format))
+        if len(keytable) != 64:
+          raise ValueError('key size must be 512 for --type=%s; try specifying --type=luks' % type_value)
         if iv_offset != sector_offset:
-          raise ValueError('iv_and sector_offset must match for --type=%s, got iv_offset=%d sector_offset=%d; try specifying --type=luks' % (type_value, iv_offset, sector_offset))
-
+          raise ValueError('iv_offset and sector_offset must match for --type=%s, got iv_offset=%d sector_offset=%d; try specifying --type=luks' % (type_value, iv_offset, sector_offset))
+      device_id = parse_device_id(device_id)  # (major, minor)
+      if expected_device_id is not None and device_id != expected_device_id:
+        raise ValueError('Unexpected device_id, expecting %r, got: %r' % (expected_device_id, device_id))
+      decrypted_ofs = sector_offset << 9
       device = find_device_by_id(device_id)
       if device_size == 'auto':  # Default, without --size=... flag.
         f = open(device, 'rb')
