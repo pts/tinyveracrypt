@@ -41,6 +41,9 @@ Features
 * tinyveracrypt can create encrypted volumes deterministically by using
   a pregenerated file as a random source.
 
+See FAQ entry Q23 for features of cryptsetup, VeraCrypt and TrueCrypt not
+supported by tinyveracrypt.
+
 Usage for VeraCrypt:
 
   $ ./tinyveracrypt.py init --type=veracrypt --size=20K veracrypt.img
@@ -113,7 +116,8 @@ Supported hashes:
 * sha512 (SHA-512)
 * sha256 (SHA-256)
 * sha1 (SHA-1)
-* whatever Python hashlib supports (which includes ripemd160)
+* whatever Python hashlib supports (which includes ripemd160 and whirlpool,
+  so including these all hashes used by VeraCrypt and TrueCrypt are supported)
 
 Supported key derivation (secret-to-key):
 
@@ -577,15 +581,22 @@ The decrypted volume will be available as /dev/mapper/DEVNAME .
 Please note that for VeraCrypt encrypted volumes you'd need to specify
 `--veracrypt'.
 
-Q23. Which command-line VeraCrypt features are missing from tinyveracrypt?
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-* hidden volume
-* system volume
-* keyfile
+Q23. Which command-line veracrypt and cryptsetup features are missing from
+tinyveracrypt?
+""""""""""""""
+* creating and opening a hidden volume
+* creating and opening a system volume
+* booting from system volume
+* reading the passpharse from a keyfile
 * cipher other than those in Q4
 * hash other than those in Q4
+* volume type other than VeraCrypt, TrueCrypt and LUKS1 (e.g. LUKS2)
 * mounting a filesystem at open time
 * opening volumes on non-Linux systems (e.g. macOS or Windows)
+* adding another password (slot) to a LUKS volume after creation (this would
+  be easy to add)
+* verbose debug info similar to `cryptsetup --debug -v -v -v'
+* volume diagnostics similar to `cryptsetup luksDump'
 
 Q24. Can tinyveracrypt convert between VeraCrypt and TrueCrypt headers, or
 from LUKS?
