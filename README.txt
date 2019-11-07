@@ -100,9 +100,10 @@ Supported ciphers:
 
 Supported hashes:
 
-* sha512
-* sha1
-* whatever Python hashlib supports (which includes sha256 and ripemd160)
+* sha512 (SHA-512)
+* sha256 (SHA-256)
+* sha1 (SHA-1)
+* whatever Python hashlib supports (which includes ripemd160)
 
 Supported key derivation (secret-to-key):
 
@@ -568,9 +569,8 @@ Q23. Which command-line VeraCrypt features are missing from tinyveracrypt?
 * hidden volume
 * system volume
 * keyfile
-* encryption other than aes-xts-plain64
-* hash other than SHA-512 and SHA-1 (and those supported by the Python
-  hashlib module, including SHA-256 and RIPEMD-160)
+* cipher other than those in Q4
+* hash other than those in Q4
 * mounting a filesystem at open time
 * opening volumes on non-Linux systems (e.g. macOS or Windows)
 
@@ -732,14 +732,23 @@ real block encryption key.
 
 Q32. Which crypto backend library does tinyveracrypt use?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
-The crypto code for aes-xts-plain64 and aes-cbc-essiv:sha256
-ciphers, SHA-512 and SHA-1 hashes and
-key splitting to anti-forensic stripes is embedded to tinyveracrypt.py as
-Python code. In addition to that, tinyveracrypt can uses hashes in the
-standard hashlib Python module. To speed up AES crypto, tinyveracrypt uses
-the C extensions of pycrypto or `aes', if available.
+tinyveracrypt has pure Python code embedded for:
 
-cryptsetup 1.7.3 can be compiled with any one of the supported crypto
+* ciphers: aes-xts-plain64 and aes-cbc-essiv:sha256
+* hashes: sha512, sha256 and sha1
+* PBKDF2
+* key splitting to anti-forensic stripes
+
+tinyveracrypt use C extensions instead of the embedded Python code,
+if available:
+
+* ciphers: for AES-based ciphers, the base AES primitive is detected and
+  used in pycrypto and in `aes'
+* hashes: detected and used in hashlib (including hash implementation from
+  OpenSSL) and pycrypto
+* PBKDF2: detected and used in hashlib
+
+FYI cryptsetup 1.7.3 can be compiled with any one of the supported crypto
 backends such as the Linux kernel AF_ALG, gcrypt, Nettle, NSS, OpenSSL. For
 the author of tinyveracrypt, the Linux kernel backend of cryptsetup didn't
 work with kernel 3.13.0 (setsockopt returned EBUSY), kernel 2.6.35-32 (it

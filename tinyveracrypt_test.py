@@ -54,6 +54,20 @@ def test_sha512():
   assert tinyveracrypt.sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
 
 
+def test_sha256():
+  assert tinyveracrypt.sha256('foobar').digest() == '\xc3\xab\x8f\xf17 \xe8\xad\x90G\xdd9Fk<\x89t\xe5\x92\xc2\xfa8=J9`qL\xae\xf0\xc4\xf2'
+  assert tinyveracrypt.sha256('Foobar! ' * 14).digest() == '-?\xe9\x86\xb6\x1f\x1b\xbb\xa2\xbf\x83\xb7\xcd<\xd1\xe9MR]~8\x8e\xdf3\x911u"\xfb\x0c/{'
+  d = tinyveracrypt.sha256('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == '\xec\x11\xa7\xff^\xa3\x8a\x04O\xe3\x93\xf5i\x94\x11+m\x8b\x11\x92\x8895E\x19\xe7\xa2\xb9]\xf3\xf5X'
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert tinyveracrypt.sha256(data).hexdigest() == 'f890457a817af29473f5057f1a80ac71fda6b0c4895a6fbfc9a63cd77abe15be'
+  assert tinyveracrypt.sha256(data[1:]).hexdigest() == '42f53c9828d7033fe258d68286ec47999dd67129d18d50d340b736e7a6222920'
+  assert tinyveracrypt.sha256('?' + data).hexdigest() == 'caa9d54ee0700e483d1dcfb19cbcc4eafc5bbb7913492fbdbea63835346bc172'
+
+
 def test_sha1():
   assert tinyveracrypt.sha1('foobar').digest() == '\x88C\xd7\xf9$\x16!\x1d\xe9\xeb\xb9c\xffL\xe2\x81%\x93(x'
   assert tinyveracrypt.sha1('Foobar! ' * 14).digest() == '\x14JM\x7f\xb2\xf6\xfc&\xc1\xfdG\x1c\xcc\xe5t%\xd3\x1b\x1c\\'
@@ -273,6 +287,7 @@ def test_luks():
 def test():
   test_aes()
   test_sha512()
+  test_sha256()
   test_sha1()
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
@@ -297,6 +312,8 @@ if __name__ == '__main__':
       tinyveracrypt.new_aes = tinyveracrypt.SlowAes
     elif arg == '--slow-sha512':
       tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
+    elif arg == '--slow-sha256':
+      tinyveracrypt.sha256 = tinyveracrypt.SlowSha256
     elif arg == '--slow-sha1':
       tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
     else:

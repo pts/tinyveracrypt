@@ -342,8 +342,7 @@ def get_aes_cbc_essiv_sha256_codebooks(aes_key):
   if isinstance(aes_key, tuple) and len(aes_key) == 2:
     return aes_key
   check_aes_key(aes_key)
-  hash_key = get_hash_digest_params('sha256')[0](aes_key).digest()
-  return new_aes(aes_key), new_aes(hash_key)
+  return new_aes(aes_key), new_aes(sha256(aes_key).digest())
 
 
 def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
@@ -478,6 +477,7 @@ def crypt_aes_xts_sectors(aes_xts_key, data, do_encrypt, sector_idx=0):
 def _sha512_rotr64(x, y):
   return ((x >> y) | (x << (64 - y))) & 0xffffffffffffffff
 
+
 _sha512_k = (
     0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
     0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
@@ -499,6 +499,7 @@ _sha512_k = (
     0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
     0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817)
+
 
 def slow_sha512_process(chunk, hh, _izip=itertools.izip, _rotr64=_sha512_rotr64, _k=_sha512_k):
   w = [0] * 80
@@ -611,6 +612,145 @@ else:
   #    'Cannot find SHA-512 implementation: install hashlib or pycrypto, '
   #    'or upgrade to Python >=2.5.')
   sha512 = SlowSha512
+
+
+# --- SHA-256 hash (message digest).
+
+
+def _sha256_rotr32(x, y):
+  return ((x >> y) | (x << (32 - y))) & 0xffffffff
+
+
+_sha256_k = (
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2)
+
+
+def slow_sha256_process(chunk, hh, _izip=itertools.izip, _rotr32=_sha256_rotr32, _k=_sha256_k):
+  w = [0] * 64
+  w[:16] = struct.unpack('>16L', chunk)
+  for i in xrange(16, 64):
+    w[i] = (w[i - 16] + (_rotr32(w[i - 15], 7) ^ _rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 7] + (_rotr32(w[i - 2], 17) ^ _rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10))) & 0xffffffff
+  a, b, c, d, e, f, g, h = hh
+  for i in xrange(64):
+    t1 = h + (_rotr32(e, 6) ^ _rotr32(e, 11) ^ _rotr32(e, 25)) + ((e & f) ^ ((~e) & g)) + _k[i] + w[i]
+    t2 = (_rotr32(a, 2) ^ _rotr32(a, 13) ^ _rotr32(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))
+    a, b, c, d, e, f, g, h = (t1 + t2) & 0xffffffff, a, b, c, (d + t1) & 0xffffffff, e, f, g
+  return [(x + y) & 0xffffffff for x, y in _izip(hh, (a, b, c, d, e, f, g, h))]
+
+
+del _sha256_rotr32, _sha256_k  # Unpollute namespace.
+
+
+# Fallback pure Python implementation of SHA-256 based on
+# https://github.com/thomdixon/pysha2/blob/master/sha2/sha256.py
+# It is about 400 times slower than OpenSSL's C implementation.
+#
+# This is used in Python 2.4 by default. (Python 2.5 already has
+# hashlib.sha256.)
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
+# Python >=2.5, install hashlib or pycrypto from PyPi, all of which
+# contain a faster SHA-256 implementation in C.
+class SlowSha256(object):
+  _h0 = (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19)
+
+  blocksize = 1
+  block_size = 64
+  digest_size = 32
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer = ''
+    self._counter = 0
+    self._h = self._h0
+    if m is not None:
+      self.update(m)
+
+  def update(self, m):
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf = self._buffer
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = slow_sha256_process(buf + m[:i], hh)
+      for i in xrange(i, lm - 63, 64):
+        hh = slow_sha256_process(_buffer(m, i, 64), hh)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    c = self._counter
+    if (c & 63) < 56:
+      return struct.pack('>8L', *slow_sha256_process(self._buffer + struct.pack('>c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+    else:
+      return struct.pack('>8L', *slow_sha256_process(struct.pack('>56xQ', c << 3), slow_sha256_process(self._buffer + struct.pack('>c%dx' % (~c & 63), '\x80'), self._h)))
+
+  def hexdigest(self):
+    return self.digest().encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer = self._buffer
+    other._counter = self._counter
+    other._h = self._h
+    return other
+
+
+has_sha256_hashlib = has_sha256_openssl_hashlib = False
+try:
+  __import__('hashlib').sha256
+  has_sha256_hashlib = True
+  has_sha256_openssl_hashlib = __import__('hashlib').sha256.__name__.startswith('openssl_')
+except (ImportError, AttributeError):
+  pass
+has_sha256_pycrypto = False
+try:
+  __import__('Crypto.Hash._SHA256')
+  sys.modules['Crypto.Hash._SHA256'].new
+  has_sha256_pycrypto = True
+except (ImportError, AttributeError):
+  pass
+if has_sha256_openssl_hashlib:  # Fastest.
+  sha256 = sys.modules['hashlib'].sha256
+elif has_sha256_pycrypto:
+  # Faster than: Crypto.Hash.SHA256.SHA256Hash
+  sha256 = sys.modules['Crypto.Hash._SHA256'].new
+elif has_sha256_hashlib:
+  sha256 = sys.modules['hashlib'].sha256
+else:
+  #raise ImportError(
+  #    'Cannot find SHA-256 implementation: install hashlib or pycrypto, '
+  #    'or upgrade to Python >=2.5.')
+  sha256 = SlowSha256
 
 
 # --- SHA-1 hash (message digest).
@@ -1401,6 +1541,8 @@ def get_hash_digest_params(hash):
   #blocksize = 128  # For SHA384, SHA512.
   if hash2 == 'sha512':
     return sha512, 128
+  elif hash2 == 'sha256':
+    return sha256, 64
   elif hash2 == 'sha1':
     return sha1, 64
   elif 'hashlib' in sys.modules and callable(getattr(sys.modules['hashlib'], 'new', None)):
