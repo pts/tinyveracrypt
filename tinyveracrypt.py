@@ -2758,8 +2758,6 @@ def build_luks_header(
     raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
   keytable_size = key_size >> 3
   cipher = cipher.lower()
-  if cipher == 'aes-cbc-plain':
-    cipher = 'aes-cbc-plain64'  # Support >32-bit decrypted_size.
   crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
   cipher_name, cipher_mode = cipher.split('-', 1)
 
@@ -4024,10 +4022,16 @@ def cmd_create(args):
       if passphrase is None:
         passphrase = prompt_passphrase_with_warning  # Callback to defer it after checks.
       enchd_backup = ''
+      if cipher in ('aes-cbc-plain', 'aes-cbc-plain64'):
+        # aes-cbc-plain is compatible with older Linux kernels (<= 2.6.32).
+        # aes-cbc-plain64 supports decrypted_size >= 2 TiB.
+        cipher2 = ('aes-cbc-plain', 'aes-cbc-plain64')[bool(decrypted_size >> 32)]
+      else:
+        cipher2 = cipher
       enchd = build_luks_header(
           passphrase=passphrase, decrypted_ofs=decrypted_ofs,
           uuid=uuid, pim=pim, af_stripe_count=af_stripe_count,
-          hash=hash, keytable=keytable, key_size=key_size, cipher=cipher,
+          hash=hash, keytable=keytable, key_size=key_size, cipher=cipher2,
           keytable_iterations=None,  # TODO(pts): Add command-line flag.
           slot_iterations=None,  # TODO(pts): Add command-line flag.
           keytable_salt=None,  # TODO(pts): Add command-line flag (--random-source=... ?)
