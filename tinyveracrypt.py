@@ -1261,6 +1261,7 @@ def get_crypt_sectors_funcs(cipher, keytable_size=None):
   elif cipher == 'aes-cbc-essiv:sha256':
     func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_essiv_sha256_codebooks, (16, 24, 32)
   elif cipher in ('aes-cbc-plain', 'aes-cbc-plain64'):
+    # This is different from 'aes-cbc'.
     func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_plain_codebooks, (16, 24, 32)
   else:
     raise ValueError('Unsupported cipher: %s' % cipher)
