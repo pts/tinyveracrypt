@@ -95,8 +95,9 @@ Supported ciphers:
 
 * aes-xts-plain64. This is the default and the most common for TrueCrypt
   (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup >= 1.6.0,
-  cryptsetup 2.1.0).
-* aes-cbc-essiv:sha256 (only for LUKS). This used to be most common for
+  cryptsetup 2.1.0). For TrueCrypt and VeraCrypt encrypted volumes,
+  tinyveracrypt supports only this cipher.
+* aes-cbc-essiv:sha256. This used to be most common for
   LUKS1 (earlier versions of cryptsetup). This was the default in
   cryptsetup < 1.6.0. A bit less secure than aes-xts-plain64 (see
   explanation in the cryptsetup FAQ
