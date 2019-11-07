@@ -342,12 +342,18 @@ def get_aes_cbc_essiv_sha256_codebooks(aes_key):
   if isinstance(aes_key, tuple) and len(aes_key) == 2:
     return aes_key
   check_aes_key(aes_key)
-  return new_aes(aes_key), new_aes(sha256(aes_key).digest())
+  return new_aes(aes_key), new_aes(sha256(aes_key).digest()).encrypt
 
 
-def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
-  codebook, hash_codebook = get_aes_cbc_essiv_sha256_codebooks(aes_key)
-  hash_encrypt = hash_codebook.encrypt
+def get_aes_cbc_plain_codebooks(aes_key):
+  if isinstance(aes_key, tuple) and len(aes_key) == 2:
+    return aes_key
+  check_aes_key(aes_key)
+  return (new_aes(aes_key), lambda n: n)
+
+
+def crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  codebook, hash_encrypt = codebooks
   pack = struct.pack
 
   def yield_crypt_sectors(sector_idx):
@@ -357,6 +363,11 @@ def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
       sector_idx += 1
 
   return ''.join(yield_crypt_sectors(sector_idx))
+
+
+def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
+  codebooks = get_aes_cbc_essiv_sha256_codebooks(aes_key)
+  return crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx)
 
 
 # --- AES XTS seekable stream cipher.
@@ -1248,7 +1259,9 @@ def get_crypt_sectors_funcs(cipher, keytable_size=None):
   if cipher == 'aes-xts-plain64':
     func, get_codebooks_func, keytable_sizes = crypt_aes_xts_sectors, get_aes_xts_codebooks, (32, 48, 64)
   elif cipher == 'aes-cbc-essiv:sha256':
-    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_essiv_sha256_sectors, get_aes_cbc_essiv_sha256_codebooks, (16, 24, 32)
+    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_essiv_sha256_codebooks, (16, 24, 32)
+  elif cipher in ('aes-cbc-plain', 'aes-cbc-plain64'):
+    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_plain_codebooks, (16, 24, 32)
   else:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:
@@ -2663,7 +2676,7 @@ def luks_af_join(data, stripe_count, digest_cons):
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
     digest_cons, digest_blocksize, key_material_ofs, stripe_count,
-    crypt_sectors_func, af_salt=None):
+    crypt_sectors_func, get_codebooks_func, af_salt=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
   if not slot_salt:
@@ -2680,7 +2693,8 @@ def build_luks_active_key_slot(
   header_key = pbkdf2(  # Slow.
       passphrase, slot_salt, len(keytable), slot_iterations, digest_cons,
       digest_blocksize)
-  key_material = crypt_sectors_func(header_key, split_key, do_encrypt=True)
+  header_codebooks = get_codebooks_func(header_key)
+  key_material = crypt_sectors_func(header_codebooks, split_key, do_encrypt=True)
   assert len(key_material) == key_material_size
   key_slot_data = struct.pack(
       '>LL32sLL', active_tag, slot_iterations, slot_salt, key_material_ofs >> 9,
@@ -2723,7 +2737,8 @@ def build_luks_header(
     (instead of the `cryptsetup luksFormat' default of 8).
     Specify decrypted_ofs=4608 for 7 key slots, or secrypted_ofs>=5120 for 8
     key slots.
-  * Supports only --cipher=aes-xts-plain64 and --cipher=aes-cbc-essiv:sha256.
+  * Supports only --cipher=aes-xts-plain64 and --cipher=aes-cbc-essiv:sha256,
+    --cipher=aes-cbc-plain, --cipher=aes-cbc-plain64.
     `cryptsetup luksFormat' default is --hash=sha1 --cipher=aes-xts-plain64.
   * Doesn't try to autodetect iteration count based on CPU speed.
   * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
@@ -2743,9 +2758,9 @@ def build_luks_header(
     raise ValueError('key_size must be a multiple of 8, got: %d' % key_size)
   keytable_size = key_size >> 3
   cipher = cipher.lower()
-  if cipher not in ('aes-xts-plain64', 'aes-cbc-essiv:sha256'):
-    raise ValueError('Unsupported LUKS cipher: %s' % cipher)
-  crypt_sectors_func, _ = get_crypt_sectors_funcs(cipher, keytable_size)
+  if cipher == 'aes-cbc-plain':
+    cipher = 'aes-cbc-plain64'  # Support >32-bit decrypted_size.
+  crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
   cipher_name, cipher_mode = cipher.split('-', 1)
 
   # If the caller has alignment requirements, then it should specify a large
@@ -2844,7 +2859,7 @@ def build_luks_header(
       key_slot_data, key_material = build_luks_active_key_slot(
           slot_iterations, slot_salt, keytable, passphrases[i],
           digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
-          crypt_sectors_func, af_salt)
+          crypt_sectors_func, get_codebooks_func, af_salt)
       assert key_material
       key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
       assert key_material_padding_size >= 0
@@ -2899,7 +2914,7 @@ def get_open_luks_info(f, passphrase):
   if cipher_name.lower() != 'aes':
     raise ValueError('Unsupported cipher: %r' % cipher_name)
   cipher = '-'.join((cipher_name, cipher_mode)).lower()
-  crypt_sectors_func, _ = get_crypt_sectors_funcs(cipher, keytable_size)
+  crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
   if decrypted_sector_idx < 3:  # `cryptsetup open' also checks this.
     raise ValueError('decrypted_sector_idx must be at leasst 3, got: %d' % decrypted_sector_idx)
@@ -2940,7 +2955,8 @@ def get_open_luks_info(f, passphrase):
     slot_header_key = pbkdf2(  # Slow.
         passphrase, slot_salt, keytable_size, slot_iterations, digest_cons,
         digest_blocksize)
-    slot_split_key = crypt_sectors_func(slot_header_key, slot_key_material, do_encrypt=False)
+    slot_header_codebooks = get_codebooks_func(slot_header_key)
+    slot_split_key = crypt_sectors_func(slot_header_codebooks, slot_key_material, do_encrypt=False)
     slot_keytable = luks_af_join(slot_split_key, slot_stripe_count, digest_cons)
     slot_mk_digest = pbkdf2(  # Slow.
         slot_keytable, keytable_salt, 20, keytable_iterations,
@@ -2971,7 +2987,7 @@ def is_luks1(enchd):
   cipher_mode = cipher_mode.rstrip('\0')
   hash = hash.rstrip('\0')
   uuid = uuid.rstrip('\0')
-  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 16 and 3 <= len(hash) <= 10 and len(uuid) <= 36):
+  if not (2 <= len(cipher_name) <= 10 and 2 <= len(cipher_mode) <= 20 and 3 <= len(hash) <= 10 and len(uuid) <= 36):
     return False
   if not ''.join((cipher_name, cipher_mode, hash)).replace('-', '').replace(':', '').isalnum():
     return False

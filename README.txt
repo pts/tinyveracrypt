@@ -94,9 +94,18 @@ Yes, but not as many as cryptsetup (LUKS) or TrueCrypt or VeraCrypt.
 Supported ciphers:
 
 * aes-xts-plain64. This is the default and the most common for TrueCrypt
-  (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup 1.7.3).
+  (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup >= 1.6.0,
+  cryptsetup 2.1.0).
 * aes-cbc-essiv:sha256 (only for LUKS). This used to be most common for
-  LUKS1 (earlier versions of cryptsetup).
+  LUKS1 (earlier versions of cryptsetup). This was the default in
+  cryptsetup < 1.6.0. A bit less secure than aes-xts-plain64 (see
+  explanation in the cryptsetup FAQ
+  https://salsa.debian.org/cryptsetup-team/cryptsetup/blob/master/FAQ ).
+* aes-cbc-plain64. Less secure than aes-cbc-essiv:sha256, see cryptsetup FAQ
+  entry 5.14 on https://salsa.debian.org/cryptsetup-team/cryptsetup/blob/master/FAQ
+  : ``Why was the default aes-cbc-plain replaced with aes-cbc-essiv?''
+* aes-cbc-plain. Same as aes-cbc-plain, but supports only encrypted volumes
+  up to 2 TiB. This was the default in cryptsetup 1.0.
 
 Supported hashes:
 
@@ -144,7 +153,9 @@ commands) if the cipher and hash is suppored (see Q4).
 The default ciphers and hashes of VeraCrypt 1.17, TrueCrypt >= 5.0 and
 cryptsetup 1.7.3 are good for all 3 encrypted volume types.
 
-tinyveracrypt can't open or create LUKS2 encrypted volumes.
+tinyveracrypt can't open or create LUKS2 encrypted volumes. cryptsetup <
+2.1.0 create LUKS1 encrypted volumes by default, and cryptsetup 2.1.0 >=
+create LUKS2 by default (but can be changed with --type=luks1).
 
 See Q21 and Q22 question how to open the volume with different tools.
 
@@ -155,8 +166,9 @@ No, tinyveracrypt has been written from scratch in Python.
 
 Q8. VeraCrypt has passed a software security audit. Did it cover tinyveracrypt?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-No, it hasn't. tinyveracrypt isn't professionally audited software. If you need
-such software for encrypted block devices, use vanilla VeraCrypt.
+No, it hasn't. tinyveracrypt isn't professionally audited or certified (e.g.
+FIPS-140-2) software. If you need such software for encrypted block devices,
+use vanilla VeraCrypt.
 
 If you want to conduct a security audit on tinyveracrypt, please contact the
 author.
@@ -227,7 +239,7 @@ of the LUKS header to as little as 4096 bytes), `--af-stripes=...',
 
 Q11B. How to create a LUKS2 encrypted volume?
 """""""""""""""""""""""""""""""""""""""""""""
-tinyveracrypt doesn't support LUKS2.
+tinyveracrypt doesn't support LUKS2. See Q6 for more information.
 
 Q12. Can tinyveracrypt create encrypted volumes with a plaintext FAT
 filesystem in front of the encrypted volume?
