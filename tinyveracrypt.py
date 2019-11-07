@@ -2704,13 +2704,12 @@ def build_luks_active_key_slot(
   return key_slot_data, key_material
 
 
-def build_luks_inactive_key_slot(slot_iterations, key_material_ofs):
+def build_luks_inactive_key_slot(slot_iterations, key_material_ofs, af_stripe_count):
   check_luks_key_material_ofs(key_material_ofs)
-  inactive_stripe_count = 1
   inactive_tag = 0xdead
   return struct.pack(
       '>LL32xLL', inactive_tag, slot_iterations, key_material_ofs >> 9,
-      inactive_stripe_count)
+      af_stripe_count)
 
 
 def check_luks_uuid(uuid):
@@ -2869,7 +2868,7 @@ def build_luks_header(
       del key_slot_data, key_material
     else:
       output.append(build_luks_inactive_key_slot(
-          slot_iterations, key_material_ofs))
+          slot_iterations, key_material_ofs, af_stripe_count))
       if i < slot_count:
         key_materials.append('\0' * (key_material_sector_count << 9))
   output.append('\0' * 432)  # Align PHDR to sector boundary.
@@ -4308,6 +4307,7 @@ def main(argv):
     # !! Make `cryptsetup open' able to open --ofs=0 VeraCrypt encrypted volumes.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
+    # !! cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
     # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
