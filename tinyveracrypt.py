@@ -339,10 +339,11 @@ def crypt_aes_cbc(aes_key, data, do_encrypt, iv):
 
 
 def get_aes_cbc_essiv_sha256_codebooks(aes_key):
+  _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
   if isinstance(aes_key, tuple) and len(aes_key) == 2:
     return aes_key
   check_aes_key(aes_key)
-  return new_aes(aes_key), new_aes(sha256(aes_key).digest()).encrypt
+  return new_aes(aes_key), new_aes(_sha256(aes_key).digest()).encrypt
 
 
 def get_aes_cbc_plain_codebooks(aes_key):
@@ -371,6 +372,7 @@ def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
 
 
 # --- AES XTS seekable stream cipher.
+
 
 def check_aes_xts_key(aes_xts_key):
   if len(aes_xts_key) not in (32, 48, 64):
@@ -597,34 +599,6 @@ class SlowSha512(object):
     return other
 
 
-has_sha512_hashlib = has_sha512_openssl_hashlib = False
-try:
-  __import__('hashlib').sha512
-  has_sha512_hashlib = True
-  has_sha512_openssl_hashlib = __import__('hashlib').sha512.__name__.startswith('openssl_')
-except (ImportError, AttributeError):
-  pass
-has_sha512_pycrypto = False
-try:
-  __import__('Crypto.Hash._SHA512')
-  sys.modules['Crypto.Hash._SHA512'].new
-  has_sha512_pycrypto = True
-except (ImportError, AttributeError):
-  pass
-if has_sha512_openssl_hashlib:  # Fastest.
-  sha512 = sys.modules['hashlib'].sha512
-elif has_sha512_pycrypto:
-  # Faster than: Crypto.Hash.SHA512.SHA512Hash
-  sha512 = sys.modules['Crypto.Hash._SHA512'].new
-elif has_sha512_hashlib:
-  sha512 = sys.modules['hashlib'].sha512
-else:
-  #raise ImportError(
-  #    'Cannot find SHA-512 implementation: install hashlib or pycrypto, '
-  #    'or upgrade to Python >=2.5.')
-  sha512 = SlowSha512
-
-
 # --- SHA-256 hash (message digest).
 
 
@@ -736,34 +710,6 @@ class SlowSha256(object):
     return other
 
 
-has_sha256_hashlib = has_sha256_openssl_hashlib = False
-try:
-  __import__('hashlib').sha256
-  has_sha256_hashlib = True
-  has_sha256_openssl_hashlib = __import__('hashlib').sha256.__name__.startswith('openssl_')
-except (ImportError, AttributeError):
-  pass
-has_sha256_pycrypto = False
-try:
-  __import__('Crypto.Hash._SHA256')
-  sys.modules['Crypto.Hash._SHA256'].new
-  has_sha256_pycrypto = True
-except (ImportError, AttributeError):
-  pass
-if has_sha256_openssl_hashlib:  # Fastest.
-  sha256 = sys.modules['hashlib'].sha256
-elif has_sha256_pycrypto:
-  # Faster than: Crypto.Hash.SHA256.SHA256Hash
-  sha256 = sys.modules['Crypto.Hash._SHA256'].new
-elif has_sha256_hashlib:
-  sha256 = sys.modules['hashlib'].sha256
-else:
-  #raise ImportError(
-  #    'Cannot find SHA-256 implementation: install hashlib or pycrypto, '
-  #    'or upgrade to Python >=2.5.')
-  sha256 = SlowSha256
-
-
 # --- SHA-1 hash (message digest).
 
 
@@ -859,42 +805,6 @@ class SlowSha1(object):
     other._h = self._h
     return other
 
-
-has_sha1_hashlib = has_sha1_openssl_hashlib = False
-try:
-  __import__('hashlib').sha1
-  has_sha1_hashlib = True
-  has_sha1_openssl_hashlib = __import__('hashlib').sha1.__name__.startswith('openssl_')
-except (ImportError, AttributeError):
-  pass
-has_sha1_pycrypto = False
-try:
-  __import__('Crypto.Hash._SHA1')
-  has_sha1_pycrypto = True
-  sys.modules['Crypto.Hash._SHA1'].new
-except (ImportError, AttributeError):
-  pass
-has_sha1_sha = False
-if not has_sha1_hashlib:  # Prevent the DeprecationWarning in Python 2.6.
-  try:
-    __import__('sha')
-    sys.modules['sha'].sha
-    has_sha1_sha = True
-  except (ImportError, AttributeError):
-    pass
-if has_sha1_openssl_hashlib:  # Fastest.
-  sha1 = sys.modules['hashlib'].sha1
-elif has_sha1_pycrypto:
-  # Faster than: Crypto.Hash.SHA1.SHA1Hash
-  sha1 = sys.modules['Crypto.Hash._SHA1'].new
-elif has_sha1_hashlib:
-  sha1 = sys.modules['hashlib'].sha1
-elif has_sha1_sha:
-  sha1 = sys.modules['sha'].sha
-else:
-  #raise ImportError(
-  #    'Cannot find SHA-1 implementation: install sha, hashlib or pycrypto.')
-  sha1 = SlowSha1
 
 # --- RIPEMD-160 hash (message digest).
 
@@ -998,32 +908,100 @@ class SlowRipeMd160(object):
     return other
 
 
-has_ripemd160_hashlib = has_ripemd160_openssl_hashlib = False
-try:
-  __import__('hashlib').ripemd160
-  has_ripemd160_hashlib = True
-  has_ripemd160_openssl_hashlib = __import__('hashlib').ripemd160.__name__.startswith('openssl_')
-except (ImportError, AttributeError):
-  pass
-has_ripemd160_pycrypto = False
-try:
-  __import__('Crypto.Hash._RIPEMD160')
-  sys.modules['Crypto.Hash._RIPEMD160'].new
-  has_ripemd160_pycrypto = True
-except (ImportError, AttributeError):
-  pass
-if has_ripemd160_openssl_hashlib:  # Fastest.
-  ripemd160 = sys.modules['hashlib'].ripemd160
-elif has_ripemd160_pycrypto:
-  # Faster than: Crypto.Hash.SHA256.SHA256Hash
-  ripemd160 = sys.modules['Crypto.Hash._RIPEMD160'].new
-elif has_ripemd160_hashlib:
-  ripemd160 = sys.modules['hashlib'].ripemd160
-else:
-  #raise ImportError(
-  #    'Cannot find SHA-256 implementation: install hashlib or pycrypto, '
-  #    'or upgrade to Python >=2.5.')
-  ripemd160 = SlowRipeMd160
+# --- Built-in hashes.
+
+
+def maybe_import_and_getattr(module_name, attr_name, default=None):
+  try:
+    __import__(module_name)
+  except:
+    return default
+  return getattr(sys.modules[module_name], attr_name, default)
+
+
+def maybe_import_and_call(module_name, func_name, args, default=None):
+  try:
+    __import__(module_name)
+  except:
+    return default
+  new = getattr(sys.modules[module_name], func_name, None)
+  if not callable(new):
+    return default
+  try:
+    return new(*args)
+  except ValueError:
+    return None
+
+
+def maybe_hashlib_get_digest_cons(hash):
+  try:
+    hashlib = __import__('hashlib')
+  except ImportError:
+    return None
+  digest_cons = getattr(hashlib, hash, None)
+  if callable(digest_cons):
+    return digest_cons
+  try:
+    hashlib.new(hash).digest
+  except (ValueError, AttributeError):
+    return None
+  f = lambda string='', _hash=hash: __import__('hashlib').new(_hash, string)
+  closure = None
+  return type(f)(f.func_code, f.func_globals, hash, f.func_defaults, closure)
+
+
+def find_best_digest_cons(hash, pycrypto_name, default=None):
+  """Returns the best constructor function for the given hash."""
+  if maybe_import_and_call('_hashlib', 'openssl_' + hash, ()):  # Fastest.
+    return getattr(__import__('_hashlib'), 'openssl_' + hash)
+  elif maybe_import_and_call('_hashlib', 'new', (hash,)):
+    return maybe_hashlib_get_digest_cons(hash)
+  elif maybe_import_and_call('Crypto.Hash._' + pycrypto_name, 'new', ()):
+    # Crypto.Hash._SHA512 is faster than Crypto.Hash.SHA512.SHA512Hash.
+    f = lambda string='', _hash=sys.modules['Crypto.Hash._' + pycrypto_name].new: _hash(string)
+  elif maybe_import_and_call('hashlib', 'new', (hash,)):
+    return maybe_hashlib_get_digest_cons(hash)
+  elif hash == 'sha1' and maybe_import_and_call('sha', 'sha', ()):  # Python 2.4.
+    f = lambda string='', _hash=sys.modules['sha'].sha: _hash(string)
+  else:
+    #raise ImportError(
+    #    'Cannot find SHA-512 implementation: install hashlib or pycrypto, '
+    #    'or upgrade to Python >=2.5.')
+    return default
+  closure = None
+  # Ensure that __name__ can be extracted from the result, for the hash_name
+  # argument of hashlib.pbkdf2_hmac.
+  return type(f)(f.func_code, f.func_globals, hash, f.func_defaults, closure)
+
+
+HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
+    'sha1': (find_best_digest_cons('sha1', 'SHA1', SlowSha1), 64),
+    'sha256': (find_best_digest_cons('sha256', 'SHA256', SlowSha256), 64),
+    'sha224': (find_best_digest_cons('sha224', 'SHA224', None), 64),
+    'sha384': (find_best_digest_cons('sha384', 'SHA384', None), 128),
+    'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
+    'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
+}
+
+
+def get_hash_digest_params(hash):
+  """Returns (digest_cons, digest_blocksize)."""
+  hash2 = hash.lower().replace('-', '')
+  #blocksize = 16  # For MD2
+  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.
+  #blocksize = 128  # For SHA384, SHA512.
+  result = HASH_DIGEST_PARAMS.get(hash2)
+  if result is None:
+    raise ValueError('Unknown hash: %s' % hash)
+  if result[0] is None:
+    raise ValueError('Unsupported hash: %s' % hash)
+  return result
+
+
+def is_hash_supported(hash):
+  hash2 = hash.lower().replace('-', '')
+  return HASH_DIGEST_PARAMS.get(hash2, (None,))[0] is not None
+
 
 
 # --- PBKDF2.
@@ -1083,7 +1061,7 @@ def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
 
 pbkdf2 = slow_pbkdf2
 try:
-  if (has_sha512_openssl_hashlib and
+  if ((maybe_import_and_getattr('hashlib', 'sha512') or (lambda x: 0)).__name__.startswith('openssl_') and
       getattr(__import__('hashlib'), 'pbkdf2_hmac', None)):
     # If pbkdf2_hmac is available (since Python 2.7.8), use it. This is a
     # speedup from 8.8s to 7.0s user time, in addition to openssl_sha512.
@@ -1659,55 +1637,6 @@ def get_iterations(pim, is_truecrypt=False, hash='sha512'):
       return 655331
     else:  # --pim=485 corresponds to iterations=500000
       return 500000
-
-
-HASH_BLOCKSIZES = {
-    'sha1': 64,
-    'sha256': 64,
-    'sha224': 64,
-    'sha384': 128,
-    'sha512': 128,
-    'ripemd160': 64,
-}
-
-
-def hashlib_new_lambda(hash):
-  f = lambda string='', _hash=hash: __import__('hashlib').new(_hash, string)
-  closure = None
-  return type(f)(f.func_code, f.func_globals, hash, f.func_defaults, closure)
-
-
-def get_hash_digest_params(hash):
-  """Returns (digest_cons, digest_blocksize)."""
-  hash2 = hash.lower().replace('-', '')
-  #blocksize = 16  # For MD2
-  #blocksize = 64  # For MD4, MD5, RIPEMD, SHA1, SHA224, SHA256.zzzzz
-  #blocksize = 128  # For SHA384, SHA512.
-  if hash2 == 'sha512':
-    return sha512, 128
-  elif hash2 == 'sha256':
-    return sha256, 64
-  elif hash2 == 'sha1':
-    return sha1, 64
-  elif 'hashlib' in sys.modules and callable(getattr(sys.modules['hashlib'], 'new', None)):
-    hashlib = sys.modules['hashlib']
-    try:
-      if ((hash2 == 'ripemd160' and hashlib.new(hash2).hexdigest() == '9c1185a5c5e9fc54612808977ee8f548b2258d31') or
-          (hash2 == 'sha224' and hashlib.new(hash2).hexdigest() == 'd14a028c2a3a2bc9476102bb288234c415a2b01f828ea62ac5b3e42f') or
-          (hash2 == 'sha256' and hashlib.new(hash2).hexdigest() == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') or
-          (hash2 == 'sha384' and hashlib.new(hash2).hexdigest() == '38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b')):
-        return hashlib_new_lambda(hash2), HASH_BLOCKSIZES[hash2]
-    except ValueError:
-      pass
-  raise ValueError('Unsupported hash: %s' % hash)
-
-
-def is_hash_supported(hash):
-  try:
-    get_hash_digest_params(hash)
-    return True
-  except ValueError:
-    return False
 
 
 # Slow, takes about 6..60 seconds.

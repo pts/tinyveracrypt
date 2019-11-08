@@ -41,59 +41,63 @@ def test_aes():
 
 
 def test_sha512():
-  assert tinyveracrypt.sha512('foobar').digest() == "\nP&\x1e\xbd\x1a9\x0f\xed+\xf3&\xf2g<\x14U\x82\xa64-R2\x04\x97=\x02\x193\x7f\x81aj\x80i\xb0\x12X|\xf5c_i%\xf1\xb5l6\x020\xc1\x9b'5\x00\xee\x01>\x03\x06\x01\xbf$%"
-  assert tinyveracrypt.sha512('Foobar! ' * 14).digest() == 'H\x8c\x1f\x0f\x08\x1f\xce\x12\x1b\xe9q\x1cC)\xbe\xfa\xbd(\xbc+]\xf2T\xd6\xc9MS\x9c<&\x9c\xcf\xbb\x16<\x16\xfb\xc8\x19\xf9\xa8\xed\x19\x95f\xa9\xa1\xea\xc1x\xad\x19Txi\xe6\xbb*\xf3\x03\xb7k\xc02'
-  d = tinyveracrypt.sha512('foobar')
+  sha512 = tinyveracrypt.HASH_DIGEST_PARAMS['sha512'][0]
+  assert sha512('foobar').digest() == "\nP&\x1e\xbd\x1a9\x0f\xed+\xf3&\xf2g<\x14U\x82\xa64-R2\x04\x97=\x02\x193\x7f\x81aj\x80i\xb0\x12X|\xf5c_i%\xf1\xb5l6\x020\xc1\x9b'5\x00\xee\x01>\x03\x06\x01\xbf$%"
+  assert sha512('Foobar! ' * 14).digest() == 'H\x8c\x1f\x0f\x08\x1f\xce\x12\x1b\xe9q\x1cC)\xbe\xfa\xbd(\xbc+]\xf2T\xd6\xc9MS\x9c<&\x9c\xcf\xbb\x16<\x16\xfb\xc8\x19\xf9\xa8\xed\x19\x95f\xa9\xa1\xea\xc1x\xad\x19Txi\xe6\xbb*\xf3\x03\xb7k\xc02'
+  d = sha512('foobar')
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == '\xc6\xd2\xec\x86\xfe\xaa\xff\xecJ\xc9w)\xfe\xe6\xff\xe5\\\x9fl\xc3~\xc2\x88\xdd\xb2G\xb0j\x8dM\xe2\xf6\xd5\xccv\xafY\xd57;T\xf0|m\xfeBGT\x90\xa0\xd4\xab\x060\xf5\x11!\xa3\xdbkV\x05\x98O'
   data = 'HelloWorld! ' * 20
   assert len(data) == 128 + 112  # On the % 128 < 112 boundary.
-  assert tinyveracrypt.sha512(data).hexdigest() == 'bc15f07c1ab628c580128318a6349e242c0f6d2388f008709960f24bcd079f3229e4e7c07abf41649b8dc84b1439c36dfe848378422b24ac6a028f65b9de6049'
-  assert tinyveracrypt.sha512(data[1:]).hexdigest() == '0b9e646aa4b3f8d8745c914eaf4fa10e7be6357043bc8504426c6d04971356e5bd068dbdb19d2e30061e49089d8ef0d97cc2ea1831a9c841507d234ba11d2f40'
-  assert tinyveracrypt.sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
+  assert sha512(data).hexdigest() == 'bc15f07c1ab628c580128318a6349e242c0f6d2388f008709960f24bcd079f3229e4e7c07abf41649b8dc84b1439c36dfe848378422b24ac6a028f65b9de6049'
+  assert sha512(data[1:]).hexdigest() == '0b9e646aa4b3f8d8745c914eaf4fa10e7be6357043bc8504426c6d04971356e5bd068dbdb19d2e30061e49089d8ef0d97cc2ea1831a9c841507d234ba11d2f40'
+  assert sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
 
 
 def test_sha256():
-  assert tinyveracrypt.sha256('foobar').digest() == '\xc3\xab\x8f\xf17 \xe8\xad\x90G\xdd9Fk<\x89t\xe5\x92\xc2\xfa8=J9`qL\xae\xf0\xc4\xf2'
-  assert tinyveracrypt.sha256('Foobar! ' * 14).digest() == '-?\xe9\x86\xb6\x1f\x1b\xbb\xa2\xbf\x83\xb7\xcd<\xd1\xe9MR]~8\x8e\xdf3\x911u"\xfb\x0c/{'
-  d = tinyveracrypt.sha256('foobar')
+  sha256 = tinyveracrypt.HASH_DIGEST_PARAMS['sha256'][0]
+  assert sha256('foobar').digest() == '\xc3\xab\x8f\xf17 \xe8\xad\x90G\xdd9Fk<\x89t\xe5\x92\xc2\xfa8=J9`qL\xae\xf0\xc4\xf2'
+  assert sha256('Foobar! ' * 14).digest() == '-?\xe9\x86\xb6\x1f\x1b\xbb\xa2\xbf\x83\xb7\xcd<\xd1\xe9MR]~8\x8e\xdf3\x911u"\xfb\x0c/{'
+  d = sha256('foobar')
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == '\xec\x11\xa7\xff^\xa3\x8a\x04O\xe3\x93\xf5i\x94\x11+m\x8b\x11\x92\x8895E\x19\xe7\xa2\xb9]\xf3\xf5X'
   data = 'HelloWorld! ' * 10
   assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
-  assert tinyveracrypt.sha256(data).hexdigest() == 'f890457a817af29473f5057f1a80ac71fda6b0c4895a6fbfc9a63cd77abe15be'
-  assert tinyveracrypt.sha256(data[1:]).hexdigest() == '42f53c9828d7033fe258d68286ec47999dd67129d18d50d340b736e7a6222920'
-  assert tinyveracrypt.sha256('?' + data).hexdigest() == 'caa9d54ee0700e483d1dcfb19cbcc4eafc5bbb7913492fbdbea63835346bc172'
+  assert sha256(data).hexdigest() == 'f890457a817af29473f5057f1a80ac71fda6b0c4895a6fbfc9a63cd77abe15be'
+  assert sha256(data[1:]).hexdigest() == '42f53c9828d7033fe258d68286ec47999dd67129d18d50d340b736e7a6222920'
+  assert sha256('?' + data).hexdigest() == 'caa9d54ee0700e483d1dcfb19cbcc4eafc5bbb7913492fbdbea63835346bc172'
 
 
 def test_ripemd160():
-  assert tinyveracrypt.ripemd160('foobar').digest() == '\xa0n2~\xa78\x8c\x18\xe4t\x0e5\x0e\xd4\xe6\x0f.\x04\xfcA'
-  assert tinyveracrypt.ripemd160('Foobar! ' * 14).digest() == '\xf6\x17IT~\xd3sDA\x01\x8e_<\x80Lf\x8e\xc2\x17{'
-  d = tinyveracrypt.ripemd160('foobar')
+  ripemd160 = tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'][0]
+  assert ripemd160('foobar').digest() == '\xa0n2~\xa78\x8c\x18\xe4t\x0e5\x0e\xd4\xe6\x0f.\x04\xfcA'
+  assert ripemd160('Foobar! ' * 14).digest() == '\xf6\x17IT~\xd3sDA\x01\x8e_<\x80Lf\x8e\xc2\x17{'
+  d = ripemd160('foobar')
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == '\x8d\x03p\x88\x88\xd3y\xd4\x0bIt\t\xda}\xf10a\x11\x16f'
   data = 'HelloWorld! ' * 10
   assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
-  assert tinyveracrypt.ripemd160(data).hexdigest() == '87dc601d75eb635180abe2f0c4c7649c2602530e'
-  assert tinyveracrypt.ripemd160(data[1:]).hexdigest() == '5af0370161749037b942aea0b19eb3bf58e151b2'
-  assert tinyveracrypt.ripemd160('?' + data).hexdigest() == '43856e8669a5360fc6bb4140ddee5710a8cf2c27'
+  assert ripemd160(data).hexdigest() == '87dc601d75eb635180abe2f0c4c7649c2602530e'
+  assert ripemd160(data[1:]).hexdigest() == '5af0370161749037b942aea0b19eb3bf58e151b2'
+  assert ripemd160('?' + data).hexdigest() == '43856e8669a5360fc6bb4140ddee5710a8cf2c27'
 
 
 def test_sha1():
-  assert tinyveracrypt.sha1('foobar').digest() == '\x88C\xd7\xf9$\x16!\x1d\xe9\xeb\xb9c\xffL\xe2\x81%\x93(x'
-  assert tinyveracrypt.sha1('Foobar! ' * 14).digest() == '\x14JM\x7f\xb2\xf6\xfc&\xc1\xfdG\x1c\xcc\xe5t%\xd3\x1b\x1c\\'
-  d = tinyveracrypt.sha1('foobar')
+  sha1 = tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][0]
+  assert sha1('foobar').digest() == '\x88C\xd7\xf9$\x16!\x1d\xe9\xeb\xb9c\xffL\xe2\x81%\x93(x'
+  assert sha1('Foobar! ' * 14).digest() == '\x14JM\x7f\xb2\xf6\xfc&\xc1\xfdG\x1c\xcc\xe5t%\xd3\x1b\x1c\\'
+  d = sha1('foobar')
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == ".\xfc\x12Pm\xf1\x88\x81l\xd3\x15\xffZ\xcd'\xc8<\xa9M\xd4"
   data = 'HelloWorld! ' * 10
   assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
-  assert tinyveracrypt.sha1(data).hexdigest() == '256e19c0b3e3e17e2fa6c725f0300c4ecd7716df'
-  assert tinyveracrypt.sha1(data[1:]).hexdigest() == '0e44b2fa9525d349ee2f40f4191a200100451c35'
-  assert tinyveracrypt.sha1('?' + data).hexdigest(), 'cae6f1534687dfc3033fa9c494b5e6c80efa61ec'
+  assert sha1(data).hexdigest() == '256e19c0b3e3e17e2fa6c725f0300c4ecd7716df'
+  assert sha1(data[1:]).hexdigest() == '0e44b2fa9525d349ee2f40f4191a200100451c35'
+  assert sha1('?' + data).hexdigest(), 'cae6f1534687dfc3033fa9c494b5e6c80efa61ec'
 
 
 def test_crypt_aes_xts():
