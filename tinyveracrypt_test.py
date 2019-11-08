@@ -68,6 +68,20 @@ def test_sha256():
   assert tinyveracrypt.sha256('?' + data).hexdigest() == 'caa9d54ee0700e483d1dcfb19cbcc4eafc5bbb7913492fbdbea63835346bc172'
 
 
+def test_ripemd160():
+  assert tinyveracrypt.ripemd160('foobar').digest() == '\xa0n2~\xa78\x8c\x18\xe4t\x0e5\x0e\xd4\xe6\x0f.\x04\xfcA'
+  assert tinyveracrypt.ripemd160('Foobar! ' * 14).digest() == '\xf6\x17IT~\xd3sDA\x01\x8e_<\x80Lf\x8e\xc2\x17{'
+  d = tinyveracrypt.ripemd160('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == '\x8d\x03p\x88\x88\xd3y\xd4\x0bIt\t\xda}\xf10a\x11\x16f'
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert tinyveracrypt.ripemd160(data).hexdigest() == '87dc601d75eb635180abe2f0c4c7649c2602530e'
+  assert tinyveracrypt.ripemd160(data[1:]).hexdigest() == '5af0370161749037b942aea0b19eb3bf58e151b2'
+  assert tinyveracrypt.ripemd160('?' + data).hexdigest() == '43856e8669a5360fc6bb4140ddee5710a8cf2c27'
+
+
 def test_sha1():
   assert tinyveracrypt.sha1('foobar').digest() == '\x88C\xd7\xf9$\x16!\x1d\xe9\xeb\xb9c\xffL\xe2\x81%\x93(x'
   assert tinyveracrypt.sha1('Foobar! ' * 14).digest() == '\x14JM\x7f\xb2\xf6\xfc&\xc1\xfdG\x1c\xcc\xe5t%\xd3\x1b\x1c\\'
@@ -289,6 +303,7 @@ def test():
   test_sha512()
   test_sha256()
   test_sha1()
+  test_ripemd160()
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
   test_veracrypt()
@@ -314,6 +329,8 @@ if __name__ == '__main__':
       tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
     elif arg == '--slow-sha256':
       tinyveracrypt.sha256 = tinyveracrypt.SlowSha256
+    elif arg == '--slow-ripemd160':
+      tinyveracrypt.ripemd160 = tinyveracrypt.SlowRipeMd160
     elif arg == '--slow-sha1':
       tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
     else:

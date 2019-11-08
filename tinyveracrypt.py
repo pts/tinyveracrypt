@@ -896,6 +896,136 @@ else:
   #    'Cannot find SHA-1 implementation: install sha, hashlib or pycrypto.')
   sha1 = SlowSha1
 
+# --- RIPEMD-160 hash (message digest).
+
+
+def _ripemd160_rotl32(x, y):
+  x &= 0xffffffff
+  return (x << y) | (x >> (32 - y))
+
+
+def slow_ripemd160_process(
+    chunk, hh, _rotl32=_ripemd160_rotl32,
+    _rstu0=((0, 11, 5, 8), (1, 14, 14, 9), (2, 15, 7, 9), (3, 12, 0, 11), (4, 5, 9, 13), (5, 8, 2, 15), (6, 7, 11, 15), (7, 9, 4, 5), (8, 11, 13, 7), (9, 13, 6, 7), (10, 14, 15, 8), (11, 15, 8, 11), (12, 6, 1, 14), (13, 7, 10, 14), (14, 9, 3, 12), (15, 8, 12, 6)),
+    _rstu1=((7, 7, 6, 9), (4, 6, 11, 13), (13, 8, 3, 15), (1, 13, 7, 7), (10, 11, 0, 12), (6, 9, 13, 8), (15, 7, 5, 9), (3, 15, 10, 11), (12, 7, 14, 7), (0, 12, 15, 7), (9, 15, 8, 12), (5, 9, 12, 7), (2, 11, 4, 6), (14, 7, 9, 15), (11, 13, 1, 13), (8, 12, 2, 11)),
+    _rstu2=((3, 11, 15, 9), (10, 13, 5, 7), (14, 6, 1, 15), (4, 7, 3, 11), (9, 14, 7, 8), (15, 9, 14, 6), (8, 13, 6, 6), (1, 15, 9, 14), (2, 14, 11, 12), (7, 8, 8, 13), (0, 13, 12, 5), (6, 6, 2, 14), (13, 5, 10, 13), (11, 12, 0, 13), (5, 7, 4, 7), (12, 5, 13, 5)),
+    _rstu3=((1, 11, 8, 15), (9, 12, 6, 5), (11, 14, 4, 8), (10, 15, 1, 11), (0, 14, 3, 14), (8, 15, 11, 14), (12, 9, 15, 6), (4, 8, 0, 14), (13, 9, 5, 6), (3, 14, 12, 9), (7, 5, 2, 12), (15, 6, 13, 9), (14, 8, 9, 12), (5, 6, 7, 5), (6, 5, 10, 15), (2, 12, 14, 8)),
+    _rstu4=((4, 9, 12, 8), (0, 15, 15, 5), (5, 5, 10, 12), (9, 11, 4, 9), (7, 6, 1, 12), (12, 8, 5, 5), (2, 13, 8, 14), (10, 12, 7, 6), (14, 5, 6, 8), (1, 12, 2, 13), (3, 13, 13, 6), (8, 14, 14, 5), (11, 11, 0, 15), (6, 8, 3, 13), (15, 5, 9, 11), (13, 6, 11, 11))):
+  x = struct.unpack("<16L", chunk)
+  a, b, c, d, e = f, g, h, i, j = hh
+  for r, s, t, u in _rstu0:
+    a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + (b ^ c ^ d) + x[r]), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + (g ^ (h | ~i)) + x[t] + 1352829926), u) + j, g, _rotl32(h, 10), i
+  for r, s, t, u in _rstu1:
+    a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + ((b & c) | (~b & d)) + x[r] + 1518500249), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + ((g & i) | (h & ~i)) + x[t] + 1548603684), u) + j, g, _rotl32(h, 10), i
+  for r, s, t, u in _rstu2:
+    a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + ((b | ~c) ^ d) + x[r] + 1859775393), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + ((g | ~h) ^ i) + x[t] + 1836072691), u) + j, g, _rotl32(h, 10), i
+  for r, s, t, u in _rstu3:
+    a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + ((b & d) | (c & ~d)) + x[r] + 2400959708), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + ((g & h) | (~g & i)) + x[t] + 2053994217), u) + j, g, _rotl32(h, 10), i
+  for r, s, t, u in _rstu4:
+    a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + (b ^ (c | ~d)) + x[r] + 2840853838), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + (g ^ h ^ i) + x[t]), u) + j, g, _rotl32(h, 10), i
+  return (hh[1] + c + i) & 0xffffffff, (hh[2] + d + j) & 0xffffffff, (hh[3] + e + f) & 0xffffffff, (hh[4] + a + g) & 0xffffffff, (hh[0] + b + h) & 0xffffffff
+
+
+del _ripemd160_rotl32  # Unpollute namespace.
+
+
+# Fallback pure Python implementation of RIPEMD-160 based on
+# https://github.com/dlitz/pycrypto/blob/1660c692982b01741176047eefa53d794f8a81bc/Hash/RIPEMD160.py
+# It is about 400+ times slower than OpenSSL's C implementation.
+#
+# This is used in Python 2.4 by default. (Python 2.5 already has
+# hashlib.sha256.)
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
+# Python >=2.5, install hashlib or pycrypto from PyPi, all of which
+# contain a faster RIPEMD-160 implementation in C.
+class SlowRipeMd160(object):
+  _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
+
+  blocksize = 1
+  block_size = 64
+  digest_size = 20
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer = ''
+    self._counter = 0
+    self._h = self._h0
+    if m is not None:
+      self.update(m)
+
+  def update(self, m):
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf = self._buffer
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = slow_ripemd160_process(buf + m[:i], hh)
+      for i in xrange(i, lm - 63, 64):
+        hh = slow_ripemd160_process(_buffer(m, i, 64), hh)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    c = self._counter
+    # Merkle-Damgard strengthening, per RFC 1320.
+    if (c & 63) < 56:
+      return struct.pack('<5L', *slow_ripemd160_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+    else:
+      return struct.pack('<5L', *slow_ripemd160_process(struct.pack('<56xQ', c << 3), slow_ripemd160_process(self._buffer + struct.pack('<c%dx' % (~c & 63), '\x80'), self._h)))
+
+  def hexdigest(self):
+    return self.digest().encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer = self._buffer
+    other._counter = self._counter
+    other._h = self._h
+    return other
+
+
+has_ripemd160_hashlib = has_ripemd160_openssl_hashlib = False
+try:
+  __import__('hashlib').ripemd160
+  has_ripemd160_hashlib = True
+  has_ripemd160_openssl_hashlib = __import__('hashlib').ripemd160.__name__.startswith('openssl_')
+except (ImportError, AttributeError):
+  pass
+has_ripemd160_pycrypto = False
+try:
+  __import__('Crypto.Hash._RIPEMD160')
+  sys.modules['Crypto.Hash._RIPEMD160'].new
+  has_ripemd160_pycrypto = True
+except (ImportError, AttributeError):
+  pass
+if has_ripemd160_openssl_hashlib:  # Fastest.
+  ripemd160 = sys.modules['hashlib'].ripemd160
+elif has_ripemd160_pycrypto:
+  # Faster than: Crypto.Hash.SHA256.SHA256Hash
+  ripemd160 = sys.modules['Crypto.Hash._RIPEMD160'].new
+elif has_ripemd160_hashlib:
+  ripemd160 = sys.modules['hashlib'].ripemd160
+else:
+  #raise ImportError(
+  #    'Cannot find SHA-256 implementation: install hashlib or pycrypto, '
+  #    'or upgrade to Python >=2.5.')
+  ripemd160 = SlowRipeMd160
+
+
 # --- PBKDF2.
 
 # Helpers for do_hmac.
