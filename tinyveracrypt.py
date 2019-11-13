@@ -353,8 +353,8 @@ def get_aes_cbc_plain_codebooks(aes_key):
   return (new_aes(aes_key), lambda n: n)
 
 
-def crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
-  codebook, hash_encrypt = codebooks
+def crypt_aes_cbc_sectors(aes_key, data, do_encrypt, sector_idx=0):
+  codebook, hash_encrypt = get_aes_cbc_plain_codebooks(aes_key)
   pack = struct.pack
 
   def yield_crypt_sectors(sector_idx):
