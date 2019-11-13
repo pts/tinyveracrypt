@@ -783,4 +783,18 @@ the author of tinyveracrypt, the Linux kernel backend of cryptsetup didn't
 work with kernel 3.13.0 (setsockopt returned EBUSY), kernel 2.6.35-32 (it
 lacked AF_ALG altogether), and it worked with kernel 4.2.0.
 
+Q33. What are the minimum Linux system requirements of the aes-xts-plain64
+cipher?
+"""""""
+tinyveracrypt doesn't need Linux kernel support for encryption and hashing,
+all the algorithms are embedded in its Python code. Linux kernel support is
+needed for `tinyveracrypt.py open', because the corresponding `dmcrypt table'
+command needs it.
+
+aes-xts-plain (an earlier variant which supports encrypted volumes up to 2
+TiB) was introduced in Linux 2.6.24, aes-xts-plain64 was introduced in Linux
+2.6.33. Please note that, like many Linux kernel features, the
+aes-xts-plain64 cipther is optional: on certain distributions it may be
+available as module, or not available at all.
+
 __END__
