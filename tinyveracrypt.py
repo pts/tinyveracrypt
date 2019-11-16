@@ -4807,10 +4807,10 @@ def cmd_create(args):
       if len(mkfs_data) & 511:
         raise ValueError('mkfs_data size must be divisible by 512, got: %d' % len(mkfs_data))
       # TODO(pts): For DmCryptFlushingFile, avoid encryption round-trip.
-      if type_value == 'luks':
+      if type_value == 'luks' or cipher == 'aes-lrw-benbi':
         sector_idx = 0
       else:
-        sector_idx = decrypted_ofs >> 9
+        sector_idx = decrypted_ofs >> 9  # iv_offset.
       xf.seek(decrypted_ofs or 512)
       i = 0
       if decrypted_ofs == 0:  # First 512 bytes written as part of enchd.
