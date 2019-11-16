@@ -463,6 +463,76 @@ def _crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
   return ''.join(yield_crypt_sectors(sector_idx))
 
 
+# --- AES CBC TCW (aes-cbc-tcw) seekable stream cipher.
+#
+# It is vulnerable to watermarking attacks and should be used for old
+# compatible containers access only.
+#
+
+def check_aes_tcw_key(aes_tcw_key):
+  if len(aes_tcw_key) not in (48, 56, 64):
+    raise ValueError('aes_key must be 48, 56 or 64 bytes, got: %d' % len(aes_tcw_key))
+
+
+def _get_aes_cbc_tcw_codebooks(aes_tcw_key):
+  if isinstance(aes_tcw_key, tuple) and len(aes_tcw_key) == 3:
+    return aes_tcw_key
+  check_aes_tcw_key(aes_tcw_key)
+  # (codebook: AES object, iv_seed: 16 bytes, whitening: 16 bytes).
+  return new_aes(aes_tcw_key[:-32]), aes_tcw_key[-32 : -16], aes_tcw_key[-16:]
+
+
+def crypt_aes_cbc_whitening(aes_key, data, do_encrypt, iv, whitening):
+  if isinstance(aes_key, str):
+    check_aes_key(aes_key)
+    codebook = new_aes(aes_key)
+  if len(iv) != 16:
+    raise ValueError('aes_cbc_whitening iv must be 16 bytes, got: %d' % len(iv))
+  if len(whitening) not in (1, 2, 4, 8, 16):
+    raise ValueError('aes_cbc_whitening iv must be 1, 2, 4, 8 or 16 bytes, got: %d' % len(whitening))
+  _strxor_16 = aes_strxor_16
+  sw = whitening * (16 // len(whitening))
+
+  def yield_crypt_strings():
+    if do_encrypt:
+      data2 = crypt_aes_cbc(codebook, data, True, iv)
+      for j in xrange(0, len(data2), 16):
+        yield _strxor_16(data2[j : j + 16], sw)
+    else:
+      data2 = ''.join(
+          _strxor_16(data[j : j + 16], sw) for j in xrange(0, len(data), 16))
+      yield crypt_aes_cbc(codebook, data2, False, iv)
+
+  return ''.join(yield_crypt_strings())
+
+
+def _crypt_aes_cbc_tcw_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  codebook, iv_seed, whitening = codebooks
+  if len(data) & 15:
+    raise ValueError('aes_cbc_tcw data size must be divisible by 16, got: %d' % len(data))
+  pack, _strxor_16, _crc32, do_decrypt = struct.pack, aes_strxor_16, crc32, not do_encrypt
+
+  def yield_crypt_strings(sector_idx):
+    for i in xrange(0, len(data), 512):
+      sector_idx_16 = pack('<QQ', sector_idx, sector_idx)
+      iv = _strxor_16(iv_seed, sector_idx_16)
+      sw = _strxor_16(whitening, sector_idx_16)
+      sw = pack('<ll', _crc32(sw[:4]) ^ _crc32(sw[12:]), _crc32(sw[4 : 8]) ^ _crc32(sw[8 : 12])) * 2
+      sector_idx += 1
+      if do_decrypt:
+        sector = buffer(data, i, 512)
+        sector = ''.join(
+            _strxor_16(sector[j : j + 16], sw) for j in xrange(0, len(sector), 16))
+        yield crypt_aes_cbc(codebook, sector, False, iv)
+      else:
+        sector = crypt_aes_cbc(codebook, buffer(data, i, 512), True, iv)
+        # assert not len(sector) & 15  # Because it's the output of crypt_aes_cbc.
+        for j in xrange(0, len(sector), 16):
+          yield _strxor_16(sector[j : j + 16], sw)
+
+  return ''.join(yield_crypt_strings(sector_idx))
+
+
 # --- AES LRW seekable stream cipher.
 
 
@@ -1572,6 +1642,8 @@ def get_crypt_sectors_funcs(cipher, keytable_size=None):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
     elif cipher in ('aes-lrw-benbi', 'aes-lrw-essiv:sha256', 'aes-lrw-plain', 'aes-lrw-plain64', 'aes-lrw-plain64be'):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_lrw_sectors, with_defaults(_get_aes_lrw_sector_codebooks, iv_generator=iv_generator), (32, 40, 48)
+    elif cipher == 'aes-cbc-tcw':
+      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_tcw_sectors, _get_aes_cbc_tcw_codebooks, (48, 56, 64)
   if not crypt_func:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:

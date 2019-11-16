@@ -126,31 +126,31 @@ def help_test_crypt_sectors(cipher_prefix, key, test_vectors):
     print crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=333).encode('hex')
     print crypt_sectors(p + 'plain64be', key, decstr, True, sector_idx=333).encode('hex')
     print crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=0x98765123456789ab).encode('hex')
-  assert crypt_sectors(p + 'essiv:sha256', key, decstr, True,  sector_idx=333) == encstr92
+  assert crypt_sectors(p + 'essiv:sha256', key, decstr, True, sector_idx=333) == encstr92
   assert crypt_sectors(p + 'essiv:sha256', key, encstr92, False, sector_idx=333) == decstr
-  assert crypt_sectors(p + 'essiv:sha256', key, decstr, True,  sector_idx=334) != encstr92
-  assert crypt_sectors(p + 'essiv:sha256', key, decstr[:32], True,  sector_idx=333) == encstr92[:32]
+  assert crypt_sectors(p + 'essiv:sha256', key, decstr, True, sector_idx=334) != encstr92
+  assert crypt_sectors(p + 'essiv:sha256', key, decstr[:32], True, sector_idx=333) == encstr92[:32]
   assert crypt_sectors(p + 'essiv:sha256', key, encstr92[:32], False, sector_idx=333) == decstr[:32]
-  assert crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=333) == encstr93
+  assert crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=333) == encstr93
   assert crypt_sectors(p + 'plain64', key, encstr93, False, sector_idx=333) == decstr
-  assert crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=334) != encstr93
-  assert crypt_sectors(p + 'plain64', key, decstr[:32], True,  sector_idx=333) == encstr93[:32]
+  assert crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=334) != encstr93
+  assert crypt_sectors(p + 'plain64', key, decstr[:32], True, sector_idx=333) == encstr93[:32]
   assert crypt_sectors(p + 'plain64', key, encstr93[:32], False, sector_idx=333) == decstr[:32]
-  assert crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=333 | 1 << 64) == encstr93
-  assert crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=0x98765123456789ab) == encstr95
+  assert crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=333 | 1 << 64) == encstr93
+  assert crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=0x98765123456789ab) == encstr95
   assert crypt_sectors(p + 'plain64', key, encstr95, False, sector_idx=0x98765123456789ab) == decstr
-  assert crypt_sectors(p + 'plain', key, decstr, True,  sector_idx=333) == encstr93
+  assert crypt_sectors(p + 'plain', key, decstr, True, sector_idx=333) == encstr93
   assert crypt_sectors(p + 'plain', key, encstr93, False, sector_idx=333) == decstr
-  assert crypt_sectors(p + 'plain', key, decstr, True,  sector_idx=334) != encstr93
-  assert crypt_sectors(p + 'plain', key, decstr[:32], True,  sector_idx=333) == encstr93[:32]
+  assert crypt_sectors(p + 'plain', key, decstr, True, sector_idx=334) != encstr93
+  assert crypt_sectors(p + 'plain', key, decstr[:32], True, sector_idx=333) == encstr93[:32]
   assert crypt_sectors(p + 'plain', key, encstr93[:32], False, sector_idx=333) == decstr[:32]
   assert crypt_sectors(p + 'plain', key, encstr93, False, sector_idx=333 | 1 << 32) == decstr
-  assert crypt_sectors(p + 'plain', key, decstr, True,  sector_idx=0x00ffffffff) == crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=0x00ffffffff)
-  assert crypt_sectors(p + 'plain', key, decstr, True,  sector_idx=0x0100000000) != crypt_sectors(p + 'plain64', key, decstr, True,  sector_idx=0x0100000000)
-  assert crypt_sectors(p + 'plain64be', key, decstr, True,  sector_idx=333) == encstr94
+  assert crypt_sectors(p + 'plain', key, decstr, True, sector_idx=0x00ffffffff) == crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=0x00ffffffff)
+  assert crypt_sectors(p + 'plain', key, decstr, True, sector_idx=0x0100000000) != crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=0x0100000000)
+  assert crypt_sectors(p + 'plain64be', key, decstr, True, sector_idx=333) == encstr94
   assert crypt_sectors(p + 'plain64be', key, encstr94, False, sector_idx=333) == decstr
-  assert crypt_sectors(p + 'plain64be', key, decstr, True,  sector_idx=334) != encstr94
-  assert crypt_sectors(p + 'plain64be', key, decstr[:32], True,  sector_idx=333) == encstr94[:32]
+  assert crypt_sectors(p + 'plain64be', key, decstr, True, sector_idx=334) != encstr94
+  assert crypt_sectors(p + 'plain64be', key, decstr[:32], True, sector_idx=333) == encstr94[:32]
   assert crypt_sectors(p + 'plain64be', key, encstr94[:32], False, sector_idx=333) == decstr[:32]
 
 
@@ -208,6 +208,7 @@ def test_crypt_aes_cbc():
   key, iv = '\xaa' * 32, '\xbb' * 16
   decstr1, encstr1 = DECSTR, '39e3eada19066384fb90b9262d108f7476c8eefda65e1995c8c8481a826f64ec4695bd5dacca4a89e4d894cd18710bcb'.decode('hex')
   decstr2, encstr2 = DECSTR, '6242705e2164d05650e8edde48fb2c00f73dd10d280472c4ab350aaa7a5237a42521e599c4b2e3f722b29481bcf65bc8'.decode('hex')
+  decstr3, encstr3 = DECSTR, '8cb57f3e2a322fb7a526fa63d92c87c4d5c055c4e4943dd05a2560b1a0c9f9dcff76334cde72cbb77009b4b31c947d16'.decode('hex')
   assert crypt_aes_cbc(key, '', True, iv) == ''
   assert crypt_aes_cbc(key, '', False, iv) == ''
   assert crypt_aes_cbc(key, decstr1, True,  iv) == encstr1
@@ -219,6 +220,11 @@ def test_crypt_aes_cbc():
   assert crypt_aes_cbc(key, encstr1[:32], False, iv) == decstr1[:32]
   assert crypt_aes_cbc(key, decstr2, True, '\1\4' + '\0' * 14) == encstr2
   assert crypt_sectors('aes-cbc-plain', key, decstr2, True, sector_idx=1025) == encstr2
+  assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ab) == encstr3
+  assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ac) != encstr3
+  assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, encstr3, False, sector_idx=0x98765123456789ab) == decstr3
+  assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3[:48], True,  sector_idx=0x98765123456789ab) == encstr3[:48]
+  assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, encstr3[:48], False, sector_idx=0x98765123456789ab) == decstr3[:48]
   test_vectors = (
       '8c178626a94130779366ccef39f3c3a06569b37511e04d8a853a19fb8a47928b0612ccf644352cbc78e7ceb2c5662c3d'.decode('hex'),
       'b4d4e70a9c006c75ff9f61cae0793d0e299f8f6c4879377ae49a078455b16844616f576ff40c710a3a2236807d87b53c'.decode('hex'),
