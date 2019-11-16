@@ -5022,18 +5022,20 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
-    # !! BUG: cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
+    # !! Add arbitrary --random-source=... for reproducible output (--keytable=... and --salt=... aren't always enough).
     # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
     # !! Add `cat' command with get_crypt_sectors_funcs, fast if root.
     # !! Add `open-fuse' command.
     # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
+    # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
     # !! Add TrueCrypt support for aes-cbc-tcw and aes-lrw-benbi.
     # !! Not adding mode *-cbci-tcrypt, because it's not used for aes-* single cipher.
     # !! Not adding mode *-cbc-tcrypt, because it's not used for aes-* single cipher.
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
     # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
+    # !! BUG: cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
     # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:

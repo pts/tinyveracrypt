@@ -11,24 +11,27 @@ filesystem in front of the encrypted volume.
 Features
 ~~~~~~~~
 * tinyveracrypt can create VeraCrypt, TrueCrypt and LUKS encrypted volumes
-  (neither veracrypt nor cryptsetup can do all these as a single tool).
+  (none of veracrypt, truecrypt and cryptsetup can do all these as a single
+  tool).
 * tinyveracrypt is easier to install from source than VeraCrypt or
-  cryptsetup.
+  cryptsetup (it just works with the system Python on most Linux systems).
 * tinyveracrypt works offline: it can be run on one machine, and the effect
   (volume creation or volume opening) happens on another machine. The latter
   machine can have less memory.
 * tinyveracrypt has an easy command-line interface for creating encrypted
   volumes (also compatible with the `veracrypt' and `cryptsetup' commands).
-* tinyveracrypt can create encrypted volumes without using extra disk space for
-  some filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs, hfsplus,
+* tinyveracrypt can create encrypted volumes without using extra disk space
+  for some filesystems (ext2, ext3, ext4, btrfs, reiserfs, nilfs, hfsplus,
   iso9660, udf, minux and ocfs2).
 * tinyveracrypt can create or use a plaintext FAT12 or FAT16 filesystem in
   front of the encrypted volume.
-* tinyveracrypt has an easy-to-use and convenient command-line interface.
+* tinyveracrypt has an easy-to-use and convenient command-line interface,
+  it doesn't engage in a dialog with the user except for asking for the
+  passphrase.
 * tinyveracrypt has some commands and flags compatible with `veracrypt' and
   `cryptsetup', so tinyveracrypt can be used as a drop-in replacement for
   these tools.
-* tinyveracrypt is implemented in less than 5000 lines of Python 2 code,
+* tinyveracrypt is implemented in less than 6000 lines of Python 2 code,
   using only standard Python modules. It uses `dmsetup' for opening
   encrypted volumes, and no other tools for creating encrypted volumes.
 * tinyveracrypt interoperates with veracrypt, truecrypt and cryptsetup:
@@ -37,14 +40,16 @@ Features
   open encrypted encrypted volumes created by the other tools.
 * tinyveracrypt can create encrypted volumes with custom header values
   (e.g. the encrypted volume can start at any offset within the raw device,
-  any LUKS anti-forensic stripe count can be specified).
+  any LUKS anti-forensic stripe count can be specified, compatibility with
+  old versions of TrueCrypt can be requested).
 * tinyveracrypt can create encrypted volumes deterministically by using
   a pregenerated file as a random source.
 * tinyveracrypt can recover a corrupt volume header (including setting a new
   passphrase without knowing any of the old passphrases) if the encrypted
-  volume is currently open
-* tinyveracrypt can convert between TrueCrypt and VeraCrypt if the cipher
-  matches
+  volume is currently open.
+* tinyveracrypt can convert between TrueCrypt and VeraCrypt headers (without
+  reencrypting) if the cipher and other parameters match matches. In some
+  obscure special cases, it can also convert from/to LUKS.
 
 See FAQ entry Q23 for features of cryptsetup, VeraCrypt and TrueCrypt not
 supported by tinyveracrypt.
@@ -660,14 +665,17 @@ volume (as NAME), and then run:
   $ sudo ./tinyveracrypt.py init --opened --type=TYPE /dev/mapper/NAME
 
 Pass flag `--type=truecrypt' to `init' if you want to generate a TrueCrypt
-header or `--type=luks' if you want to generate a LUKS header. Pass any
-other flag (e.g. --mkfat=...), specify any passphrase.
+header or `--type=luks' if you want to generate a LUKS header. If needed,
+pass any other flag (e.g. --mkfat=...), specify any passphrase.
 
 Please note that the hidden volume, if any, will be destroyed as part of
 this.
 
-Quick header regeneration between VeraCrypt/TrueCrypt and LUKS doesn't work,
-because the iv_offset values used by the cipher are different.
+Quick header regeneration between VeraCrypt/TrueCrypt and LUKS usually
+doesn't work, because the iv_offset values used by the cipher are different.
+There is one exception: with --cipher=aes-lrw-benbi, quick header
+regeneration between TrueCrypt and LUKS works. (VeraCrypt doesn't support
+this cipher.)
 
 Q25. Which other tools is tinyveracrypt compatible with?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
