@@ -348,11 +348,23 @@ tools won't be able to open the encrypted volume:
   --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
   decrypted volume size) and it fails with `Device ... is too small'.
 
+  Unfortunately VeraCrypt 1.17 ignores --ofs=...
+  (and also the encrypted volume size field in the header)
+  if the raw device is smaller than 64 KiB.
+
 * For TrueCrypt encrypted volumes, `tinyveracrypt.py open', `truecrypt
-  --text --mount', and `veracrypt --text --mount --truexrypt' are able to open them.
+  --text --mount', and `veracrypt --text --mount --truecrypt' are able to open them.
   `cryptsetup open --type=tcrypt
   --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
   decrypted volume size) and it fails with `Device ... is too small'.
+
+  Unfortunately, neither TrueCrypt 7.1a or VeraCrypt 1.17 was able to open
+  the TrueCrypt-encrypted bad_ofs0_tc.bin example file: both chopped of
+  the first 512 bytes in the decrypted, open view.
+
+  Unfortunately TrueCrypt 7.1a and VeraCrypt 1.17 ignore --ofs=...
+  (and also the encrypted volume size field in the header)
+  if the raw device is smaller than 64 KiB.
 
 Don't do this unless you know the risks, and you are ready to lose
 the VeraCrypt header (first 512 bytes of the raw device) if some tool
@@ -728,6 +740,48 @@ Q28. What is the minimum size of a LUKS encrypted volume?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
 The minimum size of the raw device is 2018 * 1024 == 2066432 bytes, checked
 by `cryptsetup open' in cryptsetup 1.7.3.
+
+The minimum size of the LUKS header (including the key material) is 4096,
+checked by `cryptsetup open' in cryptsetup 1.7.3.
+
+Q28B. What is the minimum size of a TrueCrypt or VeraCrypt encrypted volume?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+The minimum size of the raw device is 1024 bytes, of which the header
+occupies the first 512 bytes, and the encrypted data occupies the last 512
+bytes. Both TrueCrypt 7.1a and VeraCrypt 1.17 can open such an encrypted
+volume correctly. Create it like this:
+
+  $ ./tinyveracrypt.py init --size=1024 --type=truecrypt mini.bin
+
+(It also works with `--type=veracrypt'.)
+
+512 bytes is too small for most filesystems, but you can create an encrypted
+FAT12 filesystem with 512 bytes free in an encrypted raw device of 2560
+bytes:
+
+  $ ./tinyveracrypt.py init --size=2560 --filesystem=fat1 --type=truecrypt minifat12.bin
+
+(It also works with `--type=veracrypt'.)
+
+The sector layout of minifat.bin:
+
+*    0... 512: TrueCrypt volume header.
+*  512...1024: Encrypted FAT12 filesystem header (BPB) and boot sector.
+* 1024...1536: Encrypted FAT12 file allocation table (FAT).
+* 1536...2048: Encrypted FAT12 root directory, contains only the volume label.
+* 2048...2560: Encrypted free space for a file up to 512 bytes.
+
+By using the `tinyveracrypt.py init --ofs=0' trick explained in Q13 it's
+possible to merge the first 2 sectors. Unfortunately it doesn't work
+(`truecrypt' and `veracrypt' opens the encrypted device it with --ofs=512
+instead) if the raw device is smaller than 64 KiB.
+
+The smallest raw device size for which VeraCrypt 1.17 `veracrypt --text
+--create' allows to create an encrypted volume (either TrueCrypt or
+VeraCrypt) is 291 KiB.
+
+The smallest raw device size for which TrueCrypt 7.1a `truecrypt --text
+--create' allows to create a TrueCrypt encrypted volume is also 291 KiB.
 
 Q29. What is the minimum overhead of headers?
 """""""""""""""""""""""""""""""""""""""""""""

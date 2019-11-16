@@ -1932,7 +1932,6 @@ def check_decrypted_ofs(decrypted_ofs):
 
 
 def check_decrypted_size(decrypted_size):
-  # !! min_decrypted_size = 36 << 10  # Enforced by VeraCrypt. Can veracrypt --mount smaller ones?
   if decrypted_size & 511:
     raise ValueError('decrypted_size must be divisible by 512, got: %d' % decrypted_size)
   if decrypted_size <= 0:
@@ -2180,10 +2179,14 @@ def parse_dechd(dechd, cipher, device_size):
   keytable = convert_veracrypt_keytable_to_dm(buffer(dechd, 256, 64), cipher)
   decrypted_size, decrypted_ofs = struct.unpack('>QQ', buffer(dechd, 100, 16))
   minimum_version_to_extract, = struct.unpack('>H', dechd[70 : 70 + 2])
-  if minimum_version_to_extract < 0x600 and dechd[64 : 64 + 4] == 'TRUE':
+  if (minimum_version_to_extract < 0x600 and dechd[64 : 64 + 4] == 'TRUE') or device_size < 65536:
     # Compatible with TrueCrypt 7.1a --mount. It implements this in
     # `if (Extension->cryptoInfo->LegacyVolume) ... Extension->cryptoInfo->volDataAreaOffset = TC_VOLUME_HEADER_SIZE_LEGACY ...;'
     # in e.g. Driver/Ntvol.c.
+    #
+    # The `device_size < 65536' check is compatible with TrueCrypt 7.1a
+    # --mount and VeraCrypt 1.17 --mount for both TrueCrypt and VeraCrypt
+    # encrypted volumes.
     decrypted_ofs, decrypted_size = 512, device_size - 512
     check_decrypted_size(decrypted_size)  # Check for negative.
   return keytable, decrypted_size, decrypted_ofs
@@ -4352,6 +4355,10 @@ def cmd_create(args):
       raise UsageError('--filesystem=fat1 conflicts with --mkfat=...')
     if fake_luks_uuid_flag is not None and decrypted_ofs == 0:
       raise UsageError('--filesystem=fat1 conflicts with --fake-luks-uuid=... --ofs=0')
+    if device_size is not None:
+      if device_size - (decrypted_ofs or 0) < 2048:
+        minimum_size_with_fat1 = (2560, 6144)[type_value == 'luks']
+        raise UsageError('--size=%d is too small for --filesystem=fat1, try --size=%s' % (device_size, minimum_size_with_fat1))
     del mkfs_args[:]
   # Now mkfs_args is a non-empty list iff we need mkfs. mkfs_args starts with
   # the command to run (e.g. 'mkfs.ext2'), and in the end it doesn't contain
@@ -4464,6 +4471,9 @@ def cmd_create(args):
           raise UsageError('--add-full-header conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
         if do_add_backup is True:
           raise UsageError('--add-backup conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
+      if device_size is not None and device_size < 65536:  # Limitation of TrueCrypt 7.1a and VeraCrypt 1.17 tools.
+        if isinstance(decrypted_ofs, (int, long)) and decrypted_ofs != 512:
+          raise UsageError('--ofs=%d conflicts with --type=%s --size=%d, try omitting --ofs=... or increasing size to --size=65536' % (decrypted_ofs, type_value, device_size))
       if not is_opened and MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] > truecrypt_version:
         raise UsageError('--cipher=%s needs at least --truecrypt-version=%d.%d, got --truecrypt-version=%d.%d, try omitting --cipher=... or --truecrypt-version=...' %
                          (cipher, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] >> 8, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] & 255, truecrypt_version >> 8, truecrypt_version & 255))
@@ -5055,7 +5065,8 @@ def main(argv):
     # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
     # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
-    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a.
+    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:
+    #         The compatible behavior (matching what TrueCrypt 7.1a and VeraCrypt 1.17 do ignoring decrypted_ofs and decrypted_size only if the raw device size is at most 64 KiB.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_activate: `dmd.size = hdr->d.volume_size / hdr->d.sector_size;', should be the entire device ((device_size(crypt_metadata_device(cd), &size) < 0)) if minimum_version_to_extract < 0x600.
     raise UsageError('unknown command: %s' % command)
 
