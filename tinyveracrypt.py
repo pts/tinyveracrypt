@@ -3194,10 +3194,11 @@ def get_recommended_luks_af_stripe_size(decrypted_ofs):
     af_stripe_size = (2000 << 10) >> (3 + 9) << 9
     assert 1 <= af_stripe_size <= 256000
     return af_stripe_size
+  if decrypted_ofs < 5120:
+    return 512  # Minimum is 1 sector per slot.
   header_size = 1024  # Minimum LUKS PHDR size.
   while decrypted_ofs >= header_size * 10 and header_size < (32 << 10):
     header_size <<= 1
-  # af_stripe_count <= 0 is an error, `slot_count <= 0' below will report it.
   return (decrypted_ofs - header_size) >> (3 + 9) << 9
 
 

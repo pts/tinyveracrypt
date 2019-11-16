@@ -532,8 +532,11 @@ def test_luks():
   assert rec(9 << 10) == 1 << 10
   assert rec((9 << 10) - 1) == 512
   assert rec(5 << 10) == 512
-  assert rec((5 << 10) - 1) == 0
-  assert rec(0) == -512
+  assert rec((5 << 10) - 1) == 512
+  assert rec(4096) == 512
+  assert rec(1536) == 512
+  assert rec(512) == 512
+  assert rec(0) == 512
 
 
 def test():
