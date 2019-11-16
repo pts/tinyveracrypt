@@ -1020,6 +1020,31 @@ class SlowSha256(object):
     return other
 
 
+# --- SHA-224 hash (message digest).
+
+
+# Fallback pure Python implementation of SHA-224 based on
+# https://github.com/thomdixon/pysha2/blob/master/sha2/sha224.py
+# It is about 400 times slower than OpenSSL's C implementation.
+#
+# This is used in Python 2.4 by default. (Python 2.5 already has
+# hashlib.new('sha224') using OpenSSL.)
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
+# Python >=2.5.
+class SlowSha224(SlowSha256):
+  # Overrides SlowSha256._h0.
+  _h0 = (0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
+         0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4)
+
+  block_size = 64
+  digest_size = 28
+
+  def digest(self):
+    return SlowSha256.digest(self)[:28]
+
+
 # --- SHA-1 hash (message digest).
 
 
@@ -1384,8 +1409,8 @@ def find_best_digest_cons(hash, pycrypto_name, default=None):
 
 HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha1': (find_best_digest_cons('sha1', 'SHA1', SlowSha1), 64),
+    'sha224': (find_best_digest_cons('sha224', 'SHA224', SlowSha224), 64),
     'sha256': (find_best_digest_cons('sha256', 'SHA256', SlowSha256), 64),
-    'sha224': (find_best_digest_cons('sha224', 'SHA224', None), 64),
     'sha384': (find_best_digest_cons('sha384', 'SHA384', SlowSha384), 128),
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),

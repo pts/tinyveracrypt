@@ -93,6 +93,21 @@ def test_sha256():
   assert sha256('?' + data).hexdigest() == 'caa9d54ee0700e483d1dcfb19cbcc4eafc5bbb7913492fbdbea63835346bc172'
 
 
+def test_sha224():
+  sha224 = tinyveracrypt.HASH_DIGEST_PARAMS['sha224'][0]
+  assert sha224('foobar').digest() == '\xdev\xc3\xe5g\xfc\xa9\xd2F\xf5\xf8\xd3\xb2\xe7\x04\xa3\x8c<^%\x89\x88\xabR_\x94\x1d\xb8'
+  assert sha224('Foobar! ' * 14).digest() == 'MD\xdf\x8e\r\xf8\xe5\xc1\xa2\xc5\xff5E1\xc6%?\xe2\xa48h\x80\xec\xf37\x90\xc1\xee'
+  d = sha224('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == 'x\xcc|r\x18y-\x02\xf9\xfc\xf3\xd5\x13\xcc\xaaid\x02s\xf0\xb1\xf5\xdcyR\xda\xb8\xf5'
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert sha224(data).hexdigest() == 'a9d4b422a0c5dc502a305ce6d523b3690cddc5a6632692e749d6eebf'
+  assert sha224(data[1:]).hexdigest() == '543aa2d1cb3de1289eb0714198d9817d22c9b2e937a633feb8120d76'
+  assert sha224('?' + data).hexdigest() == '4963373611b0de1e9a0533deb1aecdbfccae74d1ae6ae6515e7c2812'
+
+
 def test_ripemd160():
   ripemd160 = tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'][0]
   assert ripemd160('foobar').digest() == '\xa0n2~\xa78\x8c\x18\xe4t\x0e5\x0e\xd4\xe6\x0f.\x04\xfcA'
@@ -501,6 +516,7 @@ def test():
   test_sha512()
   test_sha384()
   test_sha256()
+  test_sha224()
   test_sha1()
   test_ripemd160()
   test_whirlpool()
@@ -534,6 +550,8 @@ if __name__ == '__main__':
       tinyveracrypt.HASH_DIGEST_PARAMS['sha384'] = (tinyveracrypt.SlowSha384,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha384'][1:]
     elif arg == '--slow-sha256':
       tinyveracrypt.HASH_DIGEST_PARAMS['sha256'] = (tinyveracrypt.SlowSha256,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha256'][1:]
+    elif arg == '--slow-sha224':
+      tinyveracrypt.HASH_DIGEST_PARAMS['sha224'] = (tinyveracrypt.SlowSha224,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha224'][1:]
     elif arg == '--slow-sha1':
       tinyveracrypt.HASH_DIGEST_PARAMS['sha1'] = (tinyveracrypt.SlowSha1,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][1:]
     elif arg == '--slow-ripemd160':

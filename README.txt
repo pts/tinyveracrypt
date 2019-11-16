@@ -147,6 +147,7 @@ Supported hashes:
 * sha512 (SHA-512)
 * sha384 (SHA-384)
 * sha256 (SHA-256)
+* sha224 (SHA-224)
 * sha1 (SHA-1)
 * ripemd160 (RIPEMD-160)
 * whirlpool (Whirlpool)
