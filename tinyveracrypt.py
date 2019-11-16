@@ -883,9 +883,7 @@ class SlowSha512(object):
 
   def copy(self):
     other = type(self)()
-    other._buffer = self._buffer
-    other._counter = self._counter
-    other._h = self._h
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
     return other
 
 
@@ -993,9 +991,7 @@ class SlowSha256(object):
 
   def copy(self):
     other = type(self)()
-    other._buffer = self._buffer
-    other._counter = self._counter
-    other._h = self._h
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
     return other
 
 
@@ -1088,9 +1084,7 @@ class SlowSha1(object):
 
   def copy(self):
     other = type(self)()
-    other._buffer = self._buffer
-    other._counter = self._counter
-    other._h = self._h
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
     return other
 
 
@@ -1189,9 +1183,7 @@ class SlowRipeMd160(object):
 
   def copy(self):
     other = type(self)()
-    other._buffer = self._buffer
-    other._counter = self._counter
-    other._h = self._h
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
     return other
 
 
