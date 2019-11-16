@@ -1187,6 +1187,133 @@ class SlowRipeMd160(object):
     return other
 
 
+# --- Whirlpool hash (message digest).
+
+
+def slow_whirlpool_process(block, hh, cdo_func, _unpack=struct.unpack):
+  block = _unpack('>8Q', block)
+  k = list(hh)
+  m = [block[i] ^ hh[i] for i in xrange(8)]
+  for rc in (0x1823c6e887b8014f, 0x36a6d2f5796f9152, 0x60bc9b8ea30c7b35, 0x1de0d7c22e4bfe57, 0x157737e59ff04ada, 0x58c9290ab1a06b85, 0xbd5d10f4cb3e0567, 0xe427418ba77d95d8, 0xfbee7c66dd17479e, 0xca2dbf07ad5a8333):
+    k[:] = (cdo_func(k, 0, 7, 6, 5, 4, 3, 2, 1) ^ rc, cdo_func(k, 1, 0, 7, 6, 5, 4, 3, 2), cdo_func(k, 2, 1, 0, 7, 6, 5, 4, 3), cdo_func(k, 3, 2, 1, 0, 7, 6, 5, 4),
+            cdo_func(k, 4, 3, 2, 1, 0, 7, 6, 5), cdo_func(k, 5, 4, 3, 2, 1, 0, 7, 6), cdo_func(k, 6, 5, 4, 3, 2, 1, 0, 7), cdo_func(k, 7, 6, 5, 4, 3, 2, 1, 0))
+    m[:] = (cdo_func(m, 0, 7, 6, 5, 4, 3, 2, 1) ^ k[0], cdo_func(m, 1, 0, 7, 6, 5, 4, 3, 2) ^ k[1], cdo_func(m, 2, 1, 0, 7, 6, 5, 4, 3) ^ k[2], cdo_func(m, 3, 2, 1, 0, 7, 6, 5, 4) ^ k[3],
+            cdo_func(m, 4, 3, 2, 1, 0, 7, 6, 5) ^ k[4], cdo_func(m, 5, 4, 3, 2, 1, 0, 7, 6) ^ k[5], cdo_func(m, 6, 5, 4, 3, 2, 1, 0, 7) ^ k[6], cdo_func(m, 7, 6, 5, 4, 3, 2, 1, 0) ^ k[7])
+  return [hh[i] ^ m[i] ^ block[i] for i in xrange(8)]
+
+
+# Fallback pure Python implementation of SHA-256 based on
+# https://github.com/doegox/python-cryptoplus/blob/master/src/CryptoPlus/Hash/pywhirlpool.py
+# and http://www.bjrn.se/code/whirlpoolpy.txt .
+# It is about 400+ times slower than OpenSSL's C implementation.
+#
+# This is used in Python 2.4 by default. (Python 2.5 already has
+# hashlib.new('whirlpool') using OpenSSL.)
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
+# Python >=2.5.
+class SlowWhirlpool(object):
+  block_size = 64
+  digest_size = 64
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer, self._counter, self._h = '', 0, [0] * 8
+    if m is not None:
+      self.update(m)
+
+  def update(self, m, cdo_func_ary=[]):
+    if not cdo_func_ary:  # Initialization of long constant array cs at first use.
+      cs = [struct.unpack(
+          '>256Q',
+          '18186018c07830d823238c2305af4626c6c63fc67ef991b8e8e887e8136fcdfb878726874ca113cbb8b8dab8a9626d1101010401080502094f4f214f426e9e0d'
+          '3636d836adee6c9ba6a6a2a6590451ffd2d26fd2debdb90cf5f5f3f5fb06f70e7979f979ef80f2966f6fa16f5fcede3091917e91fcef3f6d52525552aa07a4f8'
+          '60609d6027fdc047bcbccabc897665359b9b569baccd2b378e8e028e048c018aa3a3b6a371155bd20c0c300c603c186c7b7bf17bff8af6843535d435b5e16a80'
+          '1d1d741de8693af5e0e0a7e05347ddb3d7d77bd7f6acb321c2c22fc25eed999c2e2eb82e6d965c434b4b314b627a9629fefedffea321e15d575741578216aed5'
+          '15155415a8412abd7777c1779fb6eee83737dc37a5eb6e92e5e5b3e57b56d79e9f9f469f8cd92313f0f0e7f0d317fd234a4a354a6a7f9420dada4fda9e95a944'
+          '58587d58fa25b0a2c9c903c906ca8fcf2929a429558d527c0a0a280a5022145ab1b1feb1e14f7f50a0a0baa0691a5dc96b6bb16b7fdad61485852e855cab17d9'
+          'bdbdcebd8173673c5d5d695dd234ba8f1010401080502090f4f4f7f4f303f507cbcb0bcb16c08bdd3e3ef83eedc67cd30505140528110a2d676781671fe6ce78'
+          'e4e4b7e47353d59727279c2725bb4e0241411941325882738b8b168b2c9d0ba7a7a7a6a7510153f67d7de97dcf94fab295956e95dcfb3749d8d847d88e9fad56'
+          'fbfbcbfb8b30eb70eeee9fee2371c1cd7c7ced7cc791f8bb6666856617e3cc71dddd53dda68ea77b17175c17b84b2eaf4747014702468e459e9e429e84dc211a'
+          'caca0fca1ec589d42d2db42d75995a58bfbfc6bf9179632e07071c07381b0e3fadad8ead012347ac5a5a755aea2fb4b0838336836cb51bef3333cc3385ff66b6'
+          '636391633ff2c65c02020802100a0412aaaa92aa393849937171d971afa8e2dec8c807c80ecf8dc619196419c87d32d1494939497270923bd9d943d9869aaf5f'
+          'f2f2eff2c31df931e3e3abe34b48dba85b5b715be22ab6b988881a8834920dbc9a9a529aa4c8293e262698262dbe4c0b3232c8328dfa64bfb0b0fab0e94a7d59'
+          'e9e983e91b6acff20f0f3c0f78331e77d5d573d5e6a6b73380803a8074ba1df4bebec2be997c6127cdcd13cd26de87eb3434d034bde4688948483d487a759032'
+          'ffffdbffab24e3547a7af57af78ff48d90907a90f4ea3d645f5f615fc23ebe9d202080201da0403d6868bd6867d5d00f1a1a681ad07234caaeae82ae192c41b7'
+          'b4b4eab4c95e757d54544d549a19a8ce93937693ece53b7f222288220daa442f64648d6407e9c863f1f1e3f1db12ff2a7373d173bfa2e6cc12124812905a2482'
+          '40401d403a5d807a0808200840281048c3c32bc356e89b95ecec97ec337bc5dfdbdb4bdb9690ab4da1a1bea1611f5fc08d8d0e8d1c8307913d3df43df5c97ac8'
+          '97976697ccf1335b0000000000000000cfcf1bcf36d483f92b2bac2b4587566e7676c57697b3ece18282328264b019e6d6d67fd6fea9b1281b1b6c1bd87736c3'
+          'b5b5eeb5c15b7774afaf86af112943be6a6ab56a77dfd41d50505d50ba0da0ea45450945124c8a57f3f3ebf3cb18fb383030c0309df060adefef9bef2b74c3c4'
+          '3f3ffc3fe5c37eda55554955921caac7a2a2b2a2791059dbeaea8fea0365c9e9656589650fecca6ababad2bab96869032f2fbc2f65935e4ac0c027c04ee79d8e'
+          'dede5fdebe81a1601c1c701ce06c38fcfdfdd3fdbb2ee7464d4d294d52649a1f92927292e4e039767575c9758fbceafa06061806301e0c368a8a128a249809ae'
+          'b2b2f2b2f940794be6e6bfe66359d1850e0e380e70361c7e1f1f7c1ff8633ee76262956237f7c455d4d477d4eea3b53aa8a89aa829324d8196966296c4f43152'
+          'f9f9c3f99b3aef62c5c533c566f697a32525942535b14a1059597959f220b2ab84842a8454ae15d07272d572b7a7e4c53939e439d5dd72ec4c4c2d4c5a619816'
+          '5e5e655eca3bbc947878fd78e785f09f3838e038ddd870e58c8c0a8c14860598d1d163d1c6b2bf17a5a5aea5410b57e4e2e2afe2434dd9a1616199612ff8c24e'
+          'b3b3f6b3f1457b422121842115a542349c9c4a9c94d625081e1e781ef0663cee4343114322528661c7c73bc776fc93b1fcfcd7fcb32be54f0404100420140824'
+          '51515951b208a2e399995e99bcc72f256d6da96d4fc4da220d0d340d68391a65fafacffa8335e979dfdf5bdfb684a3697e7ee57ed79bfca9242490243db44819'
+          '3b3bec3bc5d776feabab96ab313d4b9acece1fce3ed181f011114411885522998f8f068f0c8903834e4e254e4a6b9c04b7b7e6b7d1517366ebeb8beb0b60cbe0'
+          '3c3cf03cfdcc78c181813e817cbf1ffd94946a94d4fe3540f7f7fbf7eb0cf31cb9b9deb9a1676f1813134c13985f268b2c2cb02c7d9c5851d3d36bd3d6b8bb05'
+          'e7e7bbe76b5cd38c6e6ea56e57cbdc39c4c437c46ef395aa03030c03180f061b565645568a13acdc44440d441a49885e7f7fe17fdf9efea0a9a99ea921374f88'
+          '2a2aa82a4d825467bbbbd6bbb16d6b0ac1c123c146e29f8753535153a202a6f1dcdc57dcae8ba5720b0b2c0b582716539d9d4e9d9cd327016c6cad6c47c1d82b'
+          '3131c43195f562a47474cd7487b9e8f3f6f6fff6e309f115464605460a438c4cacac8aac092645a589891e893c970fb514145014a04428b4e1e1a3e15b42dfba'
+          '16165816b04e2ca63a3ae83acdd274f76969b9696fd0d20609092409482d12417070dd70a7ade0d7b6b6e2b6d954716fd0d067d0ceb7bd1eeded93ed3b7ec7d6'
+          'cccc17cc2edb85e2424215422a57846898985a98b4c22d2ca4a4aaa4490e55ed2828a0285d8850755c5c6d5cda31b886f8f8c7f8933fed6b8686228644a411c2'
+          .decode('hex'))]
+      for _ in xrange(7):
+        cs.append(tuple((c >> 8 | c << 56) & 0xffffffffffffffff for c in cs[-1]))
+
+      def cdo(buf, a0, a1, a2, a3, a4, a5, a6, a7,
+              c0=cs[0], c1=cs[1], c2=cs[2], c3=cs[3], c4=cs[4], c5=cs[5], c6=cs[6], c7=cs[7]):
+        return (c0[(buf[a0] >> 56) & 255] ^ c1[(buf[a1] >> 48) & 255] ^ c2[(buf[a2] >> 40) & 255] ^ c3[(buf[a3] >> 32) & 255] ^
+                c4[(buf[a4] >> 24) & 255] ^ c5[(buf[a5] >> 16) & 255] ^ c6[(buf[a6] >> 8) & 255] ^ c7[buf[a7] & 255])
+
+      cdo_func_ary.append(cdo)
+      del cdo_func_ary[1:]  # Delete byproducts of other threads.
+    cdo_func = cdo_func_ary[0]
+    if m is ():  # Digest. Implemented in thus function because of cdo_func_ary.
+      hh, counter, block, _pack, _unpack = self._h, self._counter, self._buffer, struct.pack, struct.unpack
+      lb = len(block)
+      block += '\x80' + '\0' * (~lb & 31)
+      if lb >= 32:
+        return _pack('>8Q', *slow_whirlpool_process(_pack('>56xQ', counter << 3), slow_whirlpool_process(block, hh, cdo_func), cdo_func))
+      else:
+        return _pack('>8Q', *slow_whirlpool_process(_pack('>56sQ', block, counter << 3), hh, cdo_func))
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf = self._buffer
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = slow_whirlpool_process(buf + m[:i], hh, cdo_func)
+      for i in xrange(i, lm - 63, 64):
+        hh = slow_whirlpool_process(_buffer(m, i, 64), hh, cdo_func)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    return self.update(())
+
+  def hexdigest(self):
+    return self.update(()).encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
+    return other
+
+
 # --- Built-in hashes.
 
 
@@ -1238,6 +1365,7 @@ HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha384': (find_best_digest_cons('sha384', 'SHA384', None), 128),
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
+    'whirlpool': (find_best_digest_cons('whirlpool', 'Whirlpool', SlowWhirlpool), 64),
 }
 
 
@@ -1962,7 +2090,6 @@ MIN_TRUECRYPT_VERSION_FOR_HASH = {
     'ripemd160': 0x201,
     'sha512': 0x500,
     'sha1': 0x100,
-    # TODO(pts): !! Add a pure Python implementation smaller than (maybe compress the array): http://www.bjrn.se/code/whirlpoolpy.txt
     'whirlpool': 0x400,
     # !! TODO(pts): Add SHA-384. https://en.wikipedia.org/wiki/SHA-2
 }

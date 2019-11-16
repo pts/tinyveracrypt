@@ -101,6 +101,11 @@ Yes, but not as many as cryptsetup (LUKS) or TrueCrypt or VeraCrypt.
 
 Supported ciphers:
 
+* (TL;DR The highest security cipher comes first in this list.)
+* (TL;DR Supports all AES-based ciphers supported by VeraCrypt and TrueCrypt,
+  plus the most common AES-based ciphers used with LUKS1. Doesn't support
+  non-AES-based ciphers such as serpent, twofish, camellia, kuznyechik,
+  cast5, des3_ede, blowfish_le, and multiple ciphers combined.)
 * aes-xts-plain64. This is the default and the most common for TrueCrypt
   (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup >= 1.6.0,
   cryptsetup 2.1.0). For TrueCrypt and VeraCrypt encrypted volumes,
@@ -135,9 +140,13 @@ Supported ciphers:
 
 Supported hashes:
 
+* (TL;DR Supports all hashes supported by VeraCrypt and TrueCrypt,
+  plus the most common hashes used with LUKS1.)
 * sha512 (SHA-512)
 * sha256 (SHA-256)
 * sha1 (SHA-1)
+* ripemd160 (RIPEMD-160)
+* whirlpool (Whirlpool)
 * whatever Python hashlib supports (which includes ripemd160 and whirlpool,
   so including these all hashes used by VeraCrypt and TrueCrypt are supported)
 

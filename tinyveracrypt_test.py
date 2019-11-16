@@ -93,6 +93,37 @@ def test_ripemd160():
   assert ripemd160('?' + data).hexdigest() == '43856e8669a5360fc6bb4140ddee5710a8cf2c27'
 
 
+def test_whirlpool():
+  whirlpool = tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'][0]
+  assert whirlpool('foobar').digest() == '\x99#\xaf\xae\xc3\xa8o\x86[\xb21\xa5\x88\xf4S\xf8N\x81Q\xa2\xde\xb4\x10\x9a\xeb\xc6\xdeB\x84\xbe[\xeb\xcf\xf4\xfa\xb8*~Q\xd9 #s@\xa0Csn\x9d\x13\xba\xb1\x96\x00m\xcc\xa0\xfee1Mh\xea\xb9'
+  assert whirlpool('Foobar! ' * 14).digest() == '\x8dL\x84ch\xe5\xb0\xda\xc1\xa9] %\x8e]~\x84\x14\x02\xd42\x92b\xc5~6\x92\xfa\x83\\vj\xdf\x90\xe5\xe0u\xdd1\xcbzu?n\xf3\x02n\xd6\xb8\xe13?\xf9\xfcL\xd2\xf8T\xafP\xae\xf7B\xc7'
+  assert whirlpool('').hexdigest() == '19fa61d75522a4669b44e39c1d2e1726c530232130d407f89afee0964997f7a73e83be698b288febcf88e3e03c4f0757ea8964e59b63d93708b138cc42a66eb3'
+  assert whirlpool('This is the horse and the hound and the horn\nThat belonged to the farmer sowing his corn\nThat kept the rooster that crowed in the morn\nThat woke the judge all shaven and shorn\n').hexdigest() == (
+      '5947a4bc358d845677ebcd428e27f143bd717cc96afa13cb3d16f7951d4602b4854d94da454faba7e7be9af97577dd8029f9efcd0cdcce7f5e0c13588948da04')
+  assert whirlpool('The quick brown fox jumps over the lazy dog').hexdigest() == 'b97de512e91e3828b40d2b0fdce9ceb3c4a71f9bea8d88e75c4fa854df36725fd2b52eb6544edcacd6f8beddfea403cb55ae31f03ad62a5ef54e42ee82c3fb35'
+  assert whirlpool('The quick brown fox jumps over the lazy eog').hexdigest() == 'c27ba124205f72e6847f3e19834f925cc666d0974167af915bb462420ed40cc50900d85a1f923219d832357750492d5c143011a76988344c2635e69d06f2d38c'
+  w = whirlpool('This is the message to be hashe: the quick brown fox jumps over the lazy ')
+  w2 = w.copy()
+  w2.update('dog')
+  assert w2.hexdigest() == '9c64fe18efcc7751531ce411a064afe82ba4b2ecd6bb410a355647c151cd59fb1043a752d7ed8ad55a47975ad0f429ff4c08360c87a308784dee27e52ce7b7cd'
+  assert w2.hexdigest() == '9c64fe18efcc7751531ce411a064afe82ba4b2ecd6bb410a355647c151cd59fb1043a752d7ed8ad55a47975ad0f429ff4c08360c87a308784dee27e52ce7b7cd'  # Idempotent.
+  assert w.hexdigest() != w2.hexdigest()
+  w.update('dog')
+  assert w.hexdigest() == w2.hexdigest()
+  assert whirlpool('The quick brown fox jumps over t').hexdigest() == (
+      '4a5755d85135ce0b7f89894f4ed8b79e15a4a0cd35e11dbfcdf6b656ba658adc5aaae0dc54bc3faa318c62ba03dc9ddaf4d0e1a6554005232256ebc2a22faa5c')
+  assert whirlpool('The quick brown fox jumps over the lazy dog. The quick brown fox').hexdigest() == '0cd7fd6a0a2effbcff809b2de658adf34c3a3af2c20576816c9599ba1fd47cfc27b7639b7ba16de3889c280038ee1813cb100bf4013e5df1bb5d149327db8a3b'
+  d = whirlpool('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == '\x83\x08\x1b9\x83X\xb7\x8e9R%\x8b\xbb\xfa\nX\xa14A\x94\x9cR(\x1a\x18D!\x98_\xc5gUu\x96\xa9\xa8C\x11cP\x91\xbf\xdaI"Af>\x1e&\'\x997\xccc7\xd1)\x81\x03|\x90\xb06'
+  data = 'HelloWorld! ' * 8
+  assert len(data) == 64 + 32  # On the % 64 < 32 boundary.
+  assert whirlpool(data).hexdigest() == 'ad570e544e9ac2ecdd2e32ea62911029ede9a9d85b6d374dfdc02152576438394668de3b154b9f4402dd7332307abdbca515a907cab1ad4d0fb314fce643f727'
+  assert whirlpool(data[1:]).hexdigest() == '3b3fccfeec86ea76d4b2e6008c10514fb03d84478e4bcfce2228b6a462e4d296a657286b7f64ec8de488880bf7b76138686f13021eb237987e08e92e722efdce'
+  assert whirlpool('?' + data).hexdigest() == '5a743e13b415087036275eb798fcf0770b707bc9a416a0c8829c4192396742e3434fd57ccb10602a0ffdbff3ff009e34ab52f1184dcf508fca0b984a912cf437'
+
+
 def benchmark_sha1():
   sha1 = tinyveracrypt.sha1
   for i in xrange(200):
@@ -456,6 +487,7 @@ def test():
   test_sha256()
   test_sha1()
   test_ripemd160()
+  test_whirlpool()
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
   test_crypt_aes_lrw()
@@ -481,13 +513,15 @@ if __name__ == '__main__':
     if arg == '--slow-aes':
       tinyveracrypt.new_aes = tinyveracrypt.SlowAes
     elif arg == '--slow-sha512':
-      tinyveracrypt.sha512 = tinyveracrypt.SlowSha512
+      tinyveracrypt.HASH_DIGEST_PARAMS['sha512'] = (tinyveracrypt.SlowSha512,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha512'][1:]
     elif arg == '--slow-sha256':
-      tinyveracrypt.sha256 = tinyveracrypt.SlowSha256
-    elif arg == '--slow-ripemd160':
-      tinyveracrypt.ripemd160 = tinyveracrypt.SlowRipeMd160
+      tinyveracrypt.HASH_DIGEST_PARAMS['sha256'] = (tinyveracrypt.SlowSha256,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha256'][1:]
     elif arg == '--slow-sha1':
-      tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
+      tinyveracrypt.HASH_DIGEST_PARAMS['sha1'] = (tinyveracrypt.SlowSha1,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha1'][1:]
+    elif arg == '--slow-ripemd160':
+      tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'] = (tinyveracrypt.SlowRipeMd160,) + tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'][1:]
+    elif arg == '--slow-whirlpool':
+      tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'] = (tinyveracrypt.SlowWhirlpool,) + tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'][1:]
     elif arg == '--slow-crc32':
       tinyveracrypt.crc32 = tinyveracrypt.slow_crc32
     elif arg == '--slow':
