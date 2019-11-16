@@ -2337,7 +2337,7 @@ def build_veracrypt_header(
     veracrypt_keytable = keytable
   elif cipher == 'aes-lrw-benbi' and (truecrypt_version or 0) >= 0x401:
     if len(keytable) == 48:
-      veracrypt_keytable = ''.join((keytable[32:], keytable[:16], keytable[:16]))
+      veracrypt_keytable = ''.join((keytable[32:], keytable[32:], keytable[:32]))
     else:  # keytable[48:] is not used, it's just entropy.
       veracrypt_keytable = keytable[32:] + keytable[:32]
   elif cipher == 'aes-cbc-tcw' and truecrypt_version:
