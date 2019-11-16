@@ -250,6 +250,9 @@ def test_crypt_aes_xts():
   assert crypt_aes_xts(HEADER_KEY[:32], encstr7, False) == decstr7
   assert crypt_aes_xts(HEADER_KEY, decstr8[:16], True , ofs=16) == encstr8
   assert crypt_aes_xts(HEADER_KEY, encstr8     , False, ofs=16) == decstr8
+  assert crypt_sectors('aes-xts-plain64',   HEADER_KEY, decstr1, True) == encstr1  # Not longer than 12 bytes, same.
+  assert crypt_sectors('aes-xts-plain64be', HEADER_KEY, encstr1, False) == decstr1
+  assert crypt_sectors('aes-xts-plain',     HEADER_KEY, encstr1, False) == decstr1
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY, decstr9, True) == encstr9
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY, encstr9, False) == decstr9
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY[:48], decstr6, True) == encstr6
@@ -328,6 +331,7 @@ def test_gf2pow128mul():
 
 def test_crypt_aes_lrw():
   crypt_aes_lrw = tinyveracrypt.crypt_aes_lrw
+  crypt_aes_lrw_zerobased = tinyveracrypt.crypt_aes_lrw_zerobased
   key = HEADER_KEY[:48]
   decstr1, encstr1 = DECSTR, '8220a9fa19715f06f83eb761150544d152f823ff8e3b1fd969236ac5517305c957695a49b707c2f7be8fe57f1a359afc'.decode('hex')
   decstr2, encstr2 = DECSTR, 'b840f1d6568366e51d47ee92ef1b264633be2e1267b5d478e0f84f9c5841bdaf96a43afafd1e9d27d2bb02870e28a1ed'.decode('hex')
@@ -342,6 +346,12 @@ def test_crypt_aes_lrw():
   assert crypt_aes_lrw(key, encstr1[:32], False) == decstr1[:32]
   assert crypt_aes_lrw(key, decstr2, True,  block_idx=321) == encstr2
   assert crypt_aes_lrw(key, encstr2, False, ofs=5120) == decstr2
+  decstr1zb = crypt_aes_lrw_zerobased(key, decstr1, True)
+  assert decstr1zb != encstr1
+  assert crypt_aes_lrw_zerobased(key, decstr1, True, ofs=16) == encstr1
+  assert crypt_sectors('aes-lrw-plain64',   key, decstr1, True) == decstr1zb
+  assert crypt_sectors('aes-lrw-plain64be', key, decstr1, True) == decstr1zb
+  assert crypt_sectors('aes-lrw-plain',     key, decstr1, True) == decstr1zb
   assert crypt_sectors('aes-lrw-benbi', key, decstr2, True,  sector_idx=10) == encstr2
   assert crypt_sectors('aes-lrw-benbi', key, encstr2, False, sector_idx=10) == decstr2
   assert crypt_sectors('aes-lrw-benbi', key, decstr1[:32], True ) == encstr1[:32]
@@ -353,6 +363,23 @@ def test_crypt_aes_lrw():
       '055b0043764a4d7e25464287fc73f3b25345901f00f230773858e05e0d9fad5ee609368787061b3fb588e6d5430c06db'.decode('hex'),
   )
   help_test_crypt_sectors('aes-lrw-', HEADER_KEY[:32], test_vectors)
+
+
+def test_crypt_by_ofs():
+  a, b = 'The quick brown fox jumps over the lazy dog. Pad', 'That kept the rooster that crowe'
+  c, d = 'This is the horse and the hound and the horn,   ', 'That belonged to the farmer sowi'
+  assert not (len(a) & 15 or len(b) & 15 or len(c) & 15 or len(d) & 15)
+  for cipher, crypt_func in sorted(tinyveracrypt.CRYPT_BY_OFS_MAX_512_FUNCS.iteritems()):
+    key = HEADER_KEY[:(64, 48)[cipher.startswith('aes-lrw-')]]
+    abenc = crypt_func(key, a + b, True)
+    assert crypt_func(key, a, True) == abenc[:len(a)]
+    assert crypt_func(key, b, True) != abenc[-len(b):]
+    assert crypt_func(key, b, True, ofs=len(a)) == abenc[-len(b):]
+    assert crypt_func(key, abenc, False) == a + b
+    assert crypt_func(key, abenc[-len(b):], False) != b
+    assert crypt_func(key, abenc[-len(b):], False, ofs=len(a)) == b
+    cdenc = crypt_func(key, c + d, True)
+    assert crypt_func(key, abenc[:len(a)] + cdenc[-len(b):], False) == a + d
 
 
 def test_crypt_for_veracrypt_header():
@@ -523,6 +550,7 @@ def test():
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
   test_crypt_aes_lrw()
+  test_crypt_by_ofs()
   test_crypt_for_veracrypt_header()
   test_veracrypt()
   test_luks()

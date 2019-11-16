@@ -568,13 +568,13 @@ def get_aes_lrw_codebooks(aes_lrw_key):
   return (new_aes(aes_lrw_key[:-16]), hi << 64 | lo)
 
 
-def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=None, block_idx=1):
+def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=0, block_idx=1):
   if len(data) & 15:
     raise ValueError('data size must be divisible by 16, got: %d' % len(data))
   codebook, lrw_key = get_aes_lrw_codebooks(aes_lrw_key)[:2]
   if block_idx < 0:
     raise ValueError('block_idx must be nonnegative, got: %d' % block_idx)
-  if ofs is not None:
+  if ofs:
     if ofs & 15:
       raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
     if ofs < -16:
@@ -601,6 +601,12 @@ def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=None, block_idx=1):
         yield _strxor_16(codebook_crypt(_strxor_16(data[i : i + 16], ps)), ps)
 
   return ''.join(yield_crypt_blocks(block_idx))
+
+
+# Don't use this, the iv for data[:16] is insecure. Use crypt_aes_lrw instead.
+# crypt_aes_lrw_zerobased = with_defaults(crypt_aes_lrw, block_idx=0)
+def crypt_aes_lrw_zerobased(aes_lrw_key, data, do_encrypt, ofs=0):
+  return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs, block_idx=0)
 
 
 def generate_lrw_iv_benbi(sector_idx):
@@ -2286,10 +2292,11 @@ def get_random_bytes(size, _functions=[]):
 
 
 def convert_veracrypt_keytable_to_dm(keytable, cipher):
+  """Converts TrueCrypt/VeraCrypt keytable to Linux dm-crypt keytable."""
   check_veracrypt_keytable(keytable)
   if cipher == 'aes-xts-plain64':
     return keytable[:]
-  elif cipher == 'aes-lrw-benbi':  # Convert to Linux dm-crypt keytable format.
+  elif cipher == 'aes-lrw-benbi':
     return keytable[32:] + keytable[:16]
   elif cipher == 'aes-cbc-tcw':
     return keytable[32:] + keytable[:32]
@@ -2301,8 +2308,14 @@ def convert_veracrypt_keytable_to_dm(keytable, cipher):
 # which 16-byte blocks can be encrypted independenly of each other.
 CRYPT_BY_OFS_MAX_512_FUNCS = {
     'aes-xts-plain64': crypt_aes_xts,
+    'aes-xts-plain': crypt_aes_xts,  # Not needed.
+    'aes-xts-plain64be': crypt_aes_xts,  # Not needed.
+    # 'aes-xts-essiv:sha256: ...  # Not needed, but technically possible.
     'aes-lrw-benbi': crypt_aes_lrw,
-    # TODO(pts): Add ofs= for more aes-lrw-*, e.g. aes-lrw-plain64.
+    'aes-lrw-plain64': crypt_aes_lrw_zerobased,  # Not needed.
+    'aes-lrw-plain': crypt_aes_lrw_zerobased,  # Not needed.
+    'aes-lrw-plain64be': crypt_aes_lrw_zerobased,  # Not needed.
+    # 'aes-lrw-essiv:sha256: ...  # Not needed, but technically possible.
 }
 
 
