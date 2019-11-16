@@ -2,10 +2,13 @@ TrueCrypt versions and features
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Notable new features in TrueCrypt versions:
 
-* <4.1: (h2) Cipher aes-cbc-tcw added.
+* <2.0: (h2) Hash sha1 added.
+* 2.0: (h2) Cipher aes-cbc-tcw added.
+* 2.1: (h2) Hash ripemd160 added.
+* 4.0: (h2) Hash whirlpool added.
 * 4.1: (h2) Cipher aes-lrw-benbi added.
 * 4.3: (h2) Can't create aes-cbc-tcw anymore, but can still open them.
-* 5.0: (h3) Cipher aes-xts-plain64 added. Added decrypted_size (offset 100) field, but TrueCrypt 7.1a still ignores it for h3 5.0 volumes (because of LegacyVolume is true).
+* 5.0: (h3) Cipher aes-xts-plain64 added. Hash sha512 added. Added decrypted_size (offset 100) field, but TrueCrypt 7.1a still ignores it for h3 5.0 volumes (because of LegacyVolume is true).
 * 6.0: (h4) First non-legacy header format. Supports decrypted_ofs != 512. Removed volume creation time and header creation time fields. Added CRC-32 field for the non-keytable encrypted header region. Added flags field.
 * 7.0: (h5) Added sector size field. Added sector size field.
 * 7.1a: (h5) Last version which supports volume creation.

@@ -1930,6 +1930,7 @@ def check_decrypted_ofs(decrypted_ofs):
   if decrypted_ofs & 511:
     raise ValueError('decrypted_ofs must be divisible by 512, got: %d' % decrypted_ofs)
 
+
 def check_decrypted_size(decrypted_size):
   # !! min_decrypted_size = 36 << 10  # Enforced by VeraCrypt. Can veracrypt --mount smaller ones?
   if decrypted_size & 511:
