@@ -5,7 +5,7 @@ import os
 import os.path
 
 # Find tinyveracrypt.py.
-sys.path[:0] = [os.path.join('..', os.path.dirname(__file__))]
+sys.path[:0] = [os.path.join(os.path.dirname(__file__), '..')]
 
 import tinyveracrypt
 
