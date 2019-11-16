@@ -101,7 +101,8 @@ Yes, but not as many as cryptsetup (LUKS) or TrueCrypt or VeraCrypt.
 
 Supported ciphers:
 
-* (TL;DR The highest security cipher comes first in this list.)
+* (TL;DR The highest security, recommended and default cipher is
+  aes-xts-plain64, the rest are listed in decreasing order of security.)
 * (TL;DR Supports all AES-based ciphers supported by VeraCrypt and TrueCrypt,
   plus the most common AES-based ciphers used with LUKS1. Doesn't support
   non-AES-based ciphers such as serpent, twofish, camellia, kuznyechik,
@@ -140,9 +141,11 @@ Supported ciphers:
 
 Supported hashes:
 
+* (TL;DR The recommended and default hash is SHA-512.)
 * (TL;DR Supports all hashes supported by VeraCrypt and TrueCrypt,
   plus the most common hashes used with LUKS1.)
 * sha512 (SHA-512)
+* sha384 (SHA-384)
 * sha256 (SHA-256)
 * sha1 (SHA-1)
 * ripemd160 (RIPEMD-160)

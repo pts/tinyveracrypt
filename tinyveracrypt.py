@@ -887,6 +887,31 @@ class SlowSha512(object):
     return other
 
 
+# --- SHA-384 hash (message digest).
+
+
+# Fallback pure Python implementation of SHA-384 based on
+# https://github.com/thomdixon/pysha2/blob/master/sha2/sha384.py
+# It is about 400 times slower than OpenSSL's C implementation.
+#
+# This is used in Python 2.4 by default. (Python 2.5 already has
+# hashlib.new('sha384') using OpenSSL.)
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
+# Python >=2.5.
+class SlowSha384(SlowSha512):
+  # Overrides SlowSha512._h0.
+  _h0 = (0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
+         0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4)
+
+  block_size = 128
+  digest_size = 48
+
+  def digest(self):
+    return SlowSha512.digest(self)[:48]
+
+
 # --- SHA-256 hash (message digest).
 
 
@@ -1126,12 +1151,11 @@ del _ripemd160_rotl32  # Unpollute namespace.
 # It is about 400+ times slower than OpenSSL's C implementation.
 #
 # This is used in Python 2.4 by default. (Python 2.5 already has
-# hashlib.sha256.)
+# hashlib.new('ripemd160') using OpenSSL.)
 #
 # Most users shouldn't be using this, because it's too slow in production
 # (as used in pbkdf2). Python 2.4 users are encouraged to upgrade to
-# Python >=2.5, install hashlib or pycrypto from PyPi, all of which
-# contain a faster RIPEMD-160 implementation in C.
+# Python >=2.5.
 class SlowRipeMd160(object):
   _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
 
@@ -1362,7 +1386,7 @@ HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha1': (find_best_digest_cons('sha1', 'SHA1', SlowSha1), 64),
     'sha256': (find_best_digest_cons('sha256', 'SHA256', SlowSha256), 64),
     'sha224': (find_best_digest_cons('sha224', 'SHA224', None), 64),
-    'sha384': (find_best_digest_cons('sha384', 'SHA384', None), 128),
+    'sha384': (find_best_digest_cons('sha384', 'SHA384', SlowSha384), 128),
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
     'whirlpool': (find_best_digest_cons('whirlpool', 'Whirlpool', SlowWhirlpool), 64),
@@ -2091,7 +2115,6 @@ MIN_TRUECRYPT_VERSION_FOR_HASH = {
     'sha512': 0x500,
     'sha1': 0x100,
     'whirlpool': 0x400,
-    # !! TODO(pts): Add SHA-384. https://en.wikipedia.org/wiki/SHA-2
 }
 
 TRUECRYPT_AUTO_HASH_ORDER = ('sha512', 'sha1')

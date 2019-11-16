@@ -63,6 +63,21 @@ def test_sha512():
   assert sha512('?' + data).hexdigest() == 'fd4f94f3286d12bd00787bf071f14cabfe1f7d8af120b2e497e09e3203fc8e8f83d64b7a07fd9f516a85c464504c13cfed0d78fe6a5c90b726f9bb5a2cfc2f07'
 
 
+def test_sha384():
+  sha384 = tinyveracrypt.HASH_DIGEST_PARAMS['sha384'][0]
+  assert sha384('foobar').digest() == '<\x9c0\xd9\xf6e\xe7MQ\\\x84)`\xd4\xa4Q\xc8:\x01%\xfd=\xe79-{7#\x1a\xf1\x0cr\xeaX\xae\xdf\xcd\xf8\x9aWe\xbf\x90*\xf9>\xcf\x06'
+  assert sha384('Foobar! ' * 14).digest() == '\x99\x93.\xcf\x93Rd\xa9\x8f4\xe2\x90\x13\xdf\xe2\xd7@\xd0\x85\x85\xd1"\xfa\xde\xfb\x1c\x16x"\x8b\xbc}\x01\xc0\x84\xe6\xf4\xacs\xea;\xe5\xb49{\xcc\xc9='
+  d = sha384('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == "\n\xe3b\xb3\xde\xe4&6\xcc\xa5\xb2\xe1\x9c\x0c\xce)\xbaQ\xee\x03\xa3\xfb`\xac\xbe\xc6#X\x8c\xe4\xfc\xb8\xdf\xbeA\x9f+\x8e%\x80-'7=\xc0*J\xa1"
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert sha384(data).hexdigest() == '000b73a112b9c2d65ae8bc20544e4e16818017b65b47b4a3d10418f2778eeaa58c0140531a0506a6b7a5d39bb30e6ad1'
+  assert sha384(data[1:]).hexdigest() == '51dcad7685d00c18645e2cb8f83567d245a5c10df387d1abe5acf2f3c2b642a59e926f8063c0499f5201db6984e7b8dd'
+  assert sha384('?' + data).hexdigest() == '194d26efbc285d8b10f3320964a8615c2474fd78b9c2ed888ec974e6aef5902ad43a6ece90701473ed4bdb78fcc10894'
+
+
 def test_sha256():
   sha256 = tinyveracrypt.HASH_DIGEST_PARAMS['sha256'][0]
   assert sha256('foobar').digest() == '\xc3\xab\x8f\xf17 \xe8\xad\x90G\xdd9Fk<\x89t\xe5\x92\xc2\xfa8=J9`qL\xae\xf0\xc4\xf2'
@@ -484,6 +499,7 @@ def test():
   test_gf2pow128mul()
   test_aes()
   test_sha512()
+  test_sha384()
   test_sha256()
   test_sha1()
   test_ripemd160()
@@ -514,6 +530,8 @@ if __name__ == '__main__':
       tinyveracrypt.new_aes = tinyveracrypt.SlowAes
     elif arg == '--slow-sha512':
       tinyveracrypt.HASH_DIGEST_PARAMS['sha512'] = (tinyveracrypt.SlowSha512,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha512'][1:]
+    elif arg == '--slow-sha384':
+      tinyveracrypt.HASH_DIGEST_PARAMS['sha384'] = (tinyveracrypt.SlowSha384,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha384'][1:]
     elif arg == '--slow-sha256':
       tinyveracrypt.HASH_DIGEST_PARAMS['sha256'] = (tinyveracrypt.SlowSha256,) + tinyveracrypt.HASH_DIGEST_PARAMS['sha256'][1:]
     elif arg == '--slow-sha1':
