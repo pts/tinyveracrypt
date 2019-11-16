@@ -408,16 +408,16 @@ def crypt_aes_cbc(aes_key, data, do_encrypt, iv):
   return ''.join(yield_crypt_blocks(iv))
 
 
-def generate_iv_plain(sector_idx, pack=struct.pack):
-  return pack('<L12x', sector_idx & 0xffffffff)
+def generate_iv_plain(sector_idx, _pack=struct.pack):
+  return _pack('<L12x', sector_idx & 0xffffffff)
 
 
-def generate_iv_plain64(sector_idx, pack=struct.pack):
-  return pack('<Q8x', sector_idx & 0xffffffffffffffff)
+def generate_iv_plain64(sector_idx, _pack=struct.pack):
+  return _pack('<Q8x', sector_idx & 0xffffffffffffffff)
 
 
-def generate_iv_plain64be(sector_idx, pack=struct.pack):
-  return pack('>8xQ', sector_idx & 0xffffffffffffffff)
+def generate_iv_plain64be(sector_idx, _pack=struct.pack):
+  return _pack('>8xQ', sector_idx & 0xffffffffffffffff)
 
 
 def generate_iv_essiv(sector_idx, codebook_encrypt=None, _pack=struct.pack):
@@ -427,6 +427,9 @@ def generate_iv_essiv(sector_idx, codebook_encrypt=None, _pack=struct.pack):
 
 
 def get_generate_iv_func(keytable, iv_generator):
+  # See https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt for the
+  # differences between IV generators plain, plain64, plain64be, essiv:sha256,
+  # benbi, tcw etc.
   if iv_generator == 'plain':
     return generate_iv_plain
   elif iv_generator == 'plain64':
@@ -449,12 +452,12 @@ def _get_aes_cbc_sector_codebooks(keytable, iv_generator=None):
 
 def _crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
   codebook, generate_iv_func = codebooks
-  pack = struct.pack
+  _crypt_aes_cbc = crypt_aes_cbc
 
   def yield_crypt_sectors(sector_idx):
     for i in xrange(0, len(data), 512):
       iv = generate_iv_func(sector_idx)
-      yield crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
+      yield _crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
       sector_idx += 1
 
   return ''.join(yield_crypt_sectors(sector_idx))
@@ -491,7 +494,6 @@ def get_aes_lrw_codebooks(aes_lrw_key):
   if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) >= 2:
     return aes_lrw_key
   check_aes_lrw_key(aes_lrw_key)
-
   hi, lo = struct.unpack('>QQ', aes_lrw_key[-16:])
   return (new_aes(aes_lrw_key[:-16]), hi << 64 | lo)
 
@@ -531,66 +533,56 @@ def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=None, block_idx=1):
   return ''.join(yield_crypt_blocks(block_idx))
 
 
-# See https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt for the
-# differences between IV generators plain, plain64, plain64be, essiv:sha256,
-# benbi, tcw etc.
-
-def crypt_aes_lrw_benbi_sectors(aes_lrw_key, data, do_encrypt, sector_idx=0):
-  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
-  pack = struct.pack
-  block_idx = (sector_idx << 5) + 1  # benbi starts with block 1.
-
-  def yield_crypt_sectors(block_idx):
-    for i in xrange(0, len(data), 512):
-      yield crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=block_idx & 0xffffffffffffffff)
-      block_idx += 32
-
-  return ''.join(yield_crypt_sectors(block_idx))
+def generate_lrw_iv_benbi(sector_idx):
+  return ((sector_idx << 5) + 1) & 0xffffffffffffffff
 
 
-# Weird Linux behavior, *-lrw-benbi is recommended instead.
-def get_aes_lrw_plain_codebooks(aes_lrw_key):
-  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
-    return aes_lrw_key
-  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n, pack=struct.pack, unpack=struct.unpack: unpack('<Q', pack('>Q', n & 0xffffffff))[0] << 64),)
+def generate_lrw_iv_plain(sector_idx, _pack=struct.pack, _unpack=struct.unpack):
+  return _unpack('<Q', _pack('>Q', sector_idx & 0xffffffff))[0] << 64
 
 
-# Weird Linux behavior, *-lrw-benbi is recommended instead.
-def get_aes_lrw_plain64_codebooks(aes_lrw_key):
-  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n, pack=struct.pack, unpack=struct.unpack: unpack('<Q', pack('>Q', n & 0xffffffffffffffff))[0] << 64),)
+def generate_lrw_iv_plain64(sector_idx, _pack=struct.pack, _unpack=struct.unpack):
+  return _unpack('<Q', _pack('>Q', sector_idx & 0xffffffffffffffff))[0] << 64
 
 
-# Weird Linux behavior, *-lrw-benbi is recommended instead.
-def get_aes_lrw_plain64be_codebooks(aes_lrw_key):
-  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
-    return aes_lrw_key
-  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n: n & 0xffffffffffffffff),)
+def generate_lrw_iv_plain64be(sector_idx):
+  return sector_idx & 0xffffffffffffffff
 
 
-# Weird Linux behavior, *-lrw-benbi is recommended instead.
-def get_aes_lrw_essiv_sha256_codebooks(aes_lrw_key):
-  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
-    return aes_lrw_key
-  _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
-  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
-  hash_encrypt = new_aes(_sha256(aes_lrw_key).digest()).encrypt
-  pack, unpack = struct.pack, struct.unpack
-
-  def generate_block_idx(n, encrypt=hash_encrypt, pack=struct.pack, unpack=struct.unpack):
-    iv_str = encrypt(pack('<QQ', n & 0xffffffffffffffff, n >> 64))
-    hi, lo = unpack('>QQ', iv_str)
-    return lo | hi << 64
-
-  return codebooks + (generate_block_idx,)
+def generate_lrw_iv_essiv(sector_idx, codebook_encrypt=None, _pack=struct.pack, _unpack=struct.unpack):
+  hi, lo = _unpack('>QQ', codebook_encrypt(_pack('<Q8x', sector_idx & 0xffffffffffffffff)))
+  return lo | hi << 64
 
 
-def crypt_aes_lrw_plainx_sectors(aes_lrw_key, data, do_encrypt, sector_idx=0):
-  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
-  generate_block_idx = codebooks[2]
+def get_generate_lrw_iv_func(keytable, iv_generator):
+  if iv_generator == 'benbi':  # Original design, use.
+    return generate_lrw_iv_benbi
+  elif iv_generator == 'plain':  # Weird, too short, don't use.
+    return generate_lrw_iv_plain
+  elif iv_generator == 'plain64':  # Weird, don't use.
+    return generate_lrw_iv_plain64
+  elif iv_generator == 'plain64be':  # Weird, don't use.
+    return generate_lrw_iv_plain64be
+  elif iv_generator == 'essiv:sha256':  # Weird dm-crypt, slow, don't use.
+    _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
+    codebook_encrypt = new_aes(_sha256(keytable).digest()).encrypt
+    return with_defaults(generate_lrw_iv_essiv, codebook_encrypt=codebook_encrypt)
+  else:
+    raise ValueError('Unknown IV generator: %s' % iv_generator)
+
+
+def _get_aes_lrw_sector_codebooks(keytable, iv_generator=None):
+  # iv_generator should be overridden with a callable using with_defaults.
+  check_aes_lrw_key(keytable)
+  return get_aes_lrw_codebooks(keytable) + (get_generate_lrw_iv_func(keytable, iv_generator),)
+
+
+def _crypt_aes_lrw_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  generate_iv_func, _crypt_aes_lrw = codebooks[2], crypt_aes_lrw
 
   def yield_crypt_sectors(sector_idx):
     for i in xrange(0, len(data), 512):
-      yield crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=generate_block_idx(sector_idx))
+      yield _crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=generate_iv_func(sector_idx))
       sector_idx += 1
 
   return ''.join(yield_crypt_sectors(sector_idx))
@@ -607,7 +599,7 @@ def check_aes_xts_key(aes_xts_key):
 def get_aes_xts_codebooks(aes_xts_key):
   """Returns (codebook1, codebook2) pair, as AES objects with
   .encrypt and .decrypt methods."""
-  if isinstance(aes_xts_key, tuple) and len(aes_xts_key) == 2:
+  if isinstance(aes_xts_key, tuple) and len(aes_xts_key) >= 2:
     return aes_xts_key
   check_aes_xts_key(aes_xts_key)
   half_key_size = len(aes_xts_key) >> 1
@@ -657,7 +649,7 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, iv=None):
   #   else:
   #     return cipher.decrypt(data)
 
-  codebook1, codebook2 = get_aes_xts_codebooks(aes_xts_key)
+  codebook1, codebook2 = get_aes_xts_codebooks(aes_xts_key)[:2]
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
   del codebook1
 
@@ -703,11 +695,11 @@ def _get_aes_xts_sector_codebooks(keytable, iv_generator=None):
 
 
 def _crypt_aes_xts_sectors(codebooks, data, do_encrypt, sector_idx=0):
-  aes_xts_codebooks, generate_iv_func = codebooks[:2], codebooks[2]
+  generate_iv_func, _crypt_aes_xts = codebooks[2], crypt_aes_xts
 
   def yield_crypt_sectors(sector_idx):
     for i in xrange(0, len(data), 512):
-      yield crypt_aes_xts(aes_xts_codebooks, data[i : i + 512], do_encrypt, iv=generate_iv_func(sector_idx))
+      yield _crypt_aes_xts(codebooks, buffer(data, i, 512), do_encrypt, iv=generate_iv_func(sector_idx))
       sector_idx += 1
 
   return ''.join(yield_crypt_sectors(sector_idx))
@@ -1578,16 +1570,8 @@ def get_crypt_sectors_funcs(cipher, keytable_size=None):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_xts_sectors, with_defaults(_get_aes_xts_sector_codebooks, iv_generator=iv_generator), (32, 48, 64)
     elif cipher in ('aes-cbc-essiv:sha256', 'aes-cbc-plain', 'aes-cbc-plain64', 'aes-cbc-plain64be'):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
-    elif cipher == 'aes-lrw-benbi':
-      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_benbi_sectors, get_aes_lrw_codebooks, (32, 40, 48)
-    elif cipher == 'aes-lrw-plain':
-      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain_codebooks, (32, 40, 48)
-    elif cipher == 'aes-lrw-plain64':
-      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain64_codebooks, (32, 40, 48)
-    elif cipher == 'aes-lrw-plain64be':
-      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain64be_codebooks, (32, 40, 48)
-    elif cipher == 'aes-lrw-essiv:sha256':
-      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_essiv_sha256_codebooks, (32, 40, 48)
+    elif cipher in ('aes-lrw-benbi', 'aes-lrw-essiv:sha256', 'aes-lrw-plain', 'aes-lrw-plain64', 'aes-lrw-plain64be'):
+      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_lrw_sectors, with_defaults(_get_aes_lrw_sector_codebooks, iv_generator=iv_generator), (32, 40, 48)
   if not crypt_func:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:
