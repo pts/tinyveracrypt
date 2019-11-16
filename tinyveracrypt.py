@@ -606,7 +606,11 @@ def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=0, block_idx=1):
 # Don't use this, the iv for data[:16] is insecure. Use crypt_aes_lrw instead.
 # crypt_aes_lrw_zerobased = with_defaults(crypt_aes_lrw, block_idx=0)
 def crypt_aes_lrw_zerobased(aes_lrw_key, data, do_encrypt, ofs=0):
-  return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs, block_idx=0)
+  return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=ofs, block_idx=0)
+
+
+def crypt_aes_lrw_seek16(aes_lrw_key, data, do_encrypt, ofs=0, sector_idx=0):
+  return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=ofs, block_idx=generate_lrw_iv_benbi(sector_idx))
 
 
 def generate_lrw_iv_benbi(sector_idx):
@@ -765,12 +769,17 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, iv=None):
   return ''.join(yield_crypt_blocks(t))
 
 
+def crypt_aes_xts_seek16(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
+  return crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=ofs, sector_idx=sector_idx & 0xffffffffffffffff)
+
+
 def _get_aes_xts_sector_codebooks(keytable, iv_generator=None):
   # iv_generator should be overridden with a callable using with_defaults.
   return get_aes_xts_codebooks(keytable) + (get_generate_iv_func(keytable, iv_generator),)
 
 
 def _crypt_aes_xts_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  # !! Make these a generator.
   generate_iv_func, _crypt_aes_xts = codebooks[2], crypt_aes_xts
 
   def yield_crypt_sectors(sector_idx):
@@ -1421,6 +1430,7 @@ HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
     'whirlpool': (find_best_digest_cons('whirlpool', 'Whirlpool', SlowWhirlpool), 64),
+    # TODO(pts): Add support for hash 'streeblog', supported by VeraCrypt.
 }
 
 
@@ -1799,6 +1809,60 @@ def ensure_block_device(filename, block_device_callback):
         pass
 
 
+# --- VeraCrypt and TrueCrypt feature matrix.
+
+
+# https://github.com/DrWhax/truecrypt-archive/blob/master/doc/Version-History.md
+MIN_TRUECRYPT_VERSION_FOR_HASH = {
+    'ripemd160': 0x201,
+    'sha512': 0x500,
+    'sha1': 0x100,
+    'whirlpool': 0x400,
+}
+
+TRUECRYPT_AUTO_HASH_ORDER = ('sha512', 'sha1')
+
+# TODO(pts): Add 'streeblog'-512 (SlowStreeblog) to tinyveracrypt.py, then add it here.
+VERACRYPT_HASHES = ('sha512', 'sha256', 'ripemd160', 'whirlpool')
+
+# https://github.com/DrWhax/truecrypt-archive/blob/master/doc/Version-History.md
+MIN_TRUECRYPT_VERSION_FOR_CIPHER = {
+    'aes-cbc-tcw': 0x200,
+    'aes-lrw-benbi': 0x401,
+    'aes-xts-plain64': 0x500,
+}
+
+TRUECRYPT_AUTO_CIPHER_ORDER = ('aes-xts-plain64', 'aes-lrw-benbi', 'aes-cbc-tcw')
+
+VERACRYPT_CIPHERS = ('aes-xts-plain64',)
+
+# From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
+#
+# Please note that tcrypt.c tries multiple ciphers: ('aes-xts-plain64',
+# 'serpent-xts-plain64', 'twofish-xts-plain64', ...) (29 in total),
+# we support only the first one.
+#
+# cryptsetup-1.7.3 ignores is_legacy and also detects legacy modes.
+SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
+    (0, 0, 'pbkdf2', 'ripemd160', 2000),
+    (0, 0, 'pbkdf2', 'ripemd160', 1000),
+    (0, 0, 'pbkdf2', 'sha512',    1000),
+    (0, 0, 'pbkdf2', 'whirlpool', 1000),
+    (1, 0, 'pbkdf2', 'sha1',      2000),
+    (0, 1, 'pbkdf2', 'sha512',    500000),
+    (0, 1, 'pbkdf2', 'ripemd160', 655331),
+    (0, 1, 'pbkdf2', 'ripemd160', 327661), # Boot only.
+    (0, 1, 'pbkdf2', 'whirlpool', 500000),
+    (0, 1, 'pbkdf2', 'sha256',    500000), # VeraCrypt 1.0f.
+    (0, 1, 'pbkdf2', 'sha256',    200000), # Boot only.
+)
+
+VERACRYPT_AND_TRUECRYPT_CIPHERS = (
+    VERACRYPT_CIPHERS,
+    tuple(sorted(MIN_TRUECRYPT_VERSION_FOR_CIPHER)),
+)
+
+
 # --- VeraCrypt crypto.
 
 
@@ -2138,43 +2202,6 @@ def parse_dechd(dechd, cipher, device_size):
 class IncorrectPassphraseError(ValueError):
   """Raised when trying to open an encrypted volume with an incorrect
   passphrase."""
-
-
-# https://github.com/DrWhax/truecrypt-archive/blob/master/doc/Version-History.md
-MIN_TRUECRYPT_VERSION_FOR_HASH = {
-    'ripemd160': 0x201,
-    'sha512': 0x500,
-    'sha1': 0x100,
-    'whirlpool': 0x400,
-}
-
-TRUECRYPT_AUTO_HASH_ORDER = ('sha512', 'sha1')
-
-# From cryptsetup-1.7.3/lib/tcrypt/tcrypt.c .
-#
-# Please note that tcrypt.c tries multiple ciphers: ('aes-xts-plain64',
-# 'serpent-xts-plain64', 'twofish-xts-plain64', ...) (29 in total),
-# we support only the first one.
-#
-# cryptsetup-1.7.3 ignores is_legacy and also detects legacy modes.
-SETUP_MODES = (  # (is_legacy, is_veracrypt, kdf, hash, iterations).
-    (0, 0, 'pbkdf2', 'ripemd160', 2000),
-    (0, 0, 'pbkdf2', 'ripemd160', 1000),
-    (0, 0, 'pbkdf2', 'sha512',    1000),
-    (0, 0, 'pbkdf2', 'whirlpool', 1000),
-    (1, 0, 'pbkdf2', 'sha1',      2000),
-    (0, 1, 'pbkdf2', 'sha512',    500000),
-    (0, 1, 'pbkdf2', 'ripemd160', 655331),
-    (0, 1, 'pbkdf2', 'ripemd160', 327661), # Boot only.
-    (0, 1, 'pbkdf2', 'whirlpool', 500000),
-    (0, 1, 'pbkdf2', 'sha256',    500000), # VeraCrypt 1.0f.
-    (0, 1, 'pbkdf2', 'sha256',    200000), # Boot only.
-)
-
-VERACRYPT_AND_TRUECRYPT_CIPHERS = (
-    ('aes-xts-plain64',),  # veracrypt_ciphers.
-    ('aes-xts-plain64', 'aes-lrw-benbi', 'aes-cbc-tcw'),  # truecrypt_ciphers.
-)
 
 
 def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
@@ -2967,10 +2994,10 @@ class DmCryptFlushingFile(object):
   fsync and the ioctl BLKFLSBUF.
   """
 
-  __slots__ = ('_do', '_ds', '_keytable', '_iv_ofs', '_f', '_df', '_fsync',
-               '_ioctl', '_BLKFLSBUF', '_codebook1')
+  __slots__ = ('_do', '_ds', '_codebooks', '_iv_ofs', '_f', '_df', '_fsync',
+               '_ioctl', '_BLKFLSBUF', '_crypt_func', '_crypt_is_seek16')
 
-  def __init__(self, filename, decrypted_ofs, decrypted_size, decrypted_filename, keytable, iv_ofs):
+  def __init__(self, filename, decrypted_ofs, decrypted_size, decrypted_filename, keytable, iv_ofs, cipher):
     import fcntl
     # Make __del__ work.
     self._f = self._df = None
@@ -2987,9 +3014,20 @@ class DmCryptFlushingFile(object):
     check_aes_xts_key(keytable)
     self._do = decrypted_ofs
     self._ds = decrypted_size
-    self._keytable = keytable
     self._iv_ofs = iv_ofs
-    self._codebook1 = new_aes(keytable[:len(keytable) >> 1])
+    if cipher == 'aes-xts-plain64':  # !! More generic, e.g. aes-xts-essiv:sha256.
+      self._codebooks = get_aes_xts_codebooks(keytable)
+      self._crypt_func = crypt_aes_xts_seek16
+      self._crypt_is_seek16 = True
+    elif cipher == 'aes-lrw-benbi':
+      self._codebooks = get_aes_lrw_codebooks(keytable)
+      self._crypt_func = crypt_aes_lrw_seek16
+      self._crypt_is_seek16 = True
+    else:  # !! Support more via get_crypt_sectors_funcs; some of them may be seekable. Make all seeakable.
+      self._crypt_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(keytable))
+      self._codebooks = get_codebooks_func(keytable)
+      # TODO(pts): Make aes-xts-* and aes-lrw-* also seekable (and detectable).
+      self._crypt_is_seek16 = False
 
     self._f = open(filename, 'r+b')
     is_ok = False
@@ -3056,24 +3094,33 @@ class DmCryptFlushingFile(object):
   def write(self, data):
     data = buffer(data)
     ofs = self._f.tell()
+    codebooks, crypt_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._crypt_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
     while data:
-      if ofs + len(data) <= self._do or ofs >= self._do + self._ds:
-        self._f.write(data)  # Shortcut.
+      if ofs + len(data) <= do or ofs >= do + ds:
+        f.write(data)  # Shortcut.
         return
       size = min(len(data), 512 - (ofs & 511))
-      if self._do <= ofs < self._do + self._ds:
-        if ofs & 15:
-          raise ValueError('Write offset must be divisible by 16, got: %d' % ofs)
+      if do <= ofs < do + ds:
+        ofs512 = ofs & 511
+        if ofs512:
+          if crypt_is_seek16:
+            if ofs & 15:
+              raise ValueError('Write offset must be divisible by 16, got: %d' % ofs)
+          else:
+            raise ValueError('Write offset must be divisible by 512, got: %d' % ofs)
         if size & 15:
           raise ValueError('Write size must be divisible by 16, got: %d' % size)
-        if ofs + size > self._do + self._ds:
+        if ofs + size > do + ds:
           raise ValueError('Write spans from decrypted to raw.')
-        self._df.seek(ofs - self._do)
-        sector_idx = (ofs - self._do + self._iv_ofs) >> 9
-        self._df.write(crypt_aes_xts(self._keytable, data, do_encrypt=False, sector_idx=sector_idx & 0xffffffffffffffff, ofs=(ofs & 511)))
-        self._f.seek(ofs + size)
+        df.seek(ofs - do)
+        sector_idx = (ofs - do + iv_ofs) >> 9
+        if ofs512:
+          df.write(crypt_func(codebooks, data, do_encrypt=False, sector_idx=sector_idx, ofs=ofs512))
+        else:
+          df.write(crypt_func(codebooks, data, do_encrypt=False, sector_idx=sector_idx))
+        f.seek(ofs + size)
       else:
-        self._f.write(data)
+        f.write(data)
       ofs += size
       data = buffer(data, size)
 
@@ -3142,6 +3189,8 @@ def check_luks_decrypted_ofs(decrypted_ofs):
     # and fails with
     # `Reduced data offset is allowed only for detached LUKS header.' for
     # cryptsetup-1.7.3 otherwise.
+    #
+    # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
     raise ValueError('decrypted_ofs must be at least 4096 for LUKS, got: %d' % decrypted_ofs)
   if decrypted_ofs & 511:
     raise ValueError('decrypted_ofs must be divisible by 512, got: %d' % decrypted_ofs)
@@ -4331,6 +4380,17 @@ def cmd_create(args):
     raise UsageError('missing flag: --volume-type=normal')
   if cipher is None:
     raise UsageError('missing flag: --encryption=aes')
+  if cipher == 'auto':
+    if is_opened:
+      cipher = None
+    elif truecrypt_version:
+      for cipher in TRUECRYPT_AUTO_CIPHER_ORDER:
+        if MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] <= truecrypt_version:
+          break
+      else:
+        raise UsageError('no suitable hash found for --truecrypt_version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
+    else:
+      cipher = TRUECRYPT_AUTO_CIPHER_ORDER[0]
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
   if random_source != '/dev/urandom':
@@ -4342,6 +4402,15 @@ def cmd_create(args):
       raise UsageError('missing flag: --batch-mode')
   if hash is None:
     raise UsageError('missing flag: --hash=...')
+  if hash == 'auto':
+    if truecrypt_version:
+      for hash in TRUECRYPT_AUTO_HASH_ORDER:
+        if MIN_TRUECRYPT_VERSION_FOR_HASH[hash] <= truecrypt_version:
+          break
+      else:
+        raise UsageError('no suitable hash found for --truecrypt_version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
+    else:
+      hash = TRUECRYPT_AUTO_HASH_ORDER[0]  # 'sha512'.
   if device_size is None:
     raise UsageError('missing flag: --size=..., recommended but not compatible with veracrypt create: --size=auto')
   if pim is None:  # For compatibility with `veracrypt --create'.
@@ -4369,14 +4438,13 @@ def cmd_create(args):
       key_size = 512
 
   if type_value == 'luks':
-    if hash == 'auto':
-      hash = 'sha512'
     if not is_luks_allowed:
       raise UsageError('--type=luks not allowed for this command, try init')
     if decrypted_ofs is not None:
       if not isinstance(decrypted_ofs, (int, long)):
         raise UsageError('--type=luks conflicts with --ofs=%s' % decrypted_ofs)
       if decrypted_ofs < 4096:
+        # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
         raise UsageError('--ofs=%d too small for --type=luks, minimum is 4096' % decrypted_ofs)
     if do_add_backup:
       raise UsageError('--type=luks conflicts with --add-backup')
@@ -4398,7 +4466,7 @@ def cmd_create(args):
     if not is_nonluks_allowed:
       raise UsageError('--type=%s not allowed for this command, try init' % type_value)
     allowed_ciphers = VERACRYPT_AND_TRUECRYPT_CIPHERS[type_value == 'truecrypt']
-    if cipher not in allowed_ciphers:
+    if not is_opened and cipher not in allowed_ciphers:
       raise UsageError('--type=%s needs %s, got --cipher=%s, try omitting --cipher=...' %
                        (type_value, ' or '.join('--cipher=%s' % cipher for cipher in allowed_ciphers), cipher))
     if type_value == 'truecrypt':
@@ -4415,27 +4483,19 @@ def cmd_create(args):
           raise UsageError('--add-full-header conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
         if do_add_backup is True:
           raise UsageError('--add-backup conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
-        if hash == 'auto':
-          for hash in TRUECRYPT_AUTO_HASH_ORDER:
-            if MIN_TRUECRYPT_VERSION_FOR_HASH[hash] <= truecrypt_version:
-              break
-          else:
-            assert 0, 'auto hash candidate not found'
-        if truecrypt_version < 0x400 and cipher == 'aes-cbc-tcw':  # TODO(pts): Allow --truecrypt-version=3.0 etc.? Check release notes.
-          raise UsageError('--cipher=%s needs at least --truecrypt-version=4.0, got --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (cipher, truecrypt_version >> 8, truecrypt_version & 255))
-        if truecrypt_version < 0x401 and cipher == 'aes-lrw-benbi':
-          raise UsageError('--cipher=%s needs at least --truecrypt-version=4.1, got --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (cipher, truecrypt_version >> 8, truecrypt_version & 255))
-        if truecrypt_version < 0x500 and cipher == 'aes-xts-plain64':
-          raise UsageError('--cipher=%s needs at least --truecrypt-version=5.0, got --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (cipher, truecrypt_version >> 8, truecrypt_version & 255))
-        if hash not in MIN_TRUECRYPT_VERSION_FOR_HASH:
-          raise UsageError('--hash=%s not supported by TrueCrypt, try omitting --hash=...' % (hash, truecrypt_version >> 8, truecrypt_version & 255))
-        if MIN_TRUECRYPT_VERSION_FOR_HASH[hash] > truecrypt_version:
-          raise UsageError('--hash=%s needs at least --truecrypt-version=%d.%d, got --truecrypt-version=%d.%d, try omitting --hash=...' %
-                           (hash, MIN_TRUECRYPT_VERSION_FOR_HASH[hash] >> 8, MIN_TRUECRYPT_VERSION_FOR_HASH[hash] & 255, truecrypt_version >> 8, truecrypt_version & 255))
+      if not is_opened and MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] > truecrypt_version:
+        raise UsageError('--cipher=%s needs at least --truecrypt-version=%d.%d, got --truecrypt-version=%d.%d, try omitting --cipher=... or --truecrypt-version=...' %
+                         (cipher, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] >> 8, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] & 255, truecrypt_version >> 8, truecrypt_version & 255))
+      if hash not in MIN_TRUECRYPT_VERSION_FOR_HASH:
+        raise UsageError('--hash=%s not supported by TrueCrypt, try omitting --hash=...' % hash)
+      if MIN_TRUECRYPT_VERSION_FOR_HASH[hash] > truecrypt_version:
+        raise UsageError('--hash=%s needs at least --truecrypt-version=%d.%d, got --truecrypt-version=%d.%d, try omitting --hash=...' %
+                         (hash, MIN_TRUECRYPT_VERSION_FOR_HASH[hash] >> 8, MIN_TRUECRYPT_VERSION_FOR_HASH[hash] & 255, truecrypt_version >> 8, truecrypt_version & 255))
     else:
       truecrypt_version = False
-    if hash == 'auto':
-      hash = 'sha512'
+      if hash not in VERACRYPT_HASHES:
+        # TODO(pts): Add command-line flag to override, maybe future VeraCrypt versions will support it.
+        raise UsageError('--hash=%s not supported by VeraCrypt, try omitting --hash=...' % hash)
     if cipher not in CRYPT_BY_OFS_MAX_512_FUNCS:
       if decrypted_ofs == 0:
         raise UsageError('--ofs=0 conflicts with --cipher=%s, try --cipher=aes-xts-plain64' % cipher)
@@ -4443,7 +4503,7 @@ def cmd_create(args):
         raise UsageError('--ofs=fat conflicts with --cipher=%s, try --cipher=aes-xts-plain64' % cipher)
       if decrypted_ofs == 'mkfat':
         raise UsageError('--mkfat=... conflicts with --cipher=%s, try --cipher=aes-xts-plain64' % cipher)
-    if key_size != 64 << 3 and not (key_size == 48 << 3 and cipher == 'aes-lrw-benbi'):
+    if key_size is not None and key_size != 64 << 3 and not (key_size == 48 << 3 and cipher == 'aes-lrw-benbi'):
       raise UsageError('--type=%s --cipher=%s needs --key-size=512, got --key-size=%s' % (type_value, cipher, key_size))
     if af_stripe_count not in (1, None):
       raise UsageError('--type=%s conflicts with --af-stripe-count=...' % type_value)
@@ -4474,6 +4534,8 @@ def cmd_create(args):
         raise UsageError('--opened conflicts with --keytable=...')
       if key_size is not None:
         raise UsageError('--opened conflicts with --key-size=...')
+      if cipher is not None:
+        raise UsageError('--opened conflicts with --cipher=...')
       name, expected_device_id = find_dm_crypt_device(device)
       device = None  # Don't use it accidentally.
       setup_path_for_dmsetup()
@@ -4528,12 +4590,20 @@ def cmd_create(args):
         if iv_offset != 0:
           raise ValueError('iv_offset must be 0 for --type=luks; try specifying --type=veracrypt')
       else:
-        if cipher != 'aes-xts-plain64':
-          # !! Allow aes-lrw-benbi (or even aes-cbc-twc as well -- what stops us?), support it in DmCryptFlushingFile.
-          raise ValueError('cipher must be aes-xts-plain64 for --type=%s, got: %r; try specifying --type=luks' % (type_value, sector_format))
+        allowed_ciphers = VERACRYPT_AND_TRUECRYPT_CIPHERS[type_value == 'truecrypt']
+        if cipher not in allowed_ciphers:
+          if cipher in VERACRYPT_AND_TRUECRYPT_CIPHERS[True]:
+            hint = ', try specifying --type=truecrypt'
+          else:
+            hint = ''
+          raise ValueError('--type=%s needs cipher %s, found cipher %s%s' %
+                           (type_value, ' or '.join(allowed_ciphers), cipher, hint))
+        if type_value == 'truecrypt' and MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] > truecrypt_version:
+          raise ValueError('--type=%s cipher %s needs at least --truecrypt-version=%d.%d, got --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' %
+                           (type_value, cipher, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] >> 8, MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] & 255, truecrypt_version >> 8, truecrypt_version & 255))
         expected_keytable_size = (64, 48)[cipher == 'aes-lrw-benbi']
         if len(keytable) != expected_keytable_size:
-          raise ValueError('key size must be %d for --type=%s; try specifying --type=luks' % (keytable_size << 3, type_value))
+          raise ValueError('key size must be %d for --type=%s, try specifying --type=luks' % (keytable_size << 3, type_value))
         expected_iv_offset = (sector_offset, 0)[cipher == 'aes-lrw-benbi']
         if iv_offset != expected_iv_offset:
           raise ValueError('iv_offset and sector_offset must match for --type=%s, got iv_offset=%d sector_offset=%d cipher=%s' % (type_value, iv_offset, sector_offset, cipher))
@@ -4556,16 +4626,14 @@ def cmd_create(args):
       xf = DmCryptFlushingFile(
           filename=device, decrypted_filename='/dev/mapper/%s' % name,
           decrypted_ofs=decrypted_ofs, decrypted_size=decrypted_size,
-          keytable=keytable, iv_ofs=iv_offset << 9)
-      #xf.write('ThisIsHelloWorlF')
-      #xf.seek(32)
-      #xf.write('(MySecondBlock)X')
+          keytable=keytable, iv_ofs=iv_offset << 9, cipher=cipher)
 
       if (device_size >> 9) < sector_offset + sector_count:
         raise ValueError('Raw device too small for encrypted volume, size: %d' % device_size)
       if type_value == 'luks':
         if decrypted_ofs < 4096:
-          raise ValueError('sector_offset too small --type=luks, must be at least 8, got: %d; try specifying --type=veracrypt' % sector_offset)
+          # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
+          raise ValueError('sector_offset too small --type=luks, must be at least 8, got decrypted_ofs=%d sector_offset=%d; try specifying --type=veracrypt' % (decrypted_ofs, sector_offset))
         check_luks_decrypted_ofs(decrypted_ofs)
       else:
         if (do_add_backup is None and
@@ -4704,13 +4772,19 @@ def cmd_create(args):
             f.close()
       if prompt_device_size:
         if is_opened and is_quick:
-          sys.stderr.write('warning: abort now, otherwise encryption headers on %s will be replaced by a new %s, old passwords will be lost, encrypted data will be kept intact\n' % (device, type_value))
+          if filesystem != 'none':
+            encrypted_data_msg = 'overwritten with a new %s filesystem' % filesystem
+          else:
+            encrypted_data_msg = 'kept intact'
+          sys.stderr.write('warning: abort now, otherwise encryption headers on %s will be replaced by a new %s, old passwords will be lost, encrypted data will be %s\n' %
+                           (device, type_value, encrypted_data_msg))
         else:
           sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)
       return prompt_passphrase(do_passphrase_twice=do_passphrase_twice)
 
     if type_value == 'luks':
       if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
+        # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
         raise UsageError('raw device too small for LUKS volume, minimum is 2066432 (2018K), actual size: %d' %
                          device_size)
       if passphrase is None:
@@ -4818,13 +4892,13 @@ def cmd_create(args):
       if decrypted_ofs == 0:  # First 512 bytes written as part of enchd.
         sector_idx += 1
         i += 512
-      if cipher == 'aes-xts-plain64':
+      if cipher == 'aes-xts-plain64':  # !! Cipher like DmCryptFlusingFile.
         aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
         for i in xrange(i, len(mkfs_data), 512):
-          # TODO(pts): Buffer 65536 bytes for writing.
-          xf.write(crypt_aes_xts(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx & 0xffffffffffffffff))
+          # TODO(pts): Buffer 65536 bytes for writing (not possible with a single call to *_seek16).
+          xf.write(crypt_aes_xts_seek16(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
           sector_idx += 1
-      else:  # !! Add shortcut for aes-lrw-benbi by calling crypt_aes_lrw.
+      else:
         crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher)
         codebooks = get_codebooks_func(short_keytable)
         for i in xrange(i, len(mkfs_data), 512):
@@ -4940,7 +5014,7 @@ def main(argv):
   open_default_args = ('--keyfiles=', '--protect-hidden=no', '--filesystem=none', '--encryption=aes', '--custom-name')
   veracrypt_create_args = (
       '--quick', '--volume-type=normal', '--size=auto',
-      '--encryption=aes', '--hash=auto', '--filesystem=none',
+      '--cipher=auto', '--hash=auto', '--filesystem=none',
       '--pim=0', '--keyfiles=',
       # '--random-source=/dev/urandom',
       '--passphrase-once')

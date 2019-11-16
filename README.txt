@@ -106,7 +106,7 @@ Supported ciphers:
 * (TL;DR Supports all AES-based ciphers supported by VeraCrypt and TrueCrypt,
   plus the most common AES-based ciphers used with LUKS1. Doesn't support
   non-AES-based ciphers such as serpent, twofish, camellia, kuznyechik,
-  cast5, des3_ede, blowfish_le, and multiple ciphers combined.)
+  cast5, des3_ede, blowfish_le, and cascades: multiple ciphers combined.)
 * aes-xts-plain64. This is the default and the most common for TrueCrypt
   (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup >= 1.6.0,
   cryptsetup 2.1.0). For TrueCrypt and VeraCrypt encrypted volumes,
@@ -142,8 +142,9 @@ Supported ciphers:
 Supported hashes:
 
 * (TL;DR The recommended and default hash is SHA-512.)
-* (TL;DR Supports all hashes supported by VeraCrypt and TrueCrypt,
-  plus the most common hashes used with LUKS1.)
+* (TL;DR Supports all hashes supported by VeraCrypt and TrueCrypt (except
+  for streeblog, which is supported by VeraCrypt), plus the most common hashes
+  used with LUKS1.)
 * sha512 (SHA-512)
 * sha384 (SHA-384)
 * sha256 (SHA-256)
