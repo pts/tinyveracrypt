@@ -470,10 +470,11 @@ def test_slow():
   passphrase = 'foo'
   # Runs PBKDIF2 with SHA-512 in 15000 iterations.
   # Takes about 6..60 seconds.
-  assert tinyveracrypt.build_header_key(passphrase, SALT) == HEADER_KEY
+  assert tinyveracrypt.build_header_key(passphrase, SALT) == (HEADER_KEY, passphrase)
 
 
 if __name__ == '__main__':
+  do_slow = False
   i = 1
   while i < len(sys.argv):
     arg = sys.argv[i]
@@ -489,6 +490,8 @@ if __name__ == '__main__':
       tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
     elif arg == '--slow-crc32':
       tinyveracrypt.crc32 = tinyveracrypt.slow_crc32
+    elif arg == '--slow':
+      do_slow = True
     else:
       break
     i += 1
@@ -502,6 +505,6 @@ if __name__ == '__main__':
     sys.exit('fatal: unknown flag: %s' % sys.argv[1])
   else:
     test()
-    if len(sys.argv) > i:
+    if do_slow or len(sys.argv) > i:
       test_slow()
     print __file__, ' OK.'
