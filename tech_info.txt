@@ -1,0 +1,89 @@
+TrueCrypt versions and features
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Notable new features in TrueCrypt versions:
+
+* <4.1: (h2) Cipher aes-cbc-tcw added.
+* 4.1: (h2) Cipher aes-lrw-benbi added.
+* 4.3: (h2) Can't create aes-cbc-tcw anymore, but can still open them.
+* 5.0: (h3) Cipher aes-xts-plain64 added. Added decrypted_size (offset 100) field, but TrueCrypt 7.1a still ignores it for h3 5.0 volumes (because of LegacyVolume is true).
+* 6.0: (h4) First non-legacy header format. Supports decrypted_ofs != 512. Removed volume creation time and header creation time fields. Added CRC-32 field for the non-keytable encrypted header region. Added flags field.
+* 7.0: (h5) Added sector size field. Added sector size field.
+* 7.1a: (h5) Last version which supports volume creation.
+* 7.2: (h5) Removed encrypted volume creation.
+* VeraCrypt: (h5) Changed signature from 'TRUE' to 'VERA'. Removed ciphers other than aes-xts-plain64, can't even open such encrypted volumes.
+
+More details: https://github.com/DrWhax/truecrypt-archive/blob/master/doc/Version-History.md
+
+TrueCrypt header format
+~~~~~~~~~~~~~~~~~~~~~~~
+Based on TrueCrypt 7.1a Source/Common/Volumes.c.
+
+Offset	Length	Description
+--------------------------------
+Unencrypted:
+0		64	Salt (h2--h5)
+Encrypted:
+64		4	Signature: ASCII string 'TRUE' (h2--h5, non-VeraCrypt), 'VERA' (VeraCrypt)
+68		2	Header version: 2 (TrueCrypt < 5.0) (h2), 3 (5.0 <= TrueCrypt < 6.0), 4 (6.0 <= TrueCrypt < 7.0) or 5 (7.0 <= TrueCrypt, VeraCrypt) (h2--h5)
+70		2	Required program version: major << 8 | minor; >=0x600 makes a difference (non-legacy volume) (h2--h5)
+72		4	CRC-32 checksum of the (decrypted) bytes 256-511 (h2--h5)
+76		8	Volume creation time (h2--h3); must be 0 (h4--h5)
+84		8	Header creation time (h2--h3); must be 0 (h4--h5)
+92		8	Size of hidden volume in bytes (0 = normal volume) (h2--h5)
+100		8	Size of the decrypted volume in bytes (identical with field 92 for hidden volumes, valid if h3 or field 70 >= 0x600 or flag bit 0 == 1) (h3--h5); must be 0 (h2)
+108		8	Byte offset of the start of the master key scope (valid if field 70 >= 0x600 or flag bit 0 == 1) (h4--h5); Start byte offset of the encrypted area of the volume (h3); must be 0 (h2)
+116		8	Size of the encrypted area within the master key scope (valid if field 70 >= 0x600 or flag bit 0 == 1) (h4--h5); Size of the encrypted area of the volume in bytes (h3); must be 0 (h2)
+124		4	Flags: bit 0 set = system encryption; bit 1 set = non-system in-place encryption, bits 2-31 are reserved (set to zero) (h4--h5); must be 0 (h2--h3)
+128		4	Sector size in bytes, typically 512, default for earlier versions is 512 (h5); must be 0 (h2--h4)
+132		120	Reserved (must contain zeroes) (h2--h5)
+252		4	CRC-32 checksum of the (decrypted) bytes 64..251 (h4--h5)
+256		256	XTS: master keys: primary key (32 bytes for AES) + secondary key (32 bytes for AES) (typically h3--h5)
+                        LRW: LRW multiplication key (16 bytes) + ignored (16 bytes) + master key (32 bytes for AES) (typically h2)
+                        CBC (TCW): IV (16 bytes for AES) + whitening (16 bytes for AES) + master key (32 bytes for AES) (typically h2)
+
+More details:
+https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat
+(contains all encryption, hash, count etc. for TrueCrypt, but not for
+VeraCrypt)
+
+More details:
+http://blog.bjrn.se/2008/01/truecrypt-explained.html : TrueCrypt 4.1, LRW.
+Includes functional Python code (which is compatible with truecrypt,
+cryptsetup and tinyveracrypt).
+
+More details:
+http://blog.bjrn.se/2008/02/truecrypt-explained-truecrypt-5-update.html :
+TrueCrypt 5.0, XTS.
+Includes functional Python code (which is compatible with truecrypt,
+cryptsetup and tinyveracrypt).
+
+VeraCrypt header format
+~~~~~~~~~~~~~~~~~~~~~~~
+--- 0: VeraCrypt hd sector starts here
+0 + 64: salt
+--- 64: header starts here
+64 + 4: signature: "VERA": 56455241 or "TRUE"; for TrueCrypt: --pim=-14 (iterations == 1000), --encryption=aes, --hash=sha512, introduced in TrueCrypt 5.0.
+68 + 2: header_format_version: Volume header format version: 0005
+70 + 2: minimum_version_to_extract: Minimum program version to open (1.11): 010b
+72 + 4: keytablep_crc32: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
+76 + 16: zeros16: 00000000000000000000000000000000
+92 + 8: hidden_volume_size: size of hidden volume (0 for non-hidden): 0000000000000000
+100 + 8: decrypted_size: size of decrypted volume: ????????????????
+108 + 8: decrypted_ofs: offset of encrypted area from 0 (beginning of salt), i.e. byte offset of the master key scope (typically 0x20000): 0000000000020000
+116 + 8: decrypted_size_b: size of the encrypted area within the master key scope (same as size of the decrypted volume): ????????????????
+124 + 4: flag_bits: flag bits (0): 00000000
+128 + 4: sector_size: sector size (512 -- shouldn't it be 4096?): 00000200
+132 + 120: zeros120: 00..00
+--- 252: header ends here
+252 + 4: header_crc32: CRC-32 of header
+256 + 64: keytable (used as key by `dmsetup table' after hex-encoding)
+320 + 192: keytable_padding: typically zeros, but can be anything: 00..00
+--- 512: VeraCrypt hd sector ends here
+
+More details: https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+
+More details: https://www.veracrypt.fr/en/Encryption%20Algorithms.html
+
+More details: https://www.veracrypt.fr/en/Hash%20Algorithms.html
+
+__END__
