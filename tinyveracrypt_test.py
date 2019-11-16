@@ -211,6 +211,7 @@ def test_crypt_aes_cbc():
   decstr2, encstr2 = DECSTR, '6242705e2164d05650e8edde48fb2c00f73dd10d280472c4ab350aaa7a5237a42521e599c4b2e3f722b29481bcf65bc8'.decode('hex')
   decstr3, encstr3 = DECSTR, '8cb57f3e2a322fb7a526fa63d92c87c4d5c055c4e4943dd05a2560b1a0c9f9dcff76334cde72cbb77009b4b31c947d16'.decode('hex')
   decstr4, encstr4 = DECSTR, '6e8b83ae7c680aeaacf8d052487ee61a21a08789c33070fb9fa0216ee7010d8211fdd429c9a423e7b3b0fdb97d1f62a5'.decode('hex')
+  decstr5, encstr5 = DECSTR, 'e3359fe690e3bf87f83eb761150544d1b43f9ede131cfbff2ead4cc69f972df54028bdedf76f67b9cf30e4bbbcde8aed'.decode('hex')
   assert crypt_aes_cbc(key, '', True, iv) == ''
   assert crypt_aes_cbc(key, '', False, iv) == ''
   assert crypt_aes_cbc(key, decstr1, True,  iv) == encstr1
@@ -226,6 +227,8 @@ def test_crypt_aes_cbc():
   assert crypt_aes_cbc_whitening(key, encstr1, False, iv, '\0') == decstr1
   assert crypt_aes_cbc_whitening(key, decstr4, True,  iv, whitening) == encstr4
   assert crypt_aes_cbc_whitening(key, encstr4, False, iv, whitening) == decstr4
+  assert crypt_aes_cbc_whitening(HEADER_KEY[:32], decstr5, True,  HEADER_KEY[32 : 48], HEADER_KEY[40 : 48]) == encstr5
+  assert crypt_aes_cbc_whitening(HEADER_KEY[:32], encstr5, False, HEADER_KEY[32 : 48], HEADER_KEY[40 : 48]) == decstr5
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ab) == encstr3
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ac) != encstr3
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, encstr3, False, sector_idx=0x98765123456789ab) == decstr3
@@ -289,6 +292,20 @@ def test_crypt_aes_lrw():
       '055b0043764a4d7e25464287fc73f3b25345901f00f230773858e05e0d9fad5ee609368787061b3fb588e6d5430c06db'.decode('hex'),
   )
   help_test_crypt_sectors('aes-lrw-', HEADER_KEY[:32], test_vectors)
+
+
+def test_crypt_for_veracrypt_header():
+  crypt_for_veracrypt_header = tinyveracrypt.crypt_for_veracrypt_header
+  # These test vectors are copied from other tests above.
+  decstr1, encstr1 = 'abcdef' * 5 + 'x', '900fb0b4eb5751d04f4141c59c1f4b0563dc58441d957bec7696f1a1a71ceb'.decode('hex')
+  decstr2, encstr2 = DECSTR, '8220a9fa19715f06f83eb761150544d152f823ff8e3b1fd969236ac5517305c957695a49b707c2f7be8fe57f1a359afc'.decode('hex')
+  decstr3, encstr3 = DECSTR, 'e3359fe690e3bf87f83eb761150544d1b43f9ede131cfbff2ead4cc69f972df54028bdedf76f67b9cf30e4bbbcde8aed'.decode('hex')
+  assert crypt_for_veracrypt_header('aes-xts-plain64', HEADER_KEY, decstr1, True ) == encstr1
+  assert crypt_for_veracrypt_header('aes-xts-plain64', HEADER_KEY, encstr1, False) == decstr1
+  assert crypt_for_veracrypt_header('aes-lrw-benbi', HEADER_KEY[32:] + HEADER_KEY[:32], decstr2, True ) == encstr2
+  assert crypt_for_veracrypt_header('aes-lrw-benbi', HEADER_KEY[32:] + HEADER_KEY[:32], encstr2, False) == decstr2
+  assert crypt_for_veracrypt_header('aes-cbc-tcw', HEADER_KEY[32:] + HEADER_KEY[:32], decstr3, True ) == encstr3
+  assert crypt_for_veracrypt_header('aes-cbc-tcw', HEADER_KEY[32:] + HEADER_KEY[:32], encstr3, False) == decstr3
 
 
 def test_veracrypt():
@@ -443,6 +460,7 @@ def test():
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
   test_crypt_aes_lrw()
+  test_crypt_for_veracrypt_header()
   test_veracrypt()
   test_luks()
 

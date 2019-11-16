@@ -1883,6 +1883,22 @@ def encrypt_header(dechd, header_key):
   return enchd
 
 
+def crypt_for_veracrypt_header(cipher, key, data, do_encrypt):
+  check_header_key(key)
+  if cipher == 'aes-xts-plain64':
+    return crypt_aes_xts(key, data, do_encrypt=do_encrypt)
+  elif cipher == 'aes-lrw-benbi':
+    return crypt_aes_lrw(key[32:] + key[:16], data, do_encrypt=do_encrypt)
+  elif cipher == 'aes-cbc-tcw':
+    # Oddly enough, crypt_aes_cbc_tcw_sectors would be incorrect here. The
+    # call below (including the strange whitening value overlapping with the
+    # IV) is compatible with `case CBC:' in EncryptBuffer(...) in TrueCrypt
+    # 7.1a (and earlier).
+    return crypt_aes_cbc_whitening(key[32:], data, do_encrypt=do_encrypt, iv=key[:16], whitening=key[8 : 16])
+  else:
+    raise ValueError('cipher %s not supported for TrueCrypt/VeraCrypt header encryption.' % cipher)
+
+
 def decrypt_header(enchd, header_key):
   if len(enchd) != 512:
     raise ValueError('enchd must be 512 bytes, got: %d' % len(enchd))
