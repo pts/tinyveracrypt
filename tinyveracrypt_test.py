@@ -10,6 +10,16 @@ SALT = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d0394
 HEADER_KEY = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
 
 
+def test_crc32():
+  crc32 = tinyveracrypt.crc32
+  assert crc32('') == 0
+  assert crc32('Hello, World!') == -330644528
+  assert crc32('Hello, Worl!') == 552416217
+  assert crc32('Hello, Wor!') == -2051987617
+  assert crc32('Hello, Wo!') == 689960731
+  assert crc32(buffer('Hello, Wo!')) == 689960731
+
+
 def benchmark_aes(new_aes):
   aes_obj = new_aes('Noob' * 8)  # AES-256.
   for _ in xrange(50000):
@@ -311,6 +321,7 @@ def test_luks():
 
 
 def test():
+  test_crc32()
   test_aes()
   test_sha512()
   test_sha256()
@@ -345,6 +356,8 @@ if __name__ == '__main__':
       tinyveracrypt.ripemd160 = tinyveracrypt.SlowRipeMd160
     elif arg == '--slow-sha1':
       tinyveracrypt.sha1 = tinyveracrypt.SlowSha1
+    elif arg == '--slow-crc32':
+      tinyveracrypt.crc32 = tinyveracrypt.slow_crc32
     else:
       break
     i += 1

@@ -14,13 +14,35 @@ Python 2.4 if the hashlib is installed from PyPi. It doesn't work with older
 versions of Python or Python 3.x.
 """
 
-import binascii
 import itertools
 import os
 import os.path
 import stat
 import struct
 import sys
+
+
+def maybe_import_and_getattr(module_name, attr_name, default=None):
+  try:
+    __import__(module_name)
+  except:
+    return default
+  return getattr(sys.modules[module_name], attr_name, default)
+
+
+def maybe_import_and_call(module_name, func_name, args, default=None):
+  try:
+    __import__(module_name)
+  except:
+    return default
+  new = getattr(sys.modules[module_name], func_name, None)
+  if not callable(new):
+    return default
+  try:
+    return new(*args)
+  except ValueError:
+    return None
+
 
 # --- strxor.
 
@@ -50,6 +72,31 @@ except ImportError:
       def strxor(a, b, izip=itertools.izip, pack=struct.pack, unpack=struct.unpack, fmt='%dB' % size):
         return pack(fmt, *(a ^ b for a, b in izip(unpack(fmt, a), unpack(fmt, b))))
       return strxor
+
+
+# --- CRC32.
+
+
+def slow_crc32(data, crc=0):
+  """Returns (and takes) a signed or unsigned 32-bit integer."""
+  # Based on crc32h in: http://www.hackersdelight.org/hdcodetxt/crc.c.txt
+  crc, _ord = ~crc, ord
+  for c in data:  # Character-by-character.
+    crc ^= _ord(c)
+    crc = ((crc >> 8) & 0xffffff) ^ (
+       (-((crc     ) & 1) & 0x77073096) ^ (-((crc >> 1) & 1) & 0xee0e612c) ^
+       (-((crc >> 2) & 1) & 0x076dc419) ^ (-((crc >> 3) & 1) & 0x0edb8832) ^
+       (-((crc >> 4) & 1) & 0x1db71064) ^ (-((crc >> 5) & 1) & 0x3b6e20c8) ^
+       (-((crc >> 6) & 1) & 0x76dc4190) ^ (-((crc >> 7) & 1) & 0xedb88320))
+  crc = ~crc
+  return (crc & 0x7fffffff) - (crc & 0x80000000)  # Sign-extend.
+
+
+crc32 = maybe_import_and_getattr('zlib', 'crc32')
+if not callable(crc32):
+  crc32 = maybe_import_and_getattr('binascii', 'crc32')
+if not callable(crc32):
+  crc32 = slow_crc32
 
 
 # ---  Pure Python AES block cipher.
@@ -911,28 +958,6 @@ class SlowRipeMd160(object):
 # --- Built-in hashes.
 
 
-def maybe_import_and_getattr(module_name, attr_name, default=None):
-  try:
-    __import__(module_name)
-  except:
-    return default
-  return getattr(sys.modules[module_name], attr_name, default)
-
-
-def maybe_import_and_call(module_name, func_name, args, default=None):
-  try:
-    __import__(module_name)
-  except:
-    return default
-  new = getattr(sys.modules[module_name], func_name, None)
-  if not callable(new):
-    return default
-  try:
-    return new(*args)
-  except ValueError:
-    return None
-
-
 def maybe_hashlib_get_digest_cons(hash):
   try:
     hashlib = __import__('hashlib')
@@ -1454,7 +1479,7 @@ def build_dechd(
   check_decrypted_ofs(decrypted_ofs)
   keytablep = keytable + '\0' * (256 - len(keytable))
   keytable = None  # Unused. keytable[:64]
-  keytablep_crc32 = ('%08x' % (binascii.crc32(keytablep) & 0xffffffff)).decode('hex')
+  keytablep_crc32 = struct.pack('>l', crc32(keytablep))
   # Constants are based on what veracrypt-1.17 generates.
   signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
   header_format_version = 5
@@ -1506,7 +1531,7 @@ def build_dechd(
       keytablep_crc32, hidden_volume_size, decrypted_size,
       decrypted_ofs, decrypted_size, flag_bits, sector_size, zeros120)
   assert len(header) == 188
-  header_crc32 = ('%08x' % (binascii.crc32(header) & 0xffffffff)).decode('hex')
+  header_crc32 = struct.pack('>l', crc32(header))
   dechd = ''.join((salt, header, header_crc32, keytablep))
   assert len(dechd) == 512
   return dechd
@@ -1527,9 +1552,9 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
   signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
   if dechd[64 : 64 + 4] != signature:  # Or 'TRUE'.
     raise ValueError('Signature mismatch.')
-  if dechd[72 : 76] != ('%08x' % (binascii.crc32(dechd[256 : 512]) & 0xffffffff)).decode('hex'):
+  if dechd[72 : 76] != struct.pack('>l', crc32(buffer(dechd, 256, 256))):
     raise ValueError('keytablep_crc32 mismatch.')
-  if dechd[252 : 256] != ('%08x' % (binascii.crc32(dechd[64 : 252]) & 0xffffffff)).decode('hex'):
+  if dechd[252 : 256] != struct.pack('>l', crc32(buffer(dechd, 64, 188))):
     raise ValueError('header_crc32 mismatch.')
   header_format_version, = struct.unpack('>H', dechd[68 : 68 + 2])
   if not (5 <= header_format_version <= 9):
