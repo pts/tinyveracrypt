@@ -8,6 +8,7 @@ import tinyveracrypt
 # Any 64 random bytes will do as a salt.
 SALT = 'd97538ba99ca3182fd9e46184801a836a83a245f703247987dbd8d5c6a39ff5fbc4d03942ec54401d109d407c8033ede03930c95ddcc61b5b44ce3de6cac8b44'.decode('hex')
 HEADER_KEY = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc6660a2313e087fa80775942db79a9f297670f01ea6d555baa8599028cd8c8094'.decode('hex')
+DECSTR = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n'
 
 
 def crypt_sectors(cipher, keytable, data, do_encrypt, sector_idx=0):
@@ -119,8 +120,8 @@ def test_sha1():
 def help_test_crypt_sectors(cipher_prefix, key, test_vectors):
   encstr92, encstr93, encstr94, encstr95 = test_vectors
   p = cipher_prefix
-  decstr = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n'
-  if 0 and cipher_prefix == 'aes-xts-':
+  decstr = DECSTR
+  if 0 and cipher_prefix == 'aes-lrw-':
     print crypt_sectors(p + 'essiv:sha256', key, decstr, True, sector_idx=333).encode('hex')
     print crypt_sectors(p + 'plain64', key, decstr, True, sector_idx=333).encode('hex')
     print crypt_sectors(p + 'plain64be', key, decstr, True, sector_idx=333).encode('hex')
@@ -205,8 +206,8 @@ def test_crypt_aes_xts():
 def test_crypt_aes_cbc():
   crypt_aes_cbc = tinyveracrypt.crypt_aes_cbc
   key, iv = '\xaa' * 32, '\xbb' * 16
-  decstr1, encstr1 = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n', '39e3eada19066384fb90b9262d108f7476c8eefda65e1995c8c8481a826f64ec4695bd5dacca4a89e4d894cd18710bcb'.decode('hex')
-  decstr2, encstr2 = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n', '6242705e2164d05650e8edde48fb2c00f73dd10d280472c4ab350aaa7a5237a42521e599c4b2e3f722b29481bcf65bc8'.decode('hex')
+  decstr1, encstr1 = DECSTR, '39e3eada19066384fb90b9262d108f7476c8eefda65e1995c8c8481a826f64ec4695bd5dacca4a89e4d894cd18710bcb'.decode('hex')
+  decstr2, encstr2 = DECSTR, '6242705e2164d05650e8edde48fb2c00f73dd10d280472c4ab350aaa7a5237a42521e599c4b2e3f722b29481bcf65bc8'.decode('hex')
   assert crypt_aes_cbc(key, '', True, iv) == ''
   assert crypt_aes_cbc(key, '', False, iv) == ''
   assert crypt_aes_cbc(key, decstr1, True,  iv) == encstr1
@@ -225,6 +226,57 @@ def test_crypt_aes_cbc():
       '9f85e36c0483188d1dbbf304bd7498c20f114d455c7c4cc893e38bc665cc17503c94bc98c1429d1f01c03992ebe3e1aa'.decode('hex'),
   )
   help_test_crypt_sectors('aes-cbc-', HEADER_KEY[:32], test_vectors)
+
+
+def test_gf2pow128mul():
+  gf2pow128mul = tinyveracrypt.gf2pow128mul
+  assert gf2pow128mul(0xb9623d587488039f1486b2d8d9283453, 0xa06aea0265e84b8a) == 0xfead2ebe0998a3da7968b8c2f6dfcbd2
+  assert gf2pow128mul(0x0696ce9a49b10a7c21f61cea2d114a22, 0x8258e63daab974bc) == 0x89a493638cea727c0bb06f5e9a0248c7
+  assert gf2pow128mul(0xecf10f64ceff084cd9d9d1349c5d1918, 0xf48a39058af0cf2c) == 0x80490c2d2560fe266a5631670c6729c1
+  assert gf2pow128mul(0x9c65a83501fae4d5672e54a3e0612727, 0x9d8bc634f82dfc78) == 0xd0c221b4819fdd94e7ac8b0edc0ab2cb
+  assert gf2pow128mul(0xb8885a52910edae3eb16c268e5d3cbc7, 0x98878367a0f4f045) == 0xa6f1a7280f1a89436f80fdd5257ec579
+  assert gf2pow128mul(0xd91376456609fac6f85748784c51b272, 0xf6d1fa7f5e2c73b9) == 0xbcbb318828da56ce0008616226d25e28
+  assert gf2pow128mul(0x0865625a18a1aace15dba90dedd95d27, 0x395fcb20c3a2a1ff) == 0xa1c704fc6e913666c7bd92e3bc2cbca9
+  assert gf2pow128mul(0x45ff1a2274ed22d43d31bb224f519fea, 0xd94a263495856bc5) == 0xd0f6ce03966ba1e1face79dfce89e830
+  assert gf2pow128mul(0x0508aaf2fdeaedb36109e8f830ff2140, 0xc15154674dea15bf) == 0x67e0dbe4ddff54458fa67af764d467dd
+  assert gf2pow128mul(0xaec8b76366f66dc8e3baaf95020fdfb5, 0xd1552daa9948b824) == 0x0a3c509baed65ac69ec36ae7ad03cc24
+  assert gf2pow128mul(0x1c2ff5d21b5555781bbd22426912aa58, 0x5cdda0b2dafbbf2e) == 0xc9f85163d006bebfc548d010b6590cf2
+  assert gf2pow128mul(0x1d4db0dfb7b12ea8d431680ac07ba73b, 0xa9913078a5c26c9b) == 0x6e71eaf1e7276f893a9e98a377182211
+  assert gf2pow128mul(0xf7d946f08e94d545ce583b409322cdf6, 0x73c174b844435230) == 0xad9748630fd502fe9e46f36328d19e8d
+  assert gf2pow128mul(0xdeada9ae22eff9bc3c1669f824c46823, 0x6bdd94753484db33) == 0xc40822f2f3984ed58b24bd207b515733
+  assert gf2pow128mul(0x8146e084b094a0814577558be97f9be1, 0xb3fdd171a771c2ef) == 0xf0093a3df939fe1922c6a848abfdf474
+  assert gf2pow128mul(0x7c468425a3bda18a842875150b58d753, 0x6358fcb8015c9733) == 0x369c44a03648219e2b91f50949efc6b4
+  assert gf2pow128mul(0xe5f445041c8529d28afad3f8e6b76721, 0x06cefb145d7640d1) == 0x8c96b0834c896435fe8d4a70c17a8aff
+  assert gf2pow128mul(0xe5f445041c8529d28afad3f8e6b76721, 0xaec8b76366f66dc8e3baaf95020fdfb5) == 0x8051e17110ae04e02c47d1fc167837b0
+
+
+def test_crypt_aes_lrw():
+  crypt_aes_lrw = tinyveracrypt.crypt_aes_lrw
+  key = HEADER_KEY[:48]
+  decstr1, encstr1 = DECSTR, '8220a9fa19715f06f83eb761150544d152f823ff8e3b1fd969236ac5517305c957695a49b707c2f7be8fe57f1a359afc'.decode('hex')
+  decstr2, encstr2 = DECSTR, 'b840f1d6568366e51d47ee92ef1b264633be2e1267b5d478e0f84f9c5841bdaf96a43afafd1e9d27d2bb02870e28a1ed'.decode('hex')
+  assert crypt_aes_lrw(key, '', True ) == ''
+  assert crypt_aes_lrw(key, '', False) == ''
+  assert crypt_aes_lrw(key, decstr1, True ) == encstr1
+  assert crypt_aes_lrw(key, encstr1, False) == decstr1
+  assert crypt_aes_lrw(key, encstr1, True ) != decstr1
+  assert crypt_aes_lrw(key, decstr1[:16], True ) == encstr1[:16]
+  assert crypt_aes_lrw(key, encstr1[:16], False) == decstr1[:16]
+  assert crypt_aes_lrw(key, decstr1[:32], True ) == encstr1[:32]
+  assert crypt_aes_lrw(key, encstr1[:32], False) == decstr1[:32]
+  assert crypt_aes_lrw(key, decstr2, True,  block_idx=321) == encstr2
+  assert crypt_aes_lrw(key, encstr2, False, ofs=5120) == decstr2
+  assert crypt_sectors('aes-lrw-benbi', key, decstr2, True,  sector_idx=10) == encstr2
+  assert crypt_sectors('aes-lrw-benbi', key, encstr2, False, sector_idx=10) == decstr2
+  assert crypt_sectors('aes-lrw-benbi', key, decstr1[:32], True ) == encstr1[:32]
+  assert crypt_sectors('aes-lrw-benbi', key, encstr1[:32], False) == decstr1[:32]
+  test_vectors = (
+      'b3dbfe70608c674c4429846191cf80cb9ca5a35d7d3ba0bf2769bd39ccb5191be70e755265de11594e15bf0f82b07a5a'.decode('hex'),
+      'c5a7c64eb5e9a9dfdc8d52fe6c2dbb088e9bfb0264747b7c3dbc0e41557373bc525ba054edbfbd2fb3505b32b235525a'.decode('hex'),
+      '3ee29537196d22928c96201bf30a11c6944ecb4b2c2afa04fe32f0c062d7a6626b3a2c4b0c88bcbcb9cb9b1273c4330f'.decode('hex'),
+      '055b0043764a4d7e25464287fc73f3b25345901f00f230773858e05e0d9fad5ee609368787061b3fb588e6d5430c06db'.decode('hex'),
+  )
+  help_test_crypt_sectors('aes-lrw-', HEADER_KEY[:32], test_vectors)
 
 
 def test_veracrypt():
@@ -370,6 +422,7 @@ def test_luks():
 
 def test():
   test_crc32()
+  test_gf2pow128mul()
   test_aes()
   test_sha512()
   test_sha256()
@@ -377,6 +430,7 @@ def test():
   test_ripemd160()
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
+  test_crypt_aes_lrw()
   test_veracrypt()
   test_luks()
 

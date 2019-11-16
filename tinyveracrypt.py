@@ -460,6 +460,140 @@ def _crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
   return ''.join(yield_crypt_sectors(sector_idx))
 
 
+# --- AES LRW seekable stream cipher.
+
+
+def gf2pow128mul(a, b):
+  """Multiplication in GF(2**128), as polynomial multiplcation."""
+  if a < b:  # Make b the smaller.
+    a, b = b, a
+  if b < 0:
+    raise ValueError('GF(2**128) factor must be positive.')
+  if a >> 128:
+    raise ValueError('GF(2**128) factor too large: 0x%x' % a)
+  result = 0
+  while b:
+    if b & 1:
+      result ^= a
+    b >>= 1
+    a <<= 1
+    if a >= 0x100000000000000000000000000000000:  # (1 << 128).
+      a ^=  0x100000000000000000000000000000087
+  return result
+
+
+def check_aes_lrw_key(aes_lrw_key):
+  if len(aes_lrw_key) not in (32, 40, 48):
+    raise ValueError('aes_lrw_key must be 32, 40 or 48 bytes, got: %d' % len(aes_lrw_key))
+
+
+def get_aes_lrw_codebooks(aes_lrw_key):
+  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) >= 2:
+    return aes_lrw_key
+  check_aes_lrw_key(aes_lrw_key)
+
+  hi, lo = struct.unpack('>QQ', aes_lrw_key[-16:])
+  return (new_aes(aes_lrw_key[:-16]), hi << 64 | lo)
+
+
+def crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=None, block_idx=1):
+  if len(data) & 15:
+    raise ValueError('data size must be divisible by 16, got: %d' % len(data))
+  codebook, lrw_key = get_aes_lrw_codebooks(aes_lrw_key)[:2]
+  if block_idx < 0:
+    raise ValueError('block_idx must be nonnegative, got: %d' % block_idx)
+  if ofs is not None:
+    if ofs & 15:
+      raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
+    if ofs < -16:
+      raise ValueError('ofs must be at least -16, got: %d' % ofs)
+    block_idx += ofs >> 4
+  is_small_block_idx = not (block_idx + (len(data) >> 4)) >> 128
+  codebook_crypt = (codebook.encrypt, codebook.decrypt)[not do_encrypt]
+  _gf2pow128mul, pack, _strxor_16 = gf2pow128mul, struct.pack, aes_strxor_16
+
+  if is_small_block_idx:
+    def yield_crypt_blocks(block_idx):
+      for i in xrange(0, len(data), 16):
+        # TODO(pts): Faster implementation (like table in Linux).
+        p = _gf2pow128mul(lrw_key, block_idx)
+        block_idx += 1
+        ps = pack('>QQ', p >> 64, p & 0xffffffffffffffff)
+        yield _strxor_16(codebook_crypt(_strxor_16(data[i : i + 16], ps)), ps)
+  else:
+    def yield_crypt_blocks(block_idx):
+      for i in xrange(0, len(data), 16):
+        p = _gf2pow128mul(lrw_key, block_idx & 0xffffffffffffffffffffffffffffffff)
+        block_idx += 1
+        ps = pack('>QQ', p >> 64, p & 0xffffffffffffffff)
+        yield _strxor_16(codebook_crypt(_strxor_16(data[i : i + 16], ps)), ps)
+
+  return ''.join(yield_crypt_blocks(block_idx))
+
+
+# See https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt for the
+# differences between IV generators plain, plain64, plain64be, essiv:sha256,
+# benbi, tcw etc.
+
+def crypt_aes_lrw_benbi_sectors(aes_lrw_key, data, do_encrypt, sector_idx=0):
+  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
+  pack = struct.pack
+  block_idx = (sector_idx << 5) + 1  # benbi starts with block 1.
+
+  def yield_crypt_sectors(block_idx):
+    for i in xrange(0, len(data), 512):
+      yield crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=block_idx & 0xffffffffffffffff)
+      block_idx += 32
+
+  return ''.join(yield_crypt_sectors(block_idx))
+
+
+# Weird Linux behavior, *-lrw-benbi is recommended instead.
+def get_aes_lrw_plain_codebooks(aes_lrw_key):
+  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
+    return aes_lrw_key
+  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n, pack=struct.pack, unpack=struct.unpack: unpack('<Q', pack('>Q', n & 0xffffffff))[0] << 64),)
+
+
+# Weird Linux behavior, *-lrw-benbi is recommended instead.
+def get_aes_lrw_plain64_codebooks(aes_lrw_key):
+  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n, pack=struct.pack, unpack=struct.unpack: unpack('<Q', pack('>Q', n & 0xffffffffffffffff))[0] << 64),)
+
+
+# Weird Linux behavior, *-lrw-benbi is recommended instead.
+def get_aes_lrw_plain64be_codebooks(aes_lrw_key):
+  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
+    return aes_lrw_key
+  return get_aes_lrw_codebooks(aes_lrw_key) + ((lambda n: n & 0xffffffffffffffff),)
+
+
+# Weird Linux behavior, *-lrw-benbi is recommended instead.
+def get_aes_lrw_essiv_sha256_codebooks(aes_lrw_key):
+  if isinstance(aes_lrw_key, tuple) and len(aes_lrw_key) == 3:
+    return aes_lrw_key
+  _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
+  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
+  hash_encrypt = new_aes(_sha256(aes_lrw_key).digest()).encrypt
+  pack, unpack = struct.pack, struct.unpack
+
+  def generate_block_idx(n, encrypt=hash_encrypt, pack=struct.pack, unpack=struct.unpack):
+    iv_str = encrypt(pack('<QQ', n & 0xffffffffffffffff, n >> 64))
+    hi, lo = unpack('>QQ', iv_str)
+    return lo | hi << 64
+
+  return codebooks + (generate_block_idx,)
+
+
+def crypt_aes_lrw_plainx_sectors(aes_lrw_key, data, do_encrypt, sector_idx=0):
+  codebooks = get_aes_lrw_codebooks(aes_lrw_key)
+  generate_block_idx = codebooks[2]
+
+  def yield_crypt_sectors(sector_idx):
+    for i in xrange(0, len(data), 512):
+      yield crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=generate_block_idx(sector_idx))
+      sector_idx += 1
+
+  return ''.join(yield_crypt_sectors(sector_idx))
 
 
 # --- AES XTS seekable stream cipher.
@@ -1444,6 +1578,16 @@ def get_crypt_sectors_funcs(cipher, keytable_size=None):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_xts_sectors, with_defaults(_get_aes_xts_sector_codebooks, iv_generator=iv_generator), (32, 48, 64)
     elif cipher in ('aes-cbc-essiv:sha256', 'aes-cbc-plain', 'aes-cbc-plain64', 'aes-cbc-plain64be'):
       crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
+    elif cipher == 'aes-lrw-benbi':
+      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_benbi_sectors, get_aes_lrw_codebooks, (32, 40, 48)
+    elif cipher == 'aes-lrw-plain':
+      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain_codebooks, (32, 40, 48)
+    elif cipher == 'aes-lrw-plain64':
+      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain64_codebooks, (32, 40, 48)
+    elif cipher == 'aes-lrw-plain64be':
+      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_plain64be_codebooks, (32, 40, 48)
+    elif cipher == 'aes-lrw-essiv:sha256':
+      crypt_func, get_codebooks_func, keytable_sizes = crypt_aes_lrw_plainx_sectors, get_aes_lrw_essiv_sha256_codebooks, (32, 40, 48)
   if not crypt_func:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:
