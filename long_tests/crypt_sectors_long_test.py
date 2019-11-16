@@ -9,16 +9,16 @@ sys.path[:0] = [os.path.join(os.path.dirname(__file__), '..')]
 
 import tinyveracrypt
 
+def crypt_sectors(cipher, keytable, data, do_encrypt, sector_idx=0):
+  yield_crypt_sectors_func, get_codebooks_func = tinyveracrypt.get_crypt_sectors_funcs(cipher, len(keytable))
+  codebooks = get_codebooks_func(keytable)
+  return ''.join(yield_crypt_sectors_func(codebooks, data, do_encrypt, sector_idx))
+
 
 def test_crypt_sectors_long():
   keytable = '07d75b79a5717605014b0f1293b0d932fb8e15974868325db28aa41aeb85c24f79580477d415368cfaa817fbd6409f13'.decode('hex')
 
   ciphertext = open('plain.bin', 'rb').read()
-
-  def crypt_sectors(cipher, keytable, data, do_encrypt, sector_idx=0):
-    crypt_func, get_codebooks_func = tinyveracrypt.get_crypt_sectors_funcs(cipher, len(keytable))
-    codebooks = get_codebooks_func(keytable)
-    return crypt_func(codebooks, data, do_encrypt, sector_idx)
 
   data = open('plain.exp.benbi', 'rb').read()
   assert ciphertext == crypt_sectors('aes-lrw-benbi', keytable, data, True)

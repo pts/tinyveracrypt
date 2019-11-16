@@ -11,10 +11,13 @@ HEADER_KEY = '9e02d6ca37ac50a97093b3323545ec1cd9d11e03bfdaf123043bf1c42df5b6fc66
 DECSTR = '0123456789abcdefHelloHelloHello,WorldWorldWorld\n'
 
 
-def crypt_sectors(cipher, keytable, data, do_encrypt, sector_idx=0):
-  crypt_func, get_codebooks_func = tinyveracrypt.get_crypt_sectors_funcs(cipher, len(keytable))
+def crypt_sectors(cipher, keytable, data, do_encrypt, sector_idx=0, ofs=0):
+  yield_crypt_sectors_func, get_codebooks_func = tinyveracrypt.get_crypt_sectors_funcs(cipher, len(keytable))
   codebooks = get_codebooks_func(keytable)
-  return crypt_func(codebooks, data, do_encrypt, sector_idx)
+  if ofs:
+    return ''.join(yield_crypt_sectors_func(codebooks, data, do_encrypt, sector_idx, ofs=ofs))
+  else:
+    return ''.join(yield_crypt_sectors_func(codebooks, data, do_encrypt, sector_idx))
 
 
 def test_crc32():
@@ -224,7 +227,6 @@ def test_crypt_aes_xts():
   decstr5, encstr5 = 'abcdef' * 5 + 'x', '034abcecdfb030eee19f00b7a570d28abe5a2dcc94010c9ff213e81d703a71'.decode('hex')
   decstr6, encstr6 = 'abcdef' * 5 + 'x', 'baaafe2c516df093cc3845fa541829b48ed951cb918a0de12803748e8b596b'.decode('hex')
   decstr7, encstr7 = 'abcdef' * 5 + 'x', '4fe1e375a8bddece494d188f9005e5d0ad1b378c7ef25ce38b941aba2bdd06'.decode('hex')
-  decstr8, encstr8 = 'abcdEFGH' * 2, 'b4063c67c1740f77f622bd399948d1d6'.decode('hex')
   decstr9, encstr9 = 'Help!' * 206 + 10 * '\0', 'b4f90eebb6dc7660dd8ff234a5d3a5febb24ad850888a0b1dbc9c44e93f0a13d13fc1dd6600397183b48073aeb4924cde29529f43b18cf88407e11a467860a8a3266b7e70d09ebadd46687b402ff35b2556ea726059af9983d62da888ed398ac28e988094e402d21eb6eaee6255c3746e8925a371342d3c1fe9d024fdaa3a6357bdec9825663a01ff93909633b3ca94da7030427455aba1043dbe759bc166742786b28cc6ce0677fbe67fe9ef7d131059135adc3f2ea556886223297db189f969e0d8a3075ddd501a3ed8a95fbbdeb20cabfac2bcd3d1fad4e2bf92a6b34e503fa5c56d3099615a7c3912036a73ee611da8a3c8dd049fd70061a7d952af92f24760eb4777eb5be3fdd4a65f25e2c27960b06a32d2225ceb2619c196bd30c47f902bbb82aa9e3e7827fa1f0c81f8f20a47317d502a26dab7fcd2132e946a8e8558fef3b98d3f843add4a5eb426f5ed7b06a697bcc5f3b000774952bec58ebb8731c3737bf0932b2d0bb02a2c92b2baf882a4be5565259c23213c0817f9ca0e26484c7a07b431df6da75e8379e80727c1b9cca2b8fd9f7aa3566ad73838d440e3501f169cfbdb027ba1a32d9912c1636d68b0aa69236574e4379c0a2b84191464b4349372d6eed69aebbd84e7f9ed31da6e3aa139acfda20b9da54cde50de0bd7529267537b6113944d0ddd1a6ba7cef73926142ef084a8d497dad0d3832305bb293ec38acf8281a9f5dbc69786eb748e43b799933a77df7e21af6f190bb9c5635b7bc4010395f73d19b7fd4d314e2307ace30007bde66e05fcf7fc1002efcf9e30da6f10b1f296b2d873cd644e8c70cae987101f9e431242dcbb9e56c46ceb5310485e277e03ec8ab390e1268729d6d0b9d9cdf7aaa0c5f5dd8839c408530e26a98e74b5aa720de2e55e13870936c9e056ba7eb9fecd013055f6cf09fcc99d7255b0756e3fcaae233b589c53788eba48a095f8cfca20272c780a1af9d4cfe2ae78ed12ddc00547c2a98569ea76d346d3597dc9d5da316f4bc9b1e76799c1a62818393372b7159c1812ee90a05768c6f1d26efd6e90f07fb45b34cf5da4ab5f4281f873ad4c29180991a71d53413b781625e7dc7fcbaf54e879c171ffca87c3a9c8ef1b356a70f878350ea52e2bfc06c1e21db88a4702a67b7f1bd24bb39ada06e03e42cd34c20feb083c80d9d24ac52729f80614c52bea9da8691bcde98c8d7fcb8d92030dd470483f4bbdc3935251c4a9124e0becb2d3229f2bb1a2675a37e9208f633c583285c92f0dc7045326cb129560e3f9769f017515ef3a0194d97d9f84743ccb8c47acf51018b2a88b3359277bc4c54110b073e8dbb346e4a735db69ef110d0e98afe361e78c48bb0f29e21e1fe964e6227b1ce0992cced4d55b38071174bf6927efbd04ff9dbed6af1a208a720fb859bdfc5aa9479eacf27aeca87b73561567bef753d15874cbc852a5daefa'.decode('hex')
   assert len(HEADER_KEY) == 64
   assert crypt_aes_xts(HEADER_KEY, '', True ) == ''
@@ -248,11 +250,11 @@ def test_crypt_aes_xts():
   assert crypt_aes_xts(HEADER_KEY[:48], encstr6, False) == decstr6
   assert crypt_aes_xts(HEADER_KEY[:32], decstr7, True ) == encstr7
   assert crypt_aes_xts(HEADER_KEY[:32], encstr7, False) == decstr7
-  assert crypt_aes_xts(HEADER_KEY, decstr8[:16], True , ofs=16) == encstr8
-  assert crypt_aes_xts(HEADER_KEY, encstr8     , False, ofs=16) == decstr8
   assert crypt_sectors('aes-xts-plain64',   HEADER_KEY, decstr1, True) == encstr1  # Not longer than 12 bytes, same.
   assert crypt_sectors('aes-xts-plain64be', HEADER_KEY, encstr1, False) == decstr1
   assert crypt_sectors('aes-xts-plain',     HEADER_KEY, encstr1, False) == decstr1
+  assert crypt_sectors('aes-xts-plain',     HEADER_KEY, encstr3[48:], False, ofs=48) == decstr3[48:]  # Short.
+  assert crypt_sectors('aes-xts-plain64',   HEADER_KEY, encstr9[64:], False, ofs=64) == decstr9[64:]  # Longer than a sector.
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY, decstr9, True) == encstr9
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY, encstr9, False) == decstr9
   assert crypt_sectors('aes-xts-plain64', HEADER_KEY[:48], decstr6, True) == encstr6
@@ -335,6 +337,7 @@ def test_crypt_aes_lrw():
   key = HEADER_KEY[:48]
   decstr1, encstr1 = DECSTR, '8220a9fa19715f06f83eb761150544d152f823ff8e3b1fd969236ac5517305c957695a49b707c2f7be8fe57f1a359afc'.decode('hex')
   decstr2, encstr2 = DECSTR, 'b840f1d6568366e51d47ee92ef1b264633be2e1267b5d478e0f84f9c5841bdaf96a43afafd1e9d27d2bb02870e28a1ed'.decode('hex')
+  decstr9, encstr9 = 'Help!' * 206 + 10 * '\0', '35a7f4d0fa7a752daa35cd865f0844fbb84426a3cf506151b33242369c7e6ae2ed2fd493b16ca3629724729eb7b49bab2590de79ca0a175c06fa1cc3c71db26e56cafb1b455a1bc7207dcd64e8c8602c7ddc4cba199594e28a459c0e3bec6b15a42603bae3099d983a0ac777bcd608083679c8afbf2098841535da23c1af49e26ed134fd9675dc811afac6b3794159b9876ee0b158aea7f7c86e3b547cf0872fd9ec85d1406f2b443c1dfca273b2d67ddf864ce70e8b4c16cb9b4dfd4b8d0e690d13ce3f19b664216a9aae65b4d4a5e62092daaf4b3668702ad2201e0b0b7f0556aaad9048bf97700929e41179744191b8d123b2b8dd24ef04666e07a55bf7bd60d640879ed7870fda68d19deacb90b8a92e55ca30a53606cc8c287ec2226433e16ba386c070707a162e9ff4a6055b033dcd691db347ae49d7193eca6d8e7d703df7a0210facfa9af3a91d8d95173c4c76c2b3fad4c48dd9eb0290435768d1489a4556ce3eb86e103f7d06cd012c48fd2130a2688b5e94a902401389797dbb65097e2799bfc7b334553f164b199754f6ab40423b563b49801dbd1d8202fafb86f1429c8f0da813c70f9b3fa4fa6d10e94fd65ca6db67ead56df182e3a9c6214797b9b912ffa43806be8618cb4233c14d7a4c21cee34221894fd5f125556edce23b11f27ae85c4478100f1e87b5101351f2deca5de8a2afaa589a9d6fb0e76b46f9677c0fb0c9e1d88ce1276fd51ce1a10f0792915119adb06a8f956912de25b0f6940ef7b9f54475c0b98673955477457f38d939ab8194ce860289948be8b2c2cfd86524718ea63873f52e4f54cc8540bd84bf4b432e0b301e8baebedd48d542780cbf8dde72215b44185a97a47d7edca2fd4dc2850b01e27a8d74de5a1454b42054f426a6fec96569cfcf89ce612f0f4f4ea398d408ee60542abcdb622b79f7bc5258052dcf95a4a43dccdfd6908f224e758d4eea0eaff794f8f9b3c09b8ddbd9011fb38e0099c9bb3ad4960f6ab52e0a574c92569a31d08a4be5a292ebda2d94f03ac536cbea6bb9c82a531ed594ce3770a4bb9a2494279fb0556647c7e6df7dbafc5076097e33c330c68f29d03eeb56b96191d582bb80769b00911b81e42195b3b4c5fed79aee73db20cf7a44d8c8165ebe21d7c920f9984288f9ecf0a4b99c8defbbc62829b019c81b9cd3daaae23a545c5a3bd240c6d8951a50791db399d6a808d24edd83fa20633ecdfe6908e86259fdabf8d04f05a10a801af6b48cdcd9dfce67ede3097603782014bd964b2f9232c0921ce42d85531300bc684a3167b03a40840a002b24a8a94d39beee06d3ab7e96841ee4ebacbd434dacf6d7e1a0935c37061d5616ccbb0b4a006f28c7238e34a2d6bbb5b46916a3306771b37b7faa0295dc7d725b5a38cf5f44361b95bf999d7f8c9fa1b524efd55abcf2dae1efee38c95fbc5d6742277f3f90c62768ac'.decode('hex')
   assert crypt_aes_lrw(key, '', True ) == ''
   assert crypt_aes_lrw(key, '', False) == ''
   assert crypt_aes_lrw(key, decstr1, True ) == encstr1
@@ -346,16 +349,23 @@ def test_crypt_aes_lrw():
   assert crypt_aes_lrw(key, encstr1[:32], False) == decstr1[:32]
   assert crypt_aes_lrw(key, decstr2, True,  block_idx=321) == encstr2
   assert crypt_aes_lrw(key, encstr2, False, ofs=5120) == decstr2
-  decstr1zb = crypt_aes_lrw_zerobased(key, decstr1, True)
-  assert decstr1zb != encstr1
+  encstr1zb = crypt_aes_lrw_zerobased(key, decstr1, True)
+  assert encstr1zb != encstr1
   assert crypt_aes_lrw_zerobased(key, decstr1, True, ofs=16) == encstr1
-  assert crypt_sectors('aes-lrw-plain64',   key, decstr1, True) == decstr1zb
-  assert crypt_sectors('aes-lrw-plain64be', key, decstr1, True) == decstr1zb
-  assert crypt_sectors('aes-lrw-plain',     key, decstr1, True) == decstr1zb
+  assert crypt_sectors('aes-lrw-plain64',   key, decstr1, True) == encstr1zb
+  assert crypt_sectors('aes-lrw-plain64be', key, decstr1, True) == encstr1zb
+  assert crypt_sectors('aes-lrw-plain',     key, decstr1, True) == encstr1zb
   assert crypt_sectors('aes-lrw-benbi', key, decstr2, True,  sector_idx=10) == encstr2
   assert crypt_sectors('aes-lrw-benbi', key, encstr2, False, sector_idx=10) == decstr2
   assert crypt_sectors('aes-lrw-benbi', key, decstr1[:32], True ) == encstr1[:32]
   assert crypt_sectors('aes-lrw-benbi', key, encstr1[:32], False) == decstr1[:32]
+  assert crypt_sectors('aes-lrw-benbi', key, decstr9, True ) == encstr9
+  assert crypt_sectors('aes-lrw-benbi', key, encstr9, False) == decstr9
+  assert crypt_sectors('aes-lrw-plain64', key, decstr1, True, ofs=16) == encstr1  # Short.
+  assert crypt_sectors('aes-lrw-plain64', key, decstr9, True, ofs=16) != encstr9  # Longer than a sector.
+  assert crypt_sectors('aes-lrw-benbi', key, encstr2[16:], False, ofs=16, sector_idx=10) == decstr2[16:]  # Short.
+  assert crypt_sectors('aes-lrw-benbi', key, encstr9[64:], False, ofs=64) == decstr9[64:]  # Longer than a sector.
+  assert crypt_sectors('aes-lrw-plain', key, decstr1[16:], True, ofs=16) == encstr1zb[16:]  # Short.
   test_vectors = (
       'b3dbfe70608c674c4429846191cf80cb9ca5a35d7d3ba0bf2769bd39ccb5191be70e755265de11594e15bf0f82b07a5a'.decode('hex'),
       'c5a7c64eb5e9a9dfdc8d52fe6c2dbb088e9bfb0264747b7c3dbc0e41557373bc525ba054edbfbd2fb3505b32b235525a'.decode('hex'),

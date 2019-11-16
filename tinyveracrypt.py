@@ -43,7 +43,8 @@ def maybe_import_and_call(module_name, func_name, args, default=None):
   except ValueError:
     return None
 
-# --- with_defaults.
+
+# --- Function object manipulation.
 
 
 def with_defaults(func__, **kwargs):
@@ -61,6 +62,12 @@ def with_defaults(func__, **kwargs):
       value = f.func_defaults[i]
     new_defaults.append(value)
   return type(f)(f.func_code, f.func_globals, f.func_name + '@wd', tuple(new_defaults), f.func_closure)
+
+
+def has_arg(func, arg_name):
+  if not callable(func) or not getattr(func, 'func_code', None):
+    raise TypeError
+  return arg_name in func.func_code.co_varnames[:func.func_code.co_argcount]
 
 
 # --- strxor.
@@ -450,17 +457,13 @@ def _get_aes_cbc_sector_codebooks(keytable, iv_generator=None):
   return new_aes(keytable), get_generate_iv_func(keytable, iv_generator)
 
 
-def _crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
+def _yield_crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
   codebook, generate_iv_func = codebooks
   _crypt_aes_cbc = crypt_aes_cbc
-
-  def yield_crypt_sectors(sector_idx):
-    for i in xrange(0, len(data), 512):
-      iv = generate_iv_func(sector_idx)
-      yield _crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
-      sector_idx += 1
-
-  return ''.join(yield_crypt_sectors(sector_idx))
+  for i in xrange(0, len(data), 512):
+    iv = generate_iv_func(sector_idx)
+    yield _crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
+    sector_idx += 1
 
 
 # --- AES CBC TCW (aes-cbc-tcw) seekable stream cipher.
@@ -506,31 +509,26 @@ def crypt_aes_cbc_whitening(aes_key, data, do_encrypt, iv, whitening):
   return ''.join(yield_crypt_strings())
 
 
-def _crypt_aes_cbc_tcw_sectors(codebooks, data, do_encrypt, sector_idx=0):
+def _yield_crypt_aes_cbc_tcw_sectors(codebooks, data, do_encrypt, sector_idx=0):
   codebook, iv_seed, whitening = codebooks
   if len(data) & 15:
     raise ValueError('aes_cbc_tcw data size must be divisible by 16, got: %d' % len(data))
   pack, _strxor_16, _crc32, do_decrypt = struct.pack, aes_strxor_16, crc32, not do_encrypt
-
-  def yield_crypt_strings(sector_idx):
-    for i in xrange(0, len(data), 512):
-      sector_idx_16 = pack('<QQ', sector_idx, sector_idx)
-      iv = _strxor_16(iv_seed, sector_idx_16)
-      sw = _strxor_16(whitening, sector_idx_16)
-      sw = pack('<ll', _crc32(sw[:4]) ^ _crc32(sw[12:]), _crc32(sw[4 : 8]) ^ _crc32(sw[8 : 12])) * 2
-      sector_idx += 1
-      if do_decrypt:
-        sector = buffer(data, i, 512)
-        sector = ''.join(
-            _strxor_16(sector[j : j + 16], sw) for j in xrange(0, len(sector), 16))
-        yield crypt_aes_cbc(codebook, sector, False, iv)
-      else:
-        sector = crypt_aes_cbc(codebook, buffer(data, i, 512), True, iv)
-        # assert not len(sector) & 15  # Because it's the output of crypt_aes_cbc.
-        for j in xrange(0, len(sector), 16):
-          yield _strxor_16(sector[j : j + 16], sw)
-
-  return ''.join(yield_crypt_strings(sector_idx))
+  for i in xrange(0, len(data), 512):
+    sector_idx_16 = pack('<QQ', sector_idx, sector_idx)
+    iv = _strxor_16(iv_seed, sector_idx_16)
+    sw = _strxor_16(whitening, sector_idx_16)
+    sw = pack('<ll', _crc32(sw[:4]) ^ _crc32(sw[12:]), _crc32(sw[4 : 8]) ^ _crc32(sw[8 : 12])) * 2
+    sector_idx += 1
+    if do_decrypt:
+      sector = buffer(data, i, 512)
+      sector = ''.join(
+          _strxor_16(sector[j : j + 16], sw) for j in xrange(0, len(sector), 16))
+      yield crypt_aes_cbc(codebook, sector, False, iv)
+    else:
+      sector = crypt_aes_cbc(codebook, buffer(data, i, 512), True, iv)
+      # assert not len(sector) & 15  # Because it's the output of crypt_aes_cbc.
+      yield ''.join(_strxor_16(sector[j : j + 16], sw) for j in xrange(0, len(sector), 16))
 
 
 # --- AES LRW seekable stream cipher.
@@ -609,10 +607,6 @@ def crypt_aes_lrw_zerobased(aes_lrw_key, data, do_encrypt, ofs=0):
   return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=ofs, block_idx=0)
 
 
-def crypt_aes_lrw_seek16(aes_lrw_key, data, do_encrypt, ofs=0, sector_idx=0):
-  return crypt_aes_lrw(aes_lrw_key, data, do_encrypt, ofs=ofs, block_idx=generate_lrw_iv_benbi(sector_idx))
-
-
 def generate_lrw_iv_benbi(sector_idx):
   return ((sector_idx << 5) + 1) & 0xffffffffffffffff
 
@@ -657,15 +651,15 @@ def _get_aes_lrw_sector_codebooks(keytable, iv_generator=None):
   return get_aes_lrw_codebooks(keytable) + (get_generate_lrw_iv_func(keytable, iv_generator),)
 
 
-def _crypt_aes_lrw_sectors(codebooks, data, do_encrypt, sector_idx=0):
+def _yield_crypt_aes_lrw_sectors(codebooks, data, do_encrypt, sector_idx=0, ofs=0):
   generate_iv_func, _crypt_aes_lrw = codebooks[2], crypt_aes_lrw
-
-  def yield_crypt_sectors(sector_idx):
-    for i in xrange(0, len(data), 512):
-      yield _crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=generate_iv_func(sector_idx))
-      sector_idx += 1
-
-  return ''.join(yield_crypt_sectors(sector_idx))
+  if ofs:
+    yield _crypt_aes_lrw(codebooks, buffer(data, 0, 512 - ofs), do_encrypt, block_idx=generate_iv_func(sector_idx), ofs=ofs)
+    ofs = 512 - ofs
+    sector_idx += 1
+  for i in xrange(ofs, len(data), 512):
+    yield _crypt_aes_lrw(codebooks, buffer(data, i, 512), do_encrypt, block_idx=generate_iv_func(sector_idx))
+    sector_idx += 1
 
 
 # --- AES XTS seekable stream cipher.
@@ -769,25 +763,20 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, iv=None):
   return ''.join(yield_crypt_blocks(t))
 
 
-def crypt_aes_xts_seek16(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0):
-  return crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=ofs, sector_idx=sector_idx & 0xffffffffffffffff)
-
-
 def _get_aes_xts_sector_codebooks(keytable, iv_generator=None):
   # iv_generator should be overridden with a callable using with_defaults.
   return get_aes_xts_codebooks(keytable) + (get_generate_iv_func(keytable, iv_generator),)
 
 
-def _crypt_aes_xts_sectors(codebooks, data, do_encrypt, sector_idx=0):
-  # !! Make these a generator.
+def _yield_crypt_aes_xts_sectors(codebooks, data, do_encrypt, sector_idx=0, ofs=0):
   generate_iv_func, _crypt_aes_xts = codebooks[2], crypt_aes_xts
-
-  def yield_crypt_sectors(sector_idx):
-    for i in xrange(0, len(data), 512):
-      yield _crypt_aes_xts(codebooks, buffer(data, i, 512), do_encrypt, iv=generate_iv_func(sector_idx))
-      sector_idx += 1
-
-  return ''.join(yield_crypt_sectors(sector_idx))
+  if ofs:
+    yield _crypt_aes_xts(codebooks, buffer(data, 0, 512 - ofs), do_encrypt, iv=generate_iv_func(sector_idx), ofs=ofs)
+    ofs = 512 - ofs
+    sector_idx += 1
+  for i in xrange(ofs, len(data), 512):
+    yield _crypt_aes_xts(codebooks, buffer(data, i, 512), do_encrypt, iv=generate_iv_func(sector_idx))
+    sector_idx += 1
 
 
 # --- SHA-512 hash (message digest).
@@ -1878,23 +1867,23 @@ def get_largest_keytable_size(cipher):
 
 def get_crypt_sectors_funcs(cipher, keytable_size=None):
   cipher = cipher.lower()
-  crypt_func = None
+  yield_crypt_sectors_func = None
   if cipher.startswith('aes-'):
     iv_generator = cipher[cipher.rfind('-') + 1:]
     if cipher in ('aes-xts-essiv:sha256', 'aes-xts-plain', 'aes-xts-plain64', 'aes-xts-plain64be'):
-      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_xts_sectors, with_defaults(_get_aes_xts_sector_codebooks, iv_generator=iv_generator), (32, 48, 64)
+      yield_crypt_sectors_func, get_codebooks_func, keytable_sizes = _yield_crypt_aes_xts_sectors, with_defaults(_get_aes_xts_sector_codebooks, iv_generator=iv_generator), (32, 48, 64)
     elif cipher in ('aes-cbc-essiv:sha256', 'aes-cbc-plain', 'aes-cbc-plain64', 'aes-cbc-plain64be'):
-      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
+      yield_crypt_sectors_func, get_codebooks_func, keytable_sizes = _yield_crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
     elif cipher in ('aes-lrw-benbi', 'aes-lrw-essiv:sha256', 'aes-lrw-plain', 'aes-lrw-plain64', 'aes-lrw-plain64be'):
-      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_lrw_sectors, with_defaults(_get_aes_lrw_sector_codebooks, iv_generator=iv_generator), (32, 40, 48)
+      yield_crypt_sectors_func, get_codebooks_func, keytable_sizes = _yield_crypt_aes_lrw_sectors, with_defaults(_get_aes_lrw_sector_codebooks, iv_generator=iv_generator), (32, 40, 48)
     elif cipher == 'aes-cbc-tcw':
-      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_tcw_sectors, _get_aes_cbc_tcw_codebooks, (48, 56, 64)
-  if not crypt_func:
+      yield_crypt_sectors_func, get_codebooks_func, keytable_sizes = _yield_crypt_aes_cbc_tcw_sectors, _get_aes_cbc_tcw_codebooks, (48, 56, 64)
+  if not yield_crypt_sectors_func:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:
     raise ValueError('keytable_size must be any of %s for cipher %s, got: %d' %
                      (', '.join(map(str, keytable_sizes)), cipher, keytable_size))
-  return crypt_func, get_codebooks_func
+  return yield_crypt_sectors_func, get_codebooks_func
 
 
 def check_veracrypt_keytable(keytable):
@@ -2995,7 +2984,7 @@ class DmCryptFlushingFile(object):
   """
 
   __slots__ = ('_do', '_ds', '_codebooks', '_iv_ofs', '_f', '_df', '_fsync',
-               '_ioctl', '_BLKFLSBUF', '_crypt_func', '_crypt_is_seek16')
+               '_ioctl', '_BLKFLSBUF', '_yield_crypt_sectors_func', '_crypt_is_seek16')
 
   def __init__(self, filename, decrypted_ofs, decrypted_size, decrypted_filename, keytable, iv_ofs, cipher):
     import fcntl
@@ -3015,19 +3004,9 @@ class DmCryptFlushingFile(object):
     self._do = decrypted_ofs
     self._ds = decrypted_size
     self._iv_ofs = iv_ofs
-    if cipher == 'aes-xts-plain64':  # !! More generic, e.g. aes-xts-essiv:sha256.
-      self._codebooks = get_aes_xts_codebooks(keytable)
-      self._crypt_func = crypt_aes_xts_seek16
-      self._crypt_is_seek16 = True
-    elif cipher == 'aes-lrw-benbi':
-      self._codebooks = get_aes_lrw_codebooks(keytable)
-      self._crypt_func = crypt_aes_lrw_seek16
-      self._crypt_is_seek16 = True
-    else:  # !! Support more via get_crypt_sectors_funcs; some of them may be seekable. Make all seeakable.
-      self._crypt_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(keytable))
-      self._codebooks = get_codebooks_func(keytable)
-      # TODO(pts): Make aes-xts-* and aes-lrw-* also seekable (and detectable).
-      self._crypt_is_seek16 = False
+    self._yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(keytable))
+    self._codebooks = get_codebooks_func(keytable)
+    self._crypt_is_seek16 = has_arg(self._yield_crypt_sectors_func, 'ofs')
 
     self._f = open(filename, 'r+b')
     is_ok = False
@@ -3094,7 +3073,7 @@ class DmCryptFlushingFile(object):
   def write(self, data):
     data = buffer(data)
     ofs = self._f.tell()
-    codebooks, crypt_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._crypt_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
+    codebooks, yield_crypt_sectors_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._yield_crypt_sectors_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
     while data:
       if ofs + len(data) <= do or ofs >= do + ds:
         f.write(data)  # Shortcut.
@@ -3115,9 +3094,10 @@ class DmCryptFlushingFile(object):
         df.seek(ofs - do)
         sector_idx = (ofs - do + iv_ofs) >> 9
         if ofs512:
-          df.write(crypt_func(codebooks, data, do_encrypt=False, sector_idx=sector_idx, ofs=ofs512))
+          df.write(''.join(yield_crypt_sectors_func(codebooks, data, False, sector_idx, ofs=ofs512)))
         else:
-          df.write(crypt_func(codebooks, data, do_encrypt=False, sector_idx=sector_idx))
+          # TODO(pts): Do 65536 bytes at once, if possible.
+          df.write(''.join(yield_crypt_sectors_func(codebooks, data, False, sector_idx)))
         f.seek(ofs + size)
       else:
         f.write(data)
@@ -3311,7 +3291,7 @@ def luks_af_join(data, stripe_count, digest_cons):
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
     digest_cons, digest_blocksize, key_material_ofs, stripe_count,
-    crypt_sectors_func, get_codebooks_func, af_salt=None):
+    yield_crypt_sectors_func, get_codebooks_func, af_salt=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
   if not slot_salt:
@@ -3329,7 +3309,7 @@ def build_luks_active_key_slot(
       passphrase, slot_salt, len(keytable), slot_iterations, digest_cons,
       digest_blocksize)
   header_codebooks = get_codebooks_func(header_key)
-  key_material = crypt_sectors_func(header_codebooks, split_key, do_encrypt=True)
+  key_material = ''.join(yield_crypt_sectors_func(header_codebooks, split_key, do_encrypt=True))
   assert len(key_material) == key_material_size
   key_slot_data = struct.pack(
       '>LL32sLL', active_tag, slot_iterations, slot_salt, key_material_ofs >> 9,
@@ -3392,7 +3372,7 @@ def build_luks_header(
     raise ValueError('key_size must be divisible by 8, got: %d' % key_size)
   keytable_size = key_size >> 3
   cipher = cipher.lower()
-  crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
+  yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
   cipher_name, cipher_mode = cipher.split('-', 1)
 
   # If the caller has alignment requirements, then it should specify a large
@@ -3491,7 +3471,7 @@ def build_luks_header(
       key_slot_data, key_material = build_luks_active_key_slot(
           slot_iterations, slot_salt, keytable, passphrases[i],
           digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
-          crypt_sectors_func, get_codebooks_func, af_salt)
+          yield_crypt_sectors_func, get_codebooks_func, af_salt)
       assert key_material
       key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
       assert key_material_padding_size >= 0
@@ -3546,7 +3526,7 @@ def get_open_luks_info(f, passphrase):
   if cipher_name.lower() != 'aes':
     raise ValueError('Unsupported cipher: %r' % cipher_name)
   cipher = '-'.join((cipher_name, cipher_mode)).lower()
-  crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
+  yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, keytable_size)
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
   if decrypted_sector_idx < 3:  # `cryptsetup open' also checks this.
     raise ValueError('decrypted_sector_idx must be at leasst 3, got: %d' % decrypted_sector_idx)
@@ -3588,7 +3568,7 @@ def get_open_luks_info(f, passphrase):
         passphrase, slot_salt, keytable_size, slot_iterations, digest_cons,
         digest_blocksize)
     slot_header_codebooks = get_codebooks_func(slot_header_key)
-    slot_split_key = crypt_sectors_func(slot_header_codebooks, slot_key_material, do_encrypt=False)
+    slot_split_key = ''.join(yield_crypt_sectors_func(slot_header_codebooks, slot_key_material, do_encrypt=False))
     slot_keytable = luks_af_join(slot_split_key, slot_stripe_count, digest_cons)
     slot_mk_digest = pbkdf2(  # Slow.
         slot_keytable, keytable_salt, 20, keytable_iterations,
@@ -4892,19 +4872,11 @@ def cmd_create(args):
       if decrypted_ofs == 0:  # First 512 bytes written as part of enchd.
         sector_idx += 1
         i += 512
-      if cipher == 'aes-xts-plain64':  # !! Cipher like DmCryptFlusingFile.
-        aes_xts_key = get_aes_xts_codebooks(keytable)  # Cache it.
-        for i in xrange(i, len(mkfs_data), 512):
-          # TODO(pts): Buffer 65536 bytes for writing (not possible with a single call to *_seek16).
-          xf.write(crypt_aes_xts_seek16(aes_xts_key, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
-          sector_idx += 1
-      else:
-        crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher)
-        codebooks = get_codebooks_func(short_keytable)
-        for i in xrange(i, len(mkfs_data), 512):
-          # TODO(pts): Buffer 65536 bytes for writing.
-          xf.write(crypt_sectors_func(codebooks, buffer(mkfs_data, i, 512), do_encrypt=True, sector_idx=sector_idx))
-          sector_idx += 1
+      yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(short_keytable))
+      codebooks = get_codebooks_func(short_keytable)
+      for i in xrange(i, len(mkfs_data), 65536):
+        xf.write(''.join(yield_crypt_sectors_func(codebooks, buffer(mkfs_data, i, 65536), do_encrypt=True, sector_idx=sector_idx)))
+        sector_idx += 128
     if isinstance(xf, DmCryptFlushingFile):
       xf.full_flush()
     else:
