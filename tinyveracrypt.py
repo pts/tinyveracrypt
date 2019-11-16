@@ -805,9 +805,9 @@ _sha512_k = (
     0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817)
 
 
-def slow_sha512_process(chunk, hh, _izip=itertools.izip, _rotr64=_sha512_rotr64, _k=_sha512_k):
+def slow_sha512_process(block, hh, _izip=itertools.izip, _rotr64=_sha512_rotr64, _k=_sha512_k):
   w = [0] * 80
-  w[:16] = struct.unpack('>16Q', chunk)
+  w[:16] = struct.unpack('>16Q', block)
   for i in xrange(16, 80):
     w[i] = (w[i - 16] + (_rotr64(w[i - 15], 1) ^ _rotr64(w[i - 15], 8) ^ (w[i - 15] >> 7)) + w[i - 7] + (_rotr64(w[i - 2], 19) ^ _rotr64(w[i - 2], 61) ^ (w[i - 2] >> 6))) & 0xffffffffffffffff
   a, b, c, d, e, f, g, h = hh
@@ -836,7 +836,6 @@ class SlowSha512(object):
   _h0 = (0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
          0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179)
 
-  blocksize = 1
   block_size = 128
   digest_size = 64
 
@@ -916,9 +915,9 @@ _sha256_k = (
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2)
 
 
-def slow_sha256_process(chunk, hh, _izip=itertools.izip, _rotr32=_sha256_rotr32, _k=_sha256_k):
+def slow_sha256_process(block, hh, _izip=itertools.izip, _rotr32=_sha256_rotr32, _k=_sha256_k):
   w = [0] * 64
-  w[:16] = struct.unpack('>16L', chunk)
+  w[:16] = struct.unpack('>16L', block)
   for i in xrange(16, 64):
     w[i] = (w[i - 16] + (_rotr32(w[i - 15], 7) ^ _rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3)) + w[i - 7] + (_rotr32(w[i - 2], 17) ^ _rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10))) & 0xffffffff
   a, b, c, d, e, f, g, h = hh
@@ -947,7 +946,6 @@ class SlowSha256(object):
   _h0 = (0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
          0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19)
 
-  blocksize = 1
   block_size = 64
   digest_size = 32
 
@@ -1008,9 +1006,9 @@ def _sha1_rotl32(x, y):
   return ((x << y) | (x >> (32 - y))) & 0xffffffff
 
 
-def slow_sha1_process(chunk, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
+def slow_sha1_process(block, hh, _izip=itertools.izip, _rotl=_sha1_rotl32):
   w = [0] * 80
-  w[:16] = struct.unpack('>16L', chunk)
+  w[:16] = struct.unpack('>16L', block)
   for i in xrange(16, 80):
     w[i] = _rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1)
   a, b, c, d, e = hh
@@ -1043,7 +1041,6 @@ del _sha1_rotl32  # Unpollute namespace.
 class SlowSha1(object):
   _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
 
-  blocksize = 1
   block_size = 64
   digest_size = 20
 
@@ -1106,13 +1103,13 @@ def _ripemd160_rotl32(x, y):
 
 
 def slow_ripemd160_process(
-    chunk, hh, _rotl32=_ripemd160_rotl32,
+    block, hh, _rotl32=_ripemd160_rotl32,
     _rstu0=((0, 11, 5, 8), (1, 14, 14, 9), (2, 15, 7, 9), (3, 12, 0, 11), (4, 5, 9, 13), (5, 8, 2, 15), (6, 7, 11, 15), (7, 9, 4, 5), (8, 11, 13, 7), (9, 13, 6, 7), (10, 14, 15, 8), (11, 15, 8, 11), (12, 6, 1, 14), (13, 7, 10, 14), (14, 9, 3, 12), (15, 8, 12, 6)),
     _rstu1=((7, 7, 6, 9), (4, 6, 11, 13), (13, 8, 3, 15), (1, 13, 7, 7), (10, 11, 0, 12), (6, 9, 13, 8), (15, 7, 5, 9), (3, 15, 10, 11), (12, 7, 14, 7), (0, 12, 15, 7), (9, 15, 8, 12), (5, 9, 12, 7), (2, 11, 4, 6), (14, 7, 9, 15), (11, 13, 1, 13), (8, 12, 2, 11)),
     _rstu2=((3, 11, 15, 9), (10, 13, 5, 7), (14, 6, 1, 15), (4, 7, 3, 11), (9, 14, 7, 8), (15, 9, 14, 6), (8, 13, 6, 6), (1, 15, 9, 14), (2, 14, 11, 12), (7, 8, 8, 13), (0, 13, 12, 5), (6, 6, 2, 14), (13, 5, 10, 13), (11, 12, 0, 13), (5, 7, 4, 7), (12, 5, 13, 5)),
     _rstu3=((1, 11, 8, 15), (9, 12, 6, 5), (11, 14, 4, 8), (10, 15, 1, 11), (0, 14, 3, 14), (8, 15, 11, 14), (12, 9, 15, 6), (4, 8, 0, 14), (13, 9, 5, 6), (3, 14, 12, 9), (7, 5, 2, 12), (15, 6, 13, 9), (14, 8, 9, 12), (5, 6, 7, 5), (6, 5, 10, 15), (2, 12, 14, 8)),
     _rstu4=((4, 9, 12, 8), (0, 15, 15, 5), (5, 5, 10, 12), (9, 11, 4, 9), (7, 6, 1, 12), (12, 8, 5, 5), (2, 13, 8, 14), (10, 12, 7, 6), (14, 5, 6, 8), (1, 12, 2, 13), (3, 13, 13, 6), (8, 14, 14, 5), (11, 11, 0, 15), (6, 8, 3, 13), (15, 5, 9, 11), (13, 6, 11, 11))):
-  x = struct.unpack("<16L", chunk)
+  x = struct.unpack("<16L", block)
   a, b, c, d, e = f, g, h, i, j = hh
   for r, s, t, u in _rstu0:
     a, b, c, d, e, f, g, h, i, j = e, _rotl32((a + (b ^ c ^ d) + x[r]), s) + e, b, _rotl32(c, 10), d, j, _rotl32((f + (g ^ (h | ~i)) + x[t] + 1352829926), u) + j, g, _rotl32(h, 10), i
@@ -1144,7 +1141,6 @@ del _ripemd160_rotl32  # Unpollute namespace.
 class SlowRipeMd160(object):
   _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0)
 
-  blocksize = 1
   block_size = 64
   digest_size = 20
 
@@ -1297,7 +1293,7 @@ def do_hmac(key, msg, digest_cons, blocksize):
 
 # Faster than `import pbkdf2' (available on pypi) or `import
 # Crypto.Protocol.KDF', because of less indirection.
-def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
+def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize):
   """Computes an binary key from a passphrase using PBKDF2.
 
   This is deliberately slow (to make dictionary-based attacks on passphrase
@@ -1317,10 +1313,10 @@ def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
   _do_hmac = do_hmac
   key, i, k = [], 1, size
   while k > 0:
-    u = previousu = _do_hmac(passphrase, salt + struct.pack('>I', i), digest_cons, blocksize)
+    u = previousu = _do_hmac(passphrase, salt + struct.pack('>I', i), digest_cons, digest_blocksize)
     _strxor = make_strxor(len(u))
     for j in xrange(iterations - 1):
-      previousu = _do_hmac(passphrase, previousu, digest_cons, blocksize)
+      previousu = _do_hmac(passphrase, previousu, digest_cons, digest_blocksize)
       u = _strxor(u, previousu)
     key.append(u)
     k -= len(u)
@@ -1337,8 +1333,7 @@ try:
     #
     # TODO(pts): Also use https://pypi.python.org/pypi/backports.pbkdf2 , if
     # available and it uses OpenSSL.
-    def pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize):
-      # Ignore `blocksize'. It's embedded in hash_name.
+    def pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize):
       import hashlib
       hash_name = digest_cons.__name__.lower()
       if hash_name.startswith('openssl_'):
@@ -1347,7 +1342,8 @@ try:
         hashlib.new(hash_name).digest()
       except ValueError:
         # Fallback if digest_cons isn't supported by hashlib.
-        return slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, blocksize)
+        return slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize)
+      # Ignore `digest_blocksize'. It's embedded in hash_name.
       return hashlib.pbkdf2_hmac(hash_name, passphrase, salt, iterations, size)
 except ImportError:
   pass
@@ -1976,6 +1972,7 @@ MIN_TRUECRYPT_VERSION_FOR_HASH = {
     'sha1': 0x100,
     # TODO(pts): !! Add a pure Python implementation smaller than (maybe compress the array): http://www.bjrn.se/code/whirlpoolpy.txt
     'whirlpool': 0x400,
+    # !! TODO(pts): Add SHA-384. https://en.wikipedia.org/wiki/SHA-2
 }
 
 TRUECRYPT_AUTO_HASH_ORDER = ('sha512', 'sha1')
