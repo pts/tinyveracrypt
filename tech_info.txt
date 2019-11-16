@@ -89,4 +89,89 @@ More details: https://www.veracrypt.fr/en/Encryption%20Algorithms.html
 
 More details: https://www.veracrypt.fr/en/Hash%20Algorithms.html
 
+Fake filesystem with label and UUID
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A LUKS1 (--type=luks) encrypted volume is detectable (without opening it) by blkid(8) and
+`budybox blkid', because the LUKS header has a UUID. It doesn't have a
+volume label though.
+
+A TrueCrypt or VeraCrypt encrypted volume doesn't have a UUID or label, but
+we could add a fake non-encrypted filesystem to it to compensate. The
+`tinyveracrypt.py init --fake-luks-uuid=...' does exactly that. The UUID is
+stored at offset 160 (0xa0), and it fits to unused bytes of the VeraCrypt header.
+The LUKS header doesn't have a volume label though.
+
+If we want both a UUID and a volume label, we should consider other
+filesystems, see some details on https://github.com/pts/pts-setfsid . JFS is
+a likely candidate with both UUID and volume label in the 0x8000..0x8200
+region, way head of the default decrypted_ofs (--ofs=) value of 0x20000.
+As a TODO, --fake-jfs-label=... and --fake-jfs-uuid=... will be added to
+`tinyveracrypt.py init'.
+
+Can we have it with --ofs=0 ? Only if it doesn't conflict with the encrypted
+filesystem headers. For example, reiserfs
+(http://jcoppens.com/univ/data/pdf/fs/reiserfs.pdf) has 0x10000 bytes free
+(reserved for the bootloader) at the beginning, and brfs also has >=0x10000
+bytes free. So the fake JFS header fits easily there. ext2, ext3 and ext4
+(https://ext4.wiki.kernel.org/index.php/Ext4_Disk_Layout)
+only have the first 0x400 bytes free (also reserved for the bootloader), and
+then comes the superblock. Thus a fake JFS header doesn't fit.
+
+We may want to play with marking ext4 blocks as bad (via `mkfs.ext4 -l
+badblocks.lst'), but that's problematic:
+
+* For large filesystems, the first few blocks (e. g. 1..34) must be good,
+  because they contain the group descriprors.
+* block size can be (`mkfs.ext4 -b ...') 1024, 2048 or 4096 bytes.
+* So marking block 32 with the fake JFS header bad won't work (beause
+  it overlaps with the group descriptors) for ext2, ext3, ext4 filesystems
+  of at least about 8 GiB in size for `mkfs.ext4 -b 1024', or 120 GiB for
+  `mkfs.ext4 -b 4096'.
+* Instead of a fake JFS header, we may want to add a fake btrfs header
+  (in superblock 0x10000...0x10400). That would for up to 241 GiB of ext4
+  filesystem with block size of 4096.
+* `fsck.ext4 -c' clears the bad blocks list, there is no way to mark some
+  blocks as bad permanently.
+* FYI The backup superblock and backup group descriptsors in block
+  32768 shouldn't contain bad blocks, `fsck.ext4' warns if they do.
+
+We could also try to put the fake filesystem headers to an unmovable file on
+the filesystem (i.e. a file which the defragmenters are not allowed to
+touch; typically boot files with a blocklist). Unfortunately ext4 doesn't
+have this feature, e4defrag(8) will happily move around just any file (even
+those with `chattr +i').
+
+Some space in the group descriptor table (GDT) near the beginning of the
+ext2, ext3 or ext4 filesystem is reserved for growth, i.e. it is unused and
+ignored. More info:
+
+* See `mkfs.ext2 -E resize=...' to control how many blocks are reserved.
+* Example:
+
+    $ python -c 'open("bigext4.img", "wb").truncate(8 << 30)'
+    $ mkfs.ext4 -b 1024 -E nodiscard -F bigext4.img
+    $ dumpe2fs bigext4.img >bigext4.dump
+    Primary superblock at 1, Group descriptors at 2-33
+    Reserved GDT blocks at 34-289
+
+* An ext4 filesystem with block size of 4096 bytes and size of 241 GiB would
+  have ``Reserved GDT blocks at 16-1024''. Thus block 16 is unused,
+  we can but the fake btrfs header there (in superblock 0x10000...0x10400).
+  If the ext4 filesystem grows beyond that, the reserved GDT block 16 will
+  become an actual GDT block, and not available for us to change.
+
+* There are at at least 256 of them, even for smaller filesystems.
+
+* They must finish by the end of block 1050. (Why?)
+
+* btrfs has a backup superblock at 64 MiB (0x4000000...0x4000400). At block
+  size 4096, this is ext4 block 16384. To put this block to the
+  ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4
+  -g ...' (blocks per block group) setting, but it may have a performance
+  penalty on SSDs (if not aligned to 6 MiB boundary). Example:
+
+    $ python -c 'f = open("ext2.img", "wb"); f.truncate(240 << 30)' &&
+      mkfs.ext4 -E nodiscard -g 16304 -F ext2.img &&
+      dumpe2fs ext2.img >ext4.dump
+
 __END__

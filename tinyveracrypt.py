@@ -4957,35 +4957,6 @@ def cmd_create(args):
 
 def main(argv):
   passphrase = TEST_PASSPHRASE
-  # !! Experiment with decrypted_ofs=0, encrypted ext2 (first 0x400 bytes are arbitrary) or reiserfs/ btrfs (first 0x10000 bytes are arbitrary) filesystem,
-  #    Can we have a fake non-FAT filesystem with UUID and label? For reiserfs, set_jfs_id.py would work.
-  #    LUKS (luks.c) can work, but it has UUID only (no label).
-  #    No other good filesystem for ext2, see https://github.com/pts/pts-setfsid/blob/master/README.txt
-  #    Maybe with bad blocks: bad block 64, and use jfs.
-  #    Needs more checking, is it block 32 for jfs? mkfs.ext4 -b 1024 -l badblocks.lst ext4.img
-  #    mkfs.reiserfs overwrites the first 0x10000 bytes with '\0', but then we can change it back: perl -e 'print "b"x(1<<16)' | dd bs=64K of=ext4.img conv=notrunc
-  #    0x10	Has reserved GDT blocks for filesystem expansion (COMPAT_RESIZE_INODE). Requires RO_COMPAT_SPARSE_SUPER.
-  #    $ python -c 'open("bigext4.img", "wb").truncate(8 << 30)'
-  #    $ mkfs.ext4 -b 1024 -E nodiscard -F bigext4.img
-  #    $ dumpe2fs bigext4.img >bigext4.dump
-  #    Primary superblock at 1, Group descriptors at 2-33
-  #    Reserved GDT blocks at 34-289  # Always 256, even for smaller filesystems.
-  #    $ mkfs.ext4 -b 1024 -E nodiscard -l badblocks.lst -F bigext4.img
-  #    Block 32 in primary superblock/group descriptor area bad.
-  #    Blocks 1 through 34 must be good in order to build a filesystem.
-  #    (So marking block 32 bad won't work for ext2, ext3, ext4 filesystems of at least about 8 GiB in size for -b 1024, or 120 GiB for -b 4096)
-  #    also: Warning: the backup superblock/group descriptors at block 32768 contain bad blocks.
-  #    SUXX: `fsck.ext -c ...' clears the badblocks list, so from that point on the ext{2,3,4} filesystem will be able to reuse the previous bad block
-  #    There seems to be no unmovable file in ext2.
-  #    btrfs (superblock at 65536) works for up to 241 GB, block size 4096, Reserved GDT blocks at 16-1024
-  #    ``Reserved GDT blocks'' always finishes before 1050
-  #    btrfs (superblock also at 64 MiB): To put block 32768 (64 MiB) to the
-  #      ``Reserved GDT blocks'' of block group 1, we can play with `mkfs.ext4
-  #      -g ...' (blocks per block group), but it may have a performance
-  #      penalty on SSDs (if not aligned to 6 MB boundary); example: python -c
-  #      'f = open("ext2.img", "wb"); f.truncate(240 << 30)' && mkfs.ext4 -E
-  #      nodiscard -g 16304 -F ext2.img && dumpe2fs ext2.img >ext4.dump
-
   if len(argv) < 2:
     raise UsageError('missing command')
   if len(argv) > 1 and argv[1] == '--text':
@@ -5061,7 +5032,7 @@ def main(argv):
     # !! Add TrueCrypt support for aes-cbc-tcw and aes-lrw-benbi.
     # !! Not adding mode *-cbci-tcrypt, because it's not used for aes-* single cipher.
     # !! Not adding mode *-cbc-tcrypt, because it's not used for aes-* single cipher.
-    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
+    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
     # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
     # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
