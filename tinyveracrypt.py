@@ -2329,7 +2329,7 @@ def build_veracrypt_header(
       veracrypt_keytable = keytable[32:] + keytable[:32]
   elif cipher == 'aes-cbc-tcw' and truecrypt_version:
     veracrypt_keytable = keytable[32:] + keytable[:32]
-  elif truecrypt_version:
+  elif not truecrypt_version:
     raise ValueError('cipher %s not supported by VeraCrypt' % cipher)
   else:
     raise ValueError('cipher %s not supported by TrueCrypt %d.%d' % (cipher, truecrypt_version >> 8, truecrypt_version & 255))
