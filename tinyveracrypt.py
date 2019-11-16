@@ -4244,8 +4244,10 @@ def cmd_create(args):
         type_value = 'truecrypt'
       elif type_value == 'veracrypt':
         type_value = 'veracrypt'
+        truecrypt_version = None
       elif type_value in ('luks', 'luks1'):  # cryptsetup create --type=luks.
         type_value = 'luks'
+        truecrypt_version = None
       else:
         # Cryptsetup also supports --type=plain and --type=loopaes.
         raise UsageError('unsupported flag value: %s' % arg)
