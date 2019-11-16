@@ -205,10 +205,12 @@ def test_crypt_aes_xts():
 
 def test_crypt_aes_cbc():
   crypt_aes_cbc = tinyveracrypt.crypt_aes_cbc
-  key, iv = '\xaa' * 32, '\xbb' * 16
+  crypt_aes_cbc_whitening = tinyveracrypt.crypt_aes_cbc_whitening
+  key, iv, whitening = '\xaa' * 32, '\xbb' * 16, 'Whitenin'
   decstr1, encstr1 = DECSTR, '39e3eada19066384fb90b9262d108f7476c8eefda65e1995c8c8481a826f64ec4695bd5dacca4a89e4d894cd18710bcb'.decode('hex')
   decstr2, encstr2 = DECSTR, '6242705e2164d05650e8edde48fb2c00f73dd10d280472c4ab350aaa7a5237a42521e599c4b2e3f722b29481bcf65bc8'.decode('hex')
   decstr3, encstr3 = DECSTR, '8cb57f3e2a322fb7a526fa63d92c87c4d5c055c4e4943dd05a2560b1a0c9f9dcff76334cde72cbb77009b4b31c947d16'.decode('hex')
+  decstr4, encstr4 = DECSTR, '6e8b83ae7c680aeaacf8d052487ee61a21a08789c33070fb9fa0216ee7010d8211fdd429c9a423e7b3b0fdb97d1f62a5'.decode('hex')
   assert crypt_aes_cbc(key, '', True, iv) == ''
   assert crypt_aes_cbc(key, '', False, iv) == ''
   assert crypt_aes_cbc(key, decstr1, True,  iv) == encstr1
@@ -220,6 +222,10 @@ def test_crypt_aes_cbc():
   assert crypt_aes_cbc(key, encstr1[:32], False, iv) == decstr1[:32]
   assert crypt_aes_cbc(key, decstr2, True, '\1\4' + '\0' * 14) == encstr2
   assert crypt_sectors('aes-cbc-plain', key, decstr2, True, sector_idx=1025) == encstr2
+  assert crypt_aes_cbc_whitening(key, decstr1, True,  iv, '\0') == encstr1
+  assert crypt_aes_cbc_whitening(key, encstr1, False, iv, '\0') == decstr1
+  assert crypt_aes_cbc_whitening(key, decstr4, True,  iv, whitening) == encstr4
+  assert crypt_aes_cbc_whitening(key, encstr4, False, iv, whitening) == decstr4
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ab) == encstr3
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, decstr3, True,  sector_idx=0x98765123456789ac) != encstr3
   assert crypt_sectors('aes-cbc-tcw', HEADER_KEY, encstr3, False, sector_idx=0x98765123456789ab) == decstr3
