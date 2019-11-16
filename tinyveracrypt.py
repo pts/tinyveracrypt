@@ -1549,7 +1549,7 @@ def _losetup_add_cmd(filename):
   loop_filename = data.rstrip('\n')
   if '\n' in loop_filename or not loop_filename:
     raise ValueError('Expected single loopback device name.')
-  # TODO(pts): If cryptsetup creates the dm device, and then `dmsetup
+  # TODO(pts): If cryptsetup creates the dm-crypt device, and then `dmsetup
   # remove' is run then the loop device gets deleted automatically.
   # Make the automatic deletion happen for tinyveracrypt as well.
   # Can losetup do this?
@@ -1717,6 +1717,15 @@ assert len(FAT_NO_BOOT_CODE) == 132
 def build_dechd(
     salt, keytable, decrypted_size, sector_size, decrypted_ofs=None,
     zeros_data=None, zeros_ofs=None, is_truecrypt=False):
+  # See tech_info.txt for the TrueCrypt and VeraCrypt header formats.
+  #
+  # We can overlap the returned header with FAT12 and FAT16. FAT12 and FAT16
+  # filesystem headers fit into our salt. See 'mkfat'.
+  #
+  # We can't overlap the returned header with XFS (e.g. set_xfs_id.py),
+  # because XFS filesystem headers conflict with this header (decrypted_size
+  # vs xfs.sectsize, byte_offset_for_key vs xfs.label, sector_size vs
+  # xfs.icount, flag_bits vs xfs.blocklog etc.).
   check_veracrypt_keytable_or_keytablep(keytable)
   check_decrypted_size(decrypted_size)
   check_salt(salt)
@@ -1734,37 +1743,6 @@ def build_dechd(
   minimum_version_to_extract = ((1, 11), (5, 0))[bool(is_truecrypt)]
   hidden_volume_size = 0
   flag_bits = 0
-  # https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat (contains all encryption, hash, count etc. for TrueCrypt, but not for VeraCrypt)
-  # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
-  # https://www.veracrypt.fr/en/Encryption%20Algorithms.html
-  # --- 0: VeraCrypt hd sector starts here
-  # 0 + 64: salt
-  # --- 64: header starts here
-  # 64 + 4: signature: "VERA": 56455241 or "TRUE"; for TrueCrypt: --pim=-14 (iterations == 1000), --encryption=aes, --hash=sha512, introduced in TrueCrypt 5.0.
-  # 68 + 2: header_format_version: Volume header format version: 0005
-  # 70 + 2: minimum_version_to_extract: Minimum program version to open (1.11): 010b
-  # 72 + 4: keytablep_crc32: CRC-32 of the keytable + keytablep (decrypted bytes 256..511): ????????
-  # 76 + 16: zeros16: 00000000000000000000000000000000
-  # 92 + 8: hidden_volume_size: size of hidden volume (0 for non-hidden): 0000000000000000
-  # 100 + 8: decrypted_size: size of decrypted volume: ????????????????
-  # 108 + 8: decrypted_ofs: offset of encrypted area from 0 (beginning of salt), i.e. byte offset of the master key scope (typically 0x20000): 0000000000020000
-  # 116 + 8: decrypted_size_b: size of the encrypted area within the master key scope (same as size of the decrypted volume): ????????????????
-  # 124 + 4: flag_bits: flag bits (0): 00000000
-  # 128 + 4: sector_size: sector size (512 -- shouldn't it be 4096?): 00000200
-  # 132 + 120: zeros120: 00..00
-  # --- 252: header ends here
-  # 252 + 4: header_crc32: CRC-32 of header
-  # 256 + 64: keytable (used as key by `dmsetup table' after hex-encoding)
-  # 320 + 192: keytable_padding: typically zeros, but can be anything: 00..00
-  # --- 512: VeraCrypt hd sector ends here
-  #
-  # We can overlap this header with FAT12 and FAT16. FAT12 and FAT16
-  # filesystem headers fit into our salt. See 'mkinfat'.
-  #
-  # We can't overlap this header with XFS (e.g. set_xfs_id.py), because XFS
-  # filesystem headers conflict with this header (decrypted_size vs
-  # xfs.sectsize, byte_offset_for_key vs xfs.label, sector_size vs
-  # xfs.icount, flag_bits vs xfs.blocklog etc.).
   if zeros_data is not None:
     if zeros_ofs < 132 or zeros_ofs + len(zeros_data) > 252:
       raise ValueError('zeros_data and zeros_ofs in wrong interval.')
@@ -4560,7 +4538,6 @@ def main(argv):
   passphrase = TEST_PASSPHRASE
   # !! Experiment with decrypted_ofs=0, encrypted ext2 (first 0x400 bytes are arbitrary) or reiserfs/ btrfs (first 0x10000 bytes are arbitrary) filesystem,
   #    Can we have a fake non-FAT filesystem with UUID and label? For reiserfs, set_jfs_id.py would work.
-  #    set_xfs_id.py doesn't work, because XFS and VeraCrypt headers conflict.
   #    LUKS (luks.c) can work, but it has UUID only (no label).
   #    No other good filesystem for ext2, see https://github.com/pts/pts-setfsid/blob/master/README.txt
   #    Maybe with bad blocks: bad block 64, and use jfs.
@@ -4651,17 +4628,24 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
-    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
-    # !! Make `cryptsetup open' able to open --ofs=0 VeraCrypt encrypted volumes.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
-    # !! cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
+    # !! BUG: cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
     # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
-    # !! Add `cat' command, inline crypt_aes_xts_sectors for 512 bytes.
+    # !! Add `cat' command with get_crypt_sectors_funcs, fast if root.
     # !! Add `open-fuse' command.
     # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
+    # !! Add TrueCrypt support for aes-cbc-tcw and aes-lrw-benbi.
+    # !! Not adding mode *-cbci-tcrypt, because it's not used for aes-* single cipher.
+    # !! Not adding mode *-cbc-tcrypt, because it's not used for aes-* single cipher.
+    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py.
+    # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
+    # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
+    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
+    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a.
+    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_activate: `dmd.size = hdr->d.volume_size / hdr->d.sector_size;', should be the entire device ((device_size(crypt_metadata_device(cd), &size) < 0)) if minimum_version_to_extract < 0x600.
     raise UsageError('unknown command: %s' % command)
 
 
