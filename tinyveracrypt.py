@@ -43,6 +43,25 @@ def maybe_import_and_call(module_name, func_name, args, default=None):
   except ValueError:
     return None
 
+# --- with_defaults.
+
+
+def with_defaults(func__, **kwargs):
+  """Returns new function object with defaults in func replace with **kwargs."""
+  f = func__
+  if not callable(f) or not getattr(f, 'func_code', None):
+    raise TypeError
+  n = f.func_code.co_argcount
+  assert n >= len(f.func_defaults)
+  new_defaults = []
+  for i, name in enumerate(f.func_code.co_varnames[n - len(f.func_defaults) : n]):
+    if name in kwargs:
+      value = kwargs[name]
+    else:
+      value = f.func_defaults[i]
+    new_defaults.append(value)
+  return type(f)(f.func_code, f.func_globals, f.func_name + '@wd', tuple(new_defaults), f.func_closure)
+
 
 # --- strxor.
 
@@ -350,7 +369,10 @@ aes_strxor_16 = make_strxor(16)
 
 
 # --- AES CBC stream cipher.
-
+#
+# It is vulnerable to watermarking attacks and should be used for old
+# compatible containers access only.
+#
 
 def check_aes_key(aes_key):
   if len(aes_key) not in (16, 24, 32):
@@ -358,8 +380,10 @@ def check_aes_key(aes_key):
 
 
 def crypt_aes_cbc(aes_key, data, do_encrypt, iv):
+  if len(data) & 15:
+    raise ValueError('aes_cbc data size must be divisible by 16, got: %d' % len(data))
   if len(iv) != 16:
-    raise ValueError('aes_iv must be 16 bytes, got: %d' % len(iv))
+    raise ValueError('aes_cbc iv must be 16 bytes, got: %d' % len(iv))
   if isinstance(aes_key, str):
     check_aes_key(aes_key)
     codebook = new_aes(aes_key)
@@ -367,55 +391,75 @@ def crypt_aes_cbc(aes_key, data, do_encrypt, iv):
     codebook = aes_key
   do_decrypt = not do_encrypt
   codebook_crypt = (codebook.encrypt, codebook.decrypt)[do_decrypt]
-  if len(data) & 15:
-    raise ValueError('data size must be divisible by 16, got: %d' % len(data))
+  _strxor_16 = aes_strxor_16
 
   if do_decrypt:
-    def yield_crypt_blocks(codebook_crypt, prev):
+    def yield_crypt_blocks(prev):
       for i in xrange(0, len(data), 16):
         prev2 = data[i : i + 16]
-        yield aes_strxor_16(prev, codebook_crypt(prev2))
+        yield _strxor_16(prev, codebook_crypt(prev2))
         prev = prev2
   else:
-    def yield_crypt_blocks(codebook_crypt, prev):
+    def yield_crypt_blocks(prev):
       for i in xrange(0, len(data), 16):
-        prev = codebook_crypt(aes_strxor_16(prev, data[i : i + 16]))
+        prev = codebook_crypt(_strxor_16(prev, data[i : i + 16]))
         yield prev
 
-  return ''.join(yield_crypt_blocks(codebook_crypt, iv))
+  return ''.join(yield_crypt_blocks(iv))
 
 
-def get_aes_cbc_essiv_sha256_codebooks(aes_key):
-  _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
-  if isinstance(aes_key, tuple) and len(aes_key) == 2:
-    return aes_key
-  check_aes_key(aes_key)
-  return new_aes(aes_key), new_aes(_sha256(aes_key).digest()).encrypt
+def generate_iv_plain(sector_idx, pack=struct.pack):
+  return pack('<L12x', sector_idx & 0xffffffff)
 
 
-def get_aes_cbc_plain_codebooks(aes_key):
-  if isinstance(aes_key, tuple) and len(aes_key) == 2:
-    return aes_key
-  check_aes_key(aes_key)
-  return (new_aes(aes_key), lambda n: n)
+def generate_iv_plain64(sector_idx, pack=struct.pack):
+  return pack('<Q8x', sector_idx & 0xffffffffffffffff)
 
 
-def crypt_aes_cbc_sectors(aes_key, data, do_encrypt, sector_idx=0):
-  codebook, hash_encrypt = get_aes_cbc_plain_codebooks(aes_key)
+def generate_iv_plain64be(sector_idx, pack=struct.pack):
+  return pack('>8xQ', sector_idx & 0xffffffffffffffff)
+
+
+def generate_iv_essiv(sector_idx, codebook_encrypt=None, _pack=struct.pack):
+  # codebook_encrypt should be overridden with a callable using with_defaults.
+  # Linux drivers/md/dm-crypt.c crypt_iv_essiv_gen() also ignores the high 64 bits of sector_idx.
+  return codebook_encrypt(_pack('<Q8x', sector_idx & 0xffffffffffffffff))
+
+
+def get_generate_iv_func(keytable, iv_generator):
+  if iv_generator == 'plain':
+    return generate_iv_plain
+  elif iv_generator == 'plain64':
+    return generate_iv_plain64
+  elif iv_generator == 'plain64be':
+    return generate_iv_plain64be
+  elif iv_generator == 'essiv:sha256':
+    _sha256 = HASH_DIGEST_PARAMS['sha256'][0]
+    codebook_encrypt = new_aes(_sha256(keytable).digest()).encrypt
+    return with_defaults(generate_iv_essiv, codebook_encrypt=codebook_encrypt)
+  else:
+    raise ValueError('Unknown IV generator: %s' % iv_generator)
+
+
+def _get_aes_cbc_sector_codebooks(keytable, iv_generator=None):
+  # iv_generator should be overridden with a callable using with_defaults.
+  check_aes_key(keytable)
+  return new_aes(keytable), get_generate_iv_func(keytable, iv_generator)
+
+
+def _crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  codebook, generate_iv_func = codebooks
   pack = struct.pack
 
   def yield_crypt_sectors(sector_idx):
     for i in xrange(0, len(data), 512):
-      iv = hash_encrypt(pack('<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 64))
+      iv = generate_iv_func(sector_idx)
       yield crypt_aes_cbc(codebook, buffer(data, i, 512), do_encrypt, iv)
       sector_idx += 1
 
   return ''.join(yield_crypt_sectors(sector_idx))
 
 
-def crypt_aes_cbc_essiv_sha256_sectors(aes_key, data, do_encrypt, sector_idx=0):
-  codebooks = get_aes_cbc_essiv_sha256_codebooks(aes_key)
-  return crypt_aes_cbc_sectors(codebooks, data, do_encrypt, sector_idx)
 
 
 # --- AES XTS seekable stream cipher.
@@ -441,7 +485,7 @@ def get_aes_xts_codebooks(aes_xts_key):
 # slow, but it's not a problem, because we have to encrypt only 512 bytes
 # per run. Please note that pycrypto-2.6.1 (released on 2013-10-17) and
 # other C crypto libraries with Python bindings don't support AES XTS.
-def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_crypt=None):
+def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, iv=None):
   if len(data) < 16 and len(data) > 0:
     # AES XTS is explicity not defined for 1..15 bytes of input, see
     # `assert(N >= AES_BLK_BYTES)' in IEEE P1619/D16
@@ -454,8 +498,16 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
       raise ValueError('ofs must be divisible by 16, got: %d' % ofs)
     if ofs < 0:
       raise ValueError('ofs must be nonnegative, got: %d' % ofs)
-  if sector_idx < 0:
-    raise ValueError('sector_idx must be nonnegative, got: %d' % ofs)
+  pack, do_decrypt, _strxor_16 = struct.pack, not do_encrypt, aes_strxor_16
+  if iv is None:
+    if sector_idx < 0:
+      raise ValueError('sector_idx must be nonnegative, got: %d' % ofs)
+    # sector_idx is LSB-first for aes-xts-plain64, see
+    # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
+    iv = pack('<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 64)
+  else:
+    if sector_idx:
+      raise ValueError('sector_idx conflicts with iv')
   if not data:
     if not isinstance(aes_xts_key, tuple):
       check_aes_xts_key(aes_xts_key)
@@ -471,15 +523,11 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
   #   else:
   #     return cipher.decrypt(data)
 
-  pack, do_decrypt = struct.pack, not do_encrypt
   codebook1, codebook2 = get_aes_xts_codebooks(aes_xts_key)
   codebook1_crypt = (codebook1.encrypt, codebook1.decrypt)[do_decrypt]
   del codebook1
 
-  # sector_idx is LSB-first for aes-xts-plain64, see
-  # https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt
-  t0, t1 = struct.unpack('<QQ', codebook2.encrypt(pack(
-      '<QQ', sector_idx & 0xffffffffffffffff, sector_idx >> 64)))
+  t0, t1 = struct.unpack('<QQ', codebook2.encrypt(iv))
   t = (t1 << 64) | t0
   for i in xrange(ofs >> 4):
     t <<= 1
@@ -490,43 +538,43 @@ def crypt_aes_xts(aes_xts_key, data, do_encrypt, ofs=0, sector_idx=0, codebook1_
     for i in xrange(0, len(data) - 31, 16):
       # Alternative which is 3.85 times slower: t_str = ('%032x' % t).decode('hex')[::-1]
       t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i : i + 16])))
+      yield _strxor_16(t_str, codebook1_crypt(_strxor_16(t_str, data[i : i + 16])))
       t <<= 1
       if t >= 0x100000000000000000000000000000000:
         t ^=  0x100000000000000000000000000000087
 
     lm15 = len(data) & 15
-    if lm15:  # Process last 2 blocks if len is not a multiple of 16 bytes.
+    if lm15:  # Process last 2 blocks if len is not divisible by 16 bytes.
       i, t0, t1 = len(data) & ~15, t, t << 1
       if t1 >= 0x100000000000000000000000000000000:
         t1 ^=  0x100000000000000000000000000000087
       if do_decrypt:
         t0, t1 = t1, t0
       t_str = struct.pack('<QQ', t0 & 0xffffffffffffffff, t0 >> 64)
-      pp = aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i - 16 : i])))
+      pp = _strxor_16(t_str, codebook1_crypt(_strxor_16(t_str, data[i - 16 : i])))
       t_str = struct.pack('<QQ', t1 & 0xffffffffffffffff, t1 >> 64)
-      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[i:] + pp[lm15:])))
+      yield _strxor_16(t_str, codebook1_crypt(_strxor_16(t_str, data[i:] + pp[lm15:])))
       yield pp[:lm15]
     else:
       t_str = struct.pack('<QQ', t & 0xffffffffffffffff, t >> 64)
-      yield aes_strxor_16(t_str, codebook1_crypt(aes_strxor_16(t_str, data[-16:])))
+      yield _strxor_16(t_str, codebook1_crypt(_strxor_16(t_str, data[-16:])))
 
   # TODO(pts): Use even less memory by using an array.array('B', ...).
   return ''.join(yield_crypt_blocks(t))
 
 
-def crypt_aes_xts_sectors(aes_xts_key, data, do_encrypt, sector_idx=0):
-  aes_xts_key = get_aes_xts_codebooks(aes_xts_key)  # Cache it.
+def _get_aes_xts_sector_codebooks(keytable, iv_generator=None):
+  # iv_generator should be overridden with a callable using with_defaults.
+  return get_aes_xts_codebooks(keytable) + (get_generate_iv_func(keytable, iv_generator),)
+
+
+def _crypt_aes_xts_sectors(codebooks, data, do_encrypt, sector_idx=0):
+  aes_xts_codebooks, generate_iv_func = codebooks[:2], codebooks[2]
 
   def yield_crypt_sectors(sector_idx):
-    i = 0
-    while i < len(data):
-      if len(data) - i < 16:
-        yield crypt_aes_xts(aes_xts_key, data[i:] + '\0' * (16 - (len(data) - i)), do_encrypt, 0, sector_idx)
-      else:
-        yield crypt_aes_xts(aes_xts_key, data[i : i + 512], do_encrypt, 0, sector_idx)
+    for i in xrange(0, len(data), 512):
+      yield crypt_aes_xts(aes_xts_codebooks, data[i : i + 512], do_encrypt, iv=generate_iv_func(sector_idx))
       sector_idx += 1
-      i += 512
 
   return ''.join(yield_crypt_sectors(sector_idx))
 
@@ -1389,19 +1437,19 @@ def ensure_block_device(filename, block_device_callback):
 
 def get_crypt_sectors_funcs(cipher, keytable_size=None):
   cipher = cipher.lower()
-  if cipher == 'aes-xts-plain64':
-    func, get_codebooks_func, keytable_sizes = crypt_aes_xts_sectors, get_aes_xts_codebooks, (32, 48, 64)
-  elif cipher == 'aes-cbc-essiv:sha256':
-    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_essiv_sha256_codebooks, (16, 24, 32)
-  elif cipher in ('aes-cbc-plain', 'aes-cbc-plain64'):
-    # This is different from 'aes-cbc'.
-    func, get_codebooks_func, keytable_sizes = crypt_aes_cbc_sectors, get_aes_cbc_plain_codebooks, (16, 24, 32)
-  else:
+  crypt_func = None
+  if cipher.startswith('aes-'):
+    iv_generator = cipher[cipher.rfind('-') + 1:]
+    if cipher in ('aes-xts-essiv:sha256', 'aes-xts-plain', 'aes-xts-plain64', 'aes-xts-plain64be'):
+      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_xts_sectors, with_defaults(_get_aes_xts_sector_codebooks, iv_generator=iv_generator), (32, 48, 64)
+    elif cipher in ('aes-cbc-essiv:sha256', 'aes-cbc-plain', 'aes-cbc-plain64', 'aes-cbc-plain64be'):
+      crypt_func, get_codebooks_func, keytable_sizes = _crypt_aes_cbc_sectors, with_defaults(_get_aes_cbc_sector_codebooks, iv_generator=iv_generator), (16, 24, 32)
+  if not crypt_func:
     raise ValueError('Unsupported cipher: %s' % cipher)
   if keytable_size is not None and keytable_size not in keytable_sizes:
     raise ValueError('keytable_size must be any of %s for cipher %s, got: %d' %
                      (', '.join(map(str, keytable_sizes)), cipher, keytable_size))
-  return func, get_codebooks_func
+  return crypt_func, get_codebooks_func
 
 
 def check_veracrypt_keytable(keytable):
@@ -2551,7 +2599,7 @@ class DmCryptFlushingFile(object):
   def read(self, size):
     if ofs + size <= self._do or ofs >= self._do + self._ds:
       return self._f.read(size)
-    # TODO(pts): Add support if needed, use crypt_aes_xts_sectors.
+    # TODO(pts): Add support if needed, use _crypt_aes_xts_sectors.
     raise ValueError('Reading from the encrypted region not suported.')
 
   def write(self, data):
