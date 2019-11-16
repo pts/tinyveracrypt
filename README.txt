@@ -110,11 +110,28 @@ Supported ciphers:
   cryptsetup < 1.6.0. A bit less secure than aes-xts-plain64 (see
   explanation in the cryptsetup FAQ
   https://salsa.debian.org/cryptsetup-team/cryptsetup/blob/master/FAQ ).
+* aes-lrw-benbi. Used by TrueCrypt >= 4.1, < 5.0. All aes-* other then this
+  was deprecated in TrueCrypt 4.3.
 * aes-cbc-plain64. Less secure than aes-cbc-essiv:sha256, see cryptsetup FAQ
   entry 5.14 on https://salsa.debian.org/cryptsetup-team/cryptsetup/blob/master/FAQ
   : ``Why was the default aes-cbc-plain replaced with aes-cbc-essiv?''
+* aes-cbc-plain64be: Similar to aes-cbc-plain64, but with big endian sector
+  number serialization. Has the same security problem.
 * aes-cbc-plain. Same as aes-cbc-plain, but supports only encrypted volumes
   up to 2 TiB. This was the default in cryptsetup 1.0.
+* aes-cbc-tcw. Used first by TrueCrypt (before version 4.1). Has the same
+  fingerprinting problem as aes-cbc-plain64.
+* aes-lrw-essiv:sha256. Supported for completeness only. Has a weird IV
+  generation. Use aes-lrw-benbi instead.
+* aes-lrw-plain64. Supported for completeness only. Has a weird IV
+  generation. Use aes-lrw-benbi instead.
+* aes-lrw-plain. Supported for completeness only. Has a weird IV
+  generation. Use aes-lrw-benbi instead.
+* aes-xts-plain: Inferior, 32-bit sector offset version of aes-xts-plain64.
+* aes-xts-plain64be: Similar to aes-xts-plain64, but stores the sector
+  number in big endian order in the IV. Use aes-xts-plain64 instead.
+* aes-xts-essiv:sha256: Like aes-xts-plain64, but with more complicated and
+  slower (but not more secure) IV generator. Use aes-xts-plain64 instead.
 
 Supported hashes:
 
@@ -131,6 +148,10 @@ Supported key derivation (secret-to-key):
   The number of iterations is confiugrable (`--pim=...'), the default is
   500000 iterations (`--pim=485') for VeraCrypt and LUKS, and 1000 iterations
   (`--pim=-14') for TrueCrypt (`--truecrypt').
+
+Supported other algoritms:
+
+* key splitting to anti-forensic stripes (AFSplit): For LUKS.
 
 Q5. Should I use the VeraCrypt or the LUKS on-disk format?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""
@@ -303,8 +324,8 @@ Q13. Can tinyveracrypt create an encrypted filesystem on a VeraCrypt or
 TrueCrypt encryped volume without using any extra disk space for the
 VeraCrypt or TrueCrypt header?
 """"""""""""""""""""""""""""""
-It works only for VeraCrypt encrypted volumes. The command-line flag
-is `tinyveracrypt.py init --ofs=0', but unfortunately most existing
+It works only for TrueCrypt and VeraCrypt encrypted volumes. The command-line flag
+is `tinyveracrypt.py init --ofs=0', but unfortunately some existing
 tools won't be able to open the encrypted volume:
 
 * For VeraCrypt encrypted volumes, `tinyveracrypt.py open' and `veracrypt
@@ -313,11 +334,11 @@ tools won't be able to open the encrypted volume:
   --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
   decrypted volume size) and it fails with `Device ... is too small'.
 
-* For TrueCrypt encrypted volumes, `truecrypt --text --mount' interprets
-  --ofs=0 as --ofs=512, and `tinyveracrypt.py open' copies this behavior.
-  `cryptsetup open' interprets --ofs=0 as --ofs=512,
-  but it has a bug (it doesn't decrease the decrypted volume size) and it
-  fails with `Device ... is too small'.
+* For TrueCrypt encrypted volumes, `tinyveracrypt.py open', `truecrypt
+  --text --mount', and `veracrypt --text --mount --truexrypt' are able to open them.
+  `cryptsetup open --type=tcrypt
+  --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
+  decrypted volume size) and it fails with `Device ... is too small'.
 
 Don't do this unless you know the risks, and you are ready to lose
 the VeraCrypt header (first 512 bytes of the raw device) if some tool
@@ -570,8 +591,9 @@ method:
 The decrypted volume will be available as /dev/mapper/truecrypt1 (or 2 etc.,
 specify --slot).
 
-The recommended TrueCrypt version is 7.1a (released on 2012-02-07). The latest
-release, 7.2 can also open encrypted volumes.
+The recommended TrueCrypt version is 7.1a (released on 2012-02-07, archived
+on https://truecrypt71a.com/). The latest release, 7.2 can also open
+encrypted volumes, but it can't create new ones.
 
 Alternatively, if you have cryptsetup >= 1.6.7 installed, run this:
 
@@ -761,12 +783,9 @@ real block encryption key.
 
 Q32. Which crypto backend library does tinyveracrypt use?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
-tinyveracrypt has pure Python code embedded for:
-
-* ciphers: aes-xts-plain64 and aes-cbc-essiv:sha256
-* hashes: sha512, sha256 and sha1
-* PBKDF2
-* key splitting to anti-forensic stripes
+tinyveracrypt has pure Python code embedded for all the ciphers, hashes and
+other algorithms (e.g. PBKDF2 and key splitting to anti-forensic stripes).
+See also Q4 for a full list of these algorithms.
 
 tinyveracrypt use C extensions instead of the embedded Python code,
 if available:
@@ -789,12 +808,32 @@ cipher?
 tinyveracrypt doesn't need Linux kernel support for encryption and hashing,
 all the algorithms are embedded in its Python code. Linux kernel support is
 needed for `tinyveracrypt.py open', because the corresponding `dmcrypt table'
-command needs it.
+command needs it. For these, tinyveracrypt needs Linux 2.6.33 (released
+on 2010-02-24) or later and the dmsetup(8) command installed. Some ciphers
+work with earlier kernels as well.
 
 aes-xts-plain (an earlier variant which supports encrypted volumes up to 2
 TiB) was introduced in Linux 2.6.24, aes-xts-plain64 was introduced in Linux
 2.6.33. Please note that, like many Linux kernel features, the
-aes-xts-plain64 cipther is optional: on certain distributions it may be
+aes-xts-plain64 cipher is optional: on certain distributions it may be
 available as module, or not available at all.
+
+Q34. How do I learn about the TrueCrypt on-disk format and the algorithm
+TrueCrypt uses?
+"""""""""""""""
+Some resources:
+
+* http://blog.bjrn.se/2008/01/truecrypt-explained.html : TrueCrypt 4.1, LRW.
+  Includes functional Python code (which is compatible with truecrypt,
+  cryptsetup and tinyveracrypt).
+* http://blog.bjrn.se/2008/02/truecrypt-explained-truecrypt-5-update.html :
+  TrueCrypt 5.0, XTS.
+  Includes functional Python code (which is compatible with truecrypt,
+  cryptsetup and tinyveracrypt).
+* https://gitlab.com/cryptsetup/cryptsetup/wikis/TrueCryptOnDiskFormat :
+  contains all encryption, hash, count etc. for TrueCrypt, but not for
+  VeraCrypt.
+* https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+* https://www.veracrypt.fr/en/Encryption%20Algorithms.html
 
 __END__

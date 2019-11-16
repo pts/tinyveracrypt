@@ -34,15 +34,6 @@ def benchmark_aes(new_aes):
     assert aes_obj.decrypt(';7\xa1\xf1V\xdc=\xad\xc2\xae\xe7\x02\xa6lg5') == 'FooBarBa' * 2
 
 
-def benchmark_sha1():
-  sha1 = tinyveracrypt.sha1
-  for i in xrange(200):
-    sha1_obj = sha1(str(i))
-    for j in xrange(200):
-      sha1_obj.update(i * str(j))
-    sha1_obj.digest()
-
-
 def test_aes():
   aes_obj = tinyveracrypt.new_aes('Noob' * 4)  # AES-128, 16-byte key.
   assert aes_obj.encrypt('FooBarBa' * 2) == '9h\x82\xfd\x846\x0b\xb6(\x9a1\xe1~\x1ar\xcd'
@@ -100,6 +91,15 @@ def test_ripemd160():
   assert ripemd160(data).hexdigest() == '87dc601d75eb635180abe2f0c4c7649c2602530e'
   assert ripemd160(data[1:]).hexdigest() == '5af0370161749037b942aea0b19eb3bf58e151b2'
   assert ripemd160('?' + data).hexdigest() == '43856e8669a5360fc6bb4140ddee5710a8cf2c27'
+
+
+def benchmark_sha1():
+  sha1 = tinyveracrypt.sha1
+  for i in xrange(200):
+    sha1_obj = sha1(str(i))
+    for j in xrange(200):
+      sha1_obj.update(i * str(j))
+    sha1_obj.digest()
 
 
 def test_sha1():
@@ -313,8 +313,7 @@ def test_veracrypt():
   build_dechd = tinyveracrypt.build_dechd
   parse_dechd = tinyveracrypt.parse_dechd
   build_table = tinyveracrypt.build_table
-  encrypt_header = tinyveracrypt.encrypt_header
-  decrypt_header = tinyveracrypt.decrypt_header
+  crypt_veracrypt_encdechd = tinyveracrypt.crypt_veracrypt_encdechd
 
   raw_device = '7:0'
   decrypted_size = 0x9000
@@ -334,15 +333,15 @@ def test_veracrypt():
 
   check_full_dechd(dechd)
   assert build_dechd(SALT, keytable, decrypted_size, sector_size) == dechd
-  assert parse_dechd(dechd) == (keytable, decrypted_size, decrypted_ofs)
+  assert parse_dechd(dechd, 'aes-xts-plain64', None) == (keytable, decrypted_size, decrypted_ofs)
   table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device, decrypted_ofs, 'aes-xts-plain64', True)
   expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256 1 allow_discards\n'
   assert build_table('K' * 32, 51200, 12800, 'raw.img', 8, 'aes-xts-plain64', False) == '0 100 crypt aes-xts-plain64 0000000000000000000000000000000000000000000000000000000000000000 0 raw.img 25 1 allow_discards\n'
   assert table == expected_table
-  assert encrypt_header(dechd, HEADER_KEY) == enchd
-  assert decrypt_header(enchd, HEADER_KEY) == dechd
+  assert crypt_veracrypt_encdechd(dechd, HEADER_KEY, cipher='aes-xts-plain64', do_encrypt=True) == enchd
+  assert crypt_veracrypt_encdechd(enchd, HEADER_KEY, cipher='aes-xts-plain64', do_encrypt=False) == dechd
   dechd2 = dechd[:-32] + '\1\1' + dechd[-30:]
-  enchd2 = encrypt_header(dechd2, HEADER_KEY)
+  enchd2 = crypt_veracrypt_encdechd(dechd2, HEADER_KEY, cipher='aes-xts-plain64', do_encrypt=True)
   i = 0
   while i < len(enchd) and enchd[:len(enchd) - i] != enchd2[: len(enchd) - i]:
     i += 1
