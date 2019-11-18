@@ -1852,6 +1852,84 @@ VERACRYPT_AND_TRUECRYPT_CIPHERS = (
 )
 
 
+# --- Random number generation.
+
+
+def get_random_bytes_python(size):
+  import random
+  return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
+
+
+def get_random_bytes_default(size, _functions=[]):
+  if size == 0:
+    return ''
+  if not _functions:
+
+    try:
+      data = os.urandom(1)  # More secure than get_random_bytes_python.
+      if len(data) != 1:
+        raise ValueError
+      _functions.append(os.urandom)
+    except (ImportError, AttributeError, TypeError, ValueError, OSError):
+      _functions.append(get_random_bytes_python)
+
+  return _functions[0](size)
+
+
+def get_full_read_func(f, file_description='file'):
+  """Returns a function read(size) which reads exactly size bytes from f."""
+
+  def read(size):
+    if size <= 0:
+      if size == 0:
+        return ''
+      raise ValueError('size for read must be positive, got: %d' % size)
+    data = f.read(size)
+    if len(data) == size:
+      return data
+    if not data:
+      try:
+        total_msg = ', %d bytes in total so far' % (size + f.tell())
+      except IOError:
+        total_msg = ''  # f.tell() can fail.
+      raise EOFError('EOF in %s, expected %d bytes%s.' %
+                     (file_description, size, total_msg))
+    output = [data]
+    remaining = size - len(data)
+    while remaining > 0:
+      data = f.read(remaining)
+      if not data:
+        try:
+          total_msg = ', %d bytes in total so far' % (size + f.tell())
+        except IOError:
+          total_msg = ''  # f.tell() can fail.
+        raise EOFError(
+            'Short read from from %s, expected %d bytes%s, got %d.' %
+            (file_description, size, total_msg, sum(map(len, output))))
+      remaining -= len(data)
+      output.append(data)
+    if remaining < 0:
+      raise IOError(0, 'Unexpected long read from %s.' % file_description)
+    return ''.join(data)
+
+  return read
+
+
+def get_random_bytes_file_source(filename):
+  return get_full_read_func(
+      open(filename, 'rb'), 'random source %r' % filename)
+
+
+def get_get_random_bytes_func(random_source):
+  if random_source is None or random_source == '/dev/urandom':
+    # Specify e.g. '//dev/urandom' to force /dev/urandom.
+    return get_random_bytes_default
+  elif random_source == '/dev/random-python':
+    return get_random_bytes_python
+  else:
+    return get_random_bytes_file_source(random_source)
+
+
 # --- VeraCrypt crypto.
 
 
@@ -2293,24 +2371,6 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
   return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher, do_showkeys)
 
 
-def get_random_bytes(size, _functions=[]):
-  if size == 0:
-    return ''
-  if not _functions:
-    def manual_random(size):
-      return ''.join(chr(random.randrange(0, 255)) for _ in xrange(size))
-
-    try:
-      data = os.urandom(1)
-      if len(data) != 1:
-        raise ValueError
-      _functions.append(os.urandom)
-    except (ImportError, AttributeError, TypeError, ValueError, OSError):
-      _functions.append(manual_random)
-
-  return _functions[0](size)
-
-
 def convert_veracrypt_keytable_to_dm(keytable, cipher):
   """Converts TrueCrypt/VeraCrypt keytable to Linux dm-crypt keytable."""
   check_veracrypt_keytable(keytable)
@@ -2343,7 +2403,7 @@ def build_veracrypt_header(
     decrypted_size, passphrase, hash, cipher,
     enchd_prefix='', enchd_suffix='',
     decrypted_ofs=None, pim=None, fake_luks_uuid=None,
-    truecrypt_version=False, keytable=None):
+    truecrypt_version=False, keytable=None, get_random_bytes_func=None):
   """Returns 512 bytes.
 
   Args:
@@ -2394,14 +2454,14 @@ def build_veracrypt_header(
       raise ValueError('enchd_prefix value conflicts with with luks_header.')
     enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
     assert len(enchd_prefix) <= 64
-  salt = enchd_prefix + get_random_bytes(64 - len(enchd_prefix))
+  salt = enchd_prefix + get_random_bytes_func(64 - len(enchd_prefix))
   header_key, _ = build_header_key(passphrase, salt, pim=pim, is_truecrypt=bool(truecrypt_version), hash=hash)  # Slow.
   header_keytable = convert_veracrypt_keytable_to_dm(header_key, cipher)
   if fake_luks_uuid is not None:
     zeros_ofs = 160  # Must be divisible by 16 for ofs= below.
     # util-linux blkid supports 40 bytes, busybox blkid supports 36 bytes.
     zeros_data = ''.join((
-        get_random_bytes(8), fake_luks_uuid, '\0', get_random_bytes(3)))
+        get_random_bytes_func(8), fake_luks_uuid, '\0', get_random_bytes_func(3)))
     assert len(zeros_data) == 48
     zeros_data = crypt_func(
         header_keytable, zeros_data, do_encrypt=False, ofs=zeros_ofs - 64)
@@ -2562,15 +2622,15 @@ def recommend_fat_parameters(fd_sector_count, fat_count, fstype=None, sectors_pe
   return fstype, sectors_per_cluster, use_fd_sector_count, sectors_per_fat
 
 
-def get_random_fat_salt():
+def get_random_fat_salt(get_random_bytes_func):
   import base64
-  data = get_random_bytes(8)
+  data = get_random_bytes_func(8)
   code0, code1 = ord(data[6]), ord(data[7])
   oem_id = base64.b64encode(data[:6])
   return oem_id, code0, code1
 
 
-def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None, boot_code_size=None, do_randomize_salt=False):
+def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_count=None, fstype=None, cluster_size=None, boot_code_size=None, do_randomize_salt=False, get_random_bytes_func=None):
   """Builds a 64-byte header for a FAT12 or FAT16 filesystem."""
   # FAT12 filesystem header based on minifat3.
   # dd if=/dev/zero bs=1K   count=64  of=minifat1.img && mkfs.vfat -f 1 -F 12 -i deadbeef -n minifat1 -r 16 -s 1 minifat1.img  # 64 KiB FAT12.
@@ -2588,7 +2648,7 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   else:
     label = None
   if uuid is None:
-    uuid_bin = get_random_bytes(4)
+    uuid_bin = get_random_bytes_func(4)
   else:
     uuid = uuid.replace('-', '').lower()
     try:
@@ -2652,7 +2712,7 @@ def build_fat_header(label, uuid, fatfs_size, fat_count=None, rootdir_entry_coun
   drive_number = 0x80
   bpb_signature = 0x29
   if do_randomize_salt:
-    oem_id, code0, code1 = get_random_fat_salt()
+    oem_id, code0, code1 = get_random_fat_salt(get_random_bytes_func)
   else:
     oem_id, code0, code1 = 'mkfs.fat', 0x0e, 0x1f
   header_sector_count = reserved_sector_count + sectors_per_fat * fat_count + rootdir_sector_count
@@ -2746,10 +2806,10 @@ def build_empty_fat(fat_header, boot_sector_data=None):
   return data
 
 
-def randomize_fat_header(fat_header):
+def randomize_fat_header(fat_header, get_random_bytes_func):
   if len(fat_header) < 62:
     raise ValueError('fat_header must be at least 62 bytes, got: %d' % len(fat_header))
-  oem_id, code0, code1 = get_random_fat_salt()
+  oem_id, code0, code1 = get_random_fat_salt(get_random_bytes_func)
   return ''.join((fat_header[:3], oem_id, fat_header[11 : 62], chr(code0), chr(code1)))
 
 
@@ -3256,7 +3316,7 @@ def check_stripe_count(stripe_count):
                      stripe_count)
 
 
-def luks_af_split(data, stripe_count, digest_cons, random_data=None):
+def luks_af_split(data, stripe_count, digest_cons, random_data=None, get_random_bytes_func=None):
   """Returns an anti-forensic multiplication of data by stripe_count."""
   check_stripe_count(stripe_count)
   if not data or stripe_count == 1:  # Shortcut.
@@ -3269,7 +3329,7 @@ def luks_af_split(data, stripe_count, digest_cons, random_data=None):
       raise ValueError('luks_af_split random_data must be %d bytes, got: %d' %
                        (random_data_size, len(random_data)))
   else:
-    random_data = get_random_bytes(random_data_size)
+    random_data = get_random_bytes_func(random_data_size)
   for n in xrange(0, random_data_size, size):
     d = luks_af_hash_h1(strxor(d, random_data[n : n + size]), size, digest_cons)
     assert len(d) == size, (len(d), size)
@@ -3295,17 +3355,16 @@ def luks_af_join(data, stripe_count, digest_cons):
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
     digest_cons, digest_blocksize, key_material_ofs, stripe_count,
-    yield_crypt_sectors_func, get_codebooks_func, af_salt=None):
+    yield_crypt_sectors_func, get_codebooks_func, af_salt=None,
+    get_random_bytes_func=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
-  if not slot_salt:
-    slot_salt = get_random_bytes(32)
   check_luks_slot_salt(slot_salt)
   active_tag = 0xac71f3
   # If there is any invalid keyslot, then
   # `sudo /sbin/cryptsetup luksOpen mkluks_demo.bin foo --debug' will fail
   # without considering other keyslots.
-  split_key = luks_af_split(keytable, stripe_count, digest_cons, af_salt)
+  split_key = luks_af_split(keytable, stripe_count, digest_cons, af_salt, get_random_bytes_func)
   key_material_size = len(keytable) * stripe_count
   assert len(split_key) == key_material_size
   assert luks_af_join(split_key, stripe_count, digest_cons) == keytable
@@ -3344,7 +3403,8 @@ def build_luks_header(
     passphrase, decrypted_ofs=None, keytable_salt=None,
     uuid=None, pim=None, keytable_iterations=None, slot_iterations=None,
     cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
-    af_stripe_count=None, af_salt=None, key_size=None):
+    af_stripe_count=None, af_salt=None, key_size=None,
+    get_random_bytes_func=None):
   """Builds a LUKS1 header.
 
   Similar to `cryptsetup luksFormat', with the following differences:
@@ -3398,10 +3458,6 @@ def build_luks_header(
     raise ValueError('Not enough room for slots, increase decrypted_ofs to %d or decrease af_stripe_count to %d.' %
                      ((2 + key_material_sector_count) << 9, (decrypted_ofs - 1024) // keytable_size))
 
-  if uuid is None:
-    uuid = get_random_bytes(16).encode('hex')
-    uuid = '-'.join((  # Add the dashes.
-        uuid[:8], uuid[8 : 12], uuid[12 : 16], uuid[16 : 20], uuid[20:]))
   check_luks_uuid(uuid)
   slot_iterations_orig = slot_iterations
   if keytable_iterations is None:
@@ -3420,10 +3476,10 @@ def build_luks_header(
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
   if not keytable_salt:
-    keytable_salt = get_random_bytes(32)
+    keytable_salt = get_random_bytes_func(32)
   check_luks_keytable_salt(keytable_salt)
   if not keytable:
-    keytable = get_random_bytes(keytable_size)
+    keytable = get_random_bytes_func(keytable_size)
   elif len(keytable) != keytable_size:
     # keytable is called ``master_key' by LUKS.
     raise ValueError('keytable must be %d bytes, got %d' %
@@ -3473,9 +3529,11 @@ def build_luks_header(
       # Let build_luks_active_key_slot generate random slot_salt values if
       # needed.
       key_slot_data, key_material = build_luks_active_key_slot(
-          slot_iterations, slot_salt, keytable, passphrases[i],
+          slot_iterations, slot_salt or get_random_bytes_func(32), keytable,
+          passphrases[i],
           digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
-          yield_crypt_sectors_func, get_codebooks_func, af_salt)
+          yield_crypt_sectors_func, get_codebooks_func, af_salt,
+          get_random_bytes_func)
       assert key_material
       key_material_padding_size = (key_material_sector_count << 9) - len(key_material)
       assert key_material_padding_size >= 0
@@ -3956,7 +4014,7 @@ def cmd_open_table(args):
   import subprocess
 
   device_size = 'auto'
-  keytable = key_size = device = name = decrypted_ofs = end_ofs = iv_ofs = None
+  keytable = key_size = device = name = decrypted_ofs = end_ofs = iv_ofs = random_source = None
   cipher = 'aes-xts-plain64'
   had_keytable = False
 
@@ -3983,6 +4041,13 @@ def cmd_open_table(args):
       keytable = parse_keytable_arg(arg)
     elif arg.startswith('--cipher='):
       cipher = arg[arg.find('=') + 1:].lower()
+    elif arg.startswith('--random-source='):
+      value = arg[arg.find('=') + 1:]
+      random_source = value
+    elif arg == '--use-urandom':  # `cryptsetup luksFormat'.
+      random_source = '/dev/urandom'
+    elif arg == '--use-random':  # `cryptsetup luksFormat'.
+      random_source = '/dev/random'
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4000,13 +4065,14 @@ def cmd_open_table(args):
   if i != len(args):
     raise UsageError('too many command-line arguments')
 
+  get_random_bytes_func = get_get_random_bytes_func(random_source)
   if keytable and len(keytable) == 64 and cipher.startswith('aes-lrw-'):
     keytable = keytable[:48]  # Ignore last 16 bytes for convenience.
   key_size = get_best_key_size(cipher, keytable, key_size)
   if not had_keytable:
     raise UsageError('missing flag: --keytable=...')
   if keytable is None:
-    keytable = get_random_bytes(key_size >> 3)
+    keytable = get_random_bytes_func(key_size >> 3)
   if decrypted_ofs is None:
     raise UsageError('missing flag: --ofs=...; try --ofs=8192')
   if end_ofs is None:
@@ -4032,7 +4098,7 @@ def cmd_open_table(args):
   ensure_block_device(device, block_device_callback)
 
 
-def parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid):
+def parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid, get_random_bytes_func):
   if is_any_luks_uuid:
     # Any bytes can be used (not only hex), blkid recognizes them as UUID.
     if '\0' in uuid_flag:
@@ -4050,7 +4116,7 @@ def parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid):
     except (TypeError, ValueError):
       raise UsageError('LUKS uuid must be hex: %r' % uuid_flag)
   if not uuid:
-    uuid = get_random_bytes(16)
+    uuid = get_random_bytes_func(16)
   if len(uuid) != 16:
     raise UsageError(
         'uuid must be 16 bytes, got: %d' % len(uuid))
@@ -4205,14 +4271,11 @@ def cmd_create(args):
       keyfiles = value
     elif arg.startswith('--random-source='):
       value = arg[arg.find('=') + 1:]
-      if value != '/dev/urandom':
-        raise UsageError('unsupported flag value: %s' % arg)
       random_source = value
     elif arg == '--use-urandom':  # `cryptsetup luksFormat'.
       random_source = '/dev/urandom'
     elif arg == '--use-random':  # `cryptsetup luksFormat'.
-      # TODO(pts): Support this is --random-source=/dev/random .
-      raise UsageError('unsupported flag value: %s' % arg)
+      random_source = '/dev/random'
     elif arg == '--batch-mode':  # `cryptsetup luksFormat'.
       is_batch_mode = True
     elif arg.startswith('--size='):
@@ -4381,11 +4444,13 @@ def cmd_create(args):
       cipher = TRUECRYPT_AUTO_CIPHER_ORDER[0]
   if keyfiles != '':
     raise UsageError('missing flag: --keyfiles=')
-  if random_source != '/dev/urandom':
+  if random_source is None:
     if do_restrict_luksformat_defaults:
       raise UsageError('missing flag: --use-urandom')
     else:
       raise UsageError('missing flag: --random-source=/dev/urandom')
+  else:
+    get_random_bytes_func = get_get_random_bytes_func(random_source)
   if not is_batch_mode and do_restrict_luksformat_defaults:
       raise UsageError('missing flag: --batch-mode')
   if hash is None:
@@ -4446,8 +4511,7 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --mkfat=...')
     if fake_luks_uuid_flag is not None:
       raise UsageError('--type=luks conflicts with --fake-luks-uuid=..., use --uuid=... instead')
-    if uuid_flag is not None:
-      uuid = parse_luks_uuid_flag(uuid_flag, is_any_luks_uuid)
+    uuid = parse_luks_uuid_flag(uuid_flag or '', is_any_luks_uuid, get_random_bytes_func)
     do_add_full_header = True
     do_add_backup = False
   else:
@@ -4503,7 +4567,7 @@ def cmd_create(args):
         raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
       if decrypted_ofs == 'mkfat':
         raise UsageError('--fake-luks-uuid=... conflicts with --mkfat=...')
-      uuid = parse_luks_uuid_flag(fake_luks_uuid_flag, is_any_luks_uuid)
+    uuid = parse_luks_uuid_flag(fake_luks_uuid_flag or '', is_any_luks_uuid, get_random_bytes_func)
     if uuid_flag is not None:
       raise UsageError('--type=%s conflicts with --uuid=..., maybe use --fake-looks-uuid=... instead' % type_value)
   if mkfs_args:
@@ -4644,7 +4708,7 @@ def cmd_create(args):
           sys.stderr.write('warning: abort now, otherwise the first 512 bytes of %s will be overwritten, destroying filesystems such as vfat, ntfs, xfs\n' % device)
 
     if keytable is None:
-      keytable = get_random_bytes(key_size >> 3)
+      keytable = get_random_bytes_func(key_size >> 3)
     assert isinstance(keytable, str)
     if len(keytable) == 64 and cipher.startswith('aes-lrw-'):
       short_keytable = keytable[:48]
@@ -4669,7 +4733,7 @@ def cmd_create(args):
         fatfs_size = get_fat_sizes(fat_header)[0]
         # Use --salt=test to keep the oem_id etc. intact.
         if do_randomize_salt:
-          fat_header = randomize_fat_header(fat_header)
+          fat_header = randomize_fat_header(fat_header, get_random_bytes_func)
       xf.seek(0, 2)
       read_device_size = xf.tell() & ~511
       if device_size == 'auto':
@@ -4729,13 +4793,16 @@ def cmd_create(args):
           label=fat_label, uuid=fat_uuid, fatfs_size=fatfs_size,
           fat_count=fat_fat_count,
           rootdir_entry_count=fat_rootdir_entry_count, fstype=fat_fstype,
-          cluster_size=fat_cluster_size, do_randomize_salt=do_randomize_salt)
+          cluster_size=fat_cluster_size, do_randomize_salt=do_randomize_salt,
+          get_random_bytes_func=get_random_bytes_func)
 
     if filesystem == 'fat1':
       fat1_header = build_fat_header(
           label=fat_label, uuid=fat_uuid, fatfs_size=decrypted_size, fstype=fat_fstype,
           rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
-          cluster_size=fat_cluster_size, do_randomize_salt=(do_randomize_salt and decrypted_ofs == 0))
+          cluster_size=fat_cluster_size,
+          do_randomize_salt=(do_randomize_salt and decrypted_ofs == 0),
+          get_random_bytes_func=get_random_bytes_func)
       fat1_header = build_fat_boot_sector(fat1_header, FAT_NO_BOOT_CODE)
       fatfs_size2 = get_fat_sizes(fat1_header)[0]  # Also checks fat1_header.
       if fatfs_size2 > decrypted_size:
@@ -4796,6 +4863,7 @@ def cmd_create(args):
           keytable_salt=None,  # TODO(pts): Add command-line flag (--random-source=... ?)
           slot_salt=None,  # TODO(pts): Add command-line flag.
           af_salt=None,  # TODO(pts): Add command-line flag.
+          get_random_bytes_func=get_random_bytes_func,
           )
     else:  # VeraCrypt or TrueCrypt.
       if passphrase is None:
@@ -4818,14 +4886,15 @@ def cmd_create(args):
           decrypted_size=decrypted_size, passphrase=passphrase,
           enchd_prefix=enchd_prefix, enchd_suffix=enchd_suffix,
           decrypted_ofs=decrypted_ofs, pim=pim, truecrypt_version=truecrypt_version,
-          keytable=keytable, hash=hash, cipher=cipher)
+          keytable=keytable, hash=hash, cipher=cipher,
+          get_random_bytes_func=get_random_bytes_func)
       assert len(enchd) == 512
       if decrypted_ofs_any == 'mkfat':
         enchd = build_empty_fat(enchd)  # Same as enchd --> boot_sector_data.
         assert len(enchd) >= 1536
       if do_add_full_header:
         assert decrypted_ofs >= len(enchd)
-        enchd += get_random_bytes(decrypted_ofs - len(enchd))
+        enchd += get_random_bytes_func(decrypted_ofs - len(enchd))
         assert len(enchd) == decrypted_ofs
       if do_add_backup:
         xofs = min(0x20000, decrypted_ofs)
@@ -4834,8 +4903,9 @@ def cmd_create(args):
             decrypted_size=device_size - decrypted_ofs - xofs,
             passphrase=passphrase, decrypted_ofs=xofs,
             enchd_prefix=salt, pim=pim, truecrypt_version=truecrypt_version,
-            keytable=keytable, hash=hash, cipher=cipher)
-        enchd_backup += get_random_bytes(xofs - 512)
+            keytable=keytable, hash=hash, cipher=cipher,
+            get_random_bytes_func=get_random_bytes_func)
+        enchd_backup += get_random_bytes_func(xofs - 512)
         assert len(enchd_backup) == xofs
       else:
         enchd_backup = ''
@@ -4857,7 +4927,7 @@ def cmd_create(args):
       i = random_size
       while i > 0:
         # TODO(pts): Generate faster random.
-        data = get_random_bytes(min(i, 65536))
+        data = get_random_bytes_func(min(i, 65536))
         xf.write(data)
         i -= len(data)
       if enchd_backup:
@@ -5022,7 +5092,6 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
-    # !! Add arbitrary --random-source=... for reproducible output (--keytable=... and --salt=... aren't always enough).
     # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
