@@ -431,7 +431,7 @@ def test_veracrypt():
 
   check_full_dechd(dechd)
   assert build_dechd(SALT, keytable, decrypted_size, sector_size) == dechd
-  assert parse_dechd(dechd, 'aes-xts-plain64', None) == (keytable, decrypted_size, decrypted_ofs)
+  assert parse_dechd(dechd, 'aes-xts-plain64', 65536) == (keytable, decrypted_size, decrypted_ofs)
   table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device, decrypted_ofs, 'aes-xts-plain64', True)
   expected_table = '0 72 crypt aes-xts-plain64 a64cd0845765a19b0b5948f371f0b8c7b14da01677a10009d8b9199d511624233a54e1118dd6c9e2992e3ebae56081ca1f996c74c53f61f1a48f7fb17ddc6d5b 256 7:0 256 1 allow_discards\n'
   assert build_table('K' * 32, 51200, 12800, 'raw.img', 8, 'aes-xts-plain64', False) == '0 100 crypt aes-xts-plain64 0000000000000000000000000000000000000000000000000000000000000000 0 raw.img 25 1 allow_discards\n'
@@ -479,7 +479,6 @@ def test_veracrypt():
 
 def test_luks():
   size = 2066432
-  tinyveracrypt.check_luks_size(size)
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
   key_size = 48 << 3
   keytable = ''.join(map(chr, xrange(3, 3 + (key_size >> 3))))

@@ -14,7 +14,6 @@ import tinyveracrypt
 def main(argv):
   # Command with similar output: /sbin/cryptsetup luksFormat --batch-mode --cipher=aes-xts-plain64 --hash=sha1 --use-urandom mkluks_demo.bin
   size = 2066432
-  tinyveracrypt.check_luks_size(size)
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
   key_size = 48 << 3
   keytable = ''.join(map(chr, xrange(3, 3 + (key_size >> 3))))

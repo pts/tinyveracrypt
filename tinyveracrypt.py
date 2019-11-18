@@ -1933,6 +1933,14 @@ def get_get_random_bytes_func(random_source):
 # --- VeraCrypt crypto.
 
 
+def get_common_multiple(a, b):
+  """Returns the smallest common multiple of a and b."""
+  oa, ob = a, b
+  while b: 
+    a, b = b, a % b
+  return a and (oa // a) * ob
+
+
 def get_largest_keytable_size(cipher):
   cipher = cipher.lower()
   if cipher.startswith('aes-xts-') or cipher == 'aes-cbc-tcw':
@@ -3199,28 +3207,6 @@ except (ImportError, AttributeError, TypeError):
 # --- LUKS.
 
 
-def check_luks_decrypted_size(decrypted_size):
-  min_decrypted_size = 2066432 - 4096
-  if decrypted_size < min_decrypted_size:
-    raise ValueError('LUKS decrypted_size must be at least %d bytes, got: %d' %
-                     (min_decrypted_size, decrypted_size))
-  if decrypted_size & 511:
-    raise ValueError('LUKS decrypted_size must be divisible by 512, got: %d' %
-                     decrypted_size)
-
-
-def check_luks_size(size):
-  # `cryptsetup luksDump' and `cryptSetup open ... --type=luks' in
-  # cryptsetup-1.7.3 both report this error for <2MiB volumes:
-  # `LUKS requires at least 2066432 bytes.'.
-  min_size = 2066432
-  if size < min_size:
-    raise ValueError('LUKS size must be at least %d bytes, got: %d' %
-                     (min_size, size))
-  if size & 511:
-    raise ValueError('LUKS size must be divisible by 512, got: %d' % size)
-
-
 def check_luks_decrypted_ofs(decrypted_ofs):
   if decrypted_ofs < 4096:
     # In 512-byte sectors. Must be larger than key_material_offset, which is
@@ -4136,7 +4122,7 @@ def cmd_create(args):
   do_restrict_luksformat_defaults = False
   is_luks_allowed = is_nonluks_allowed = True
   do_truncate = True
-  truecrypt_version = keytable = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  align_ofs = truecrypt_version = keytable = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   cipher = af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = None
@@ -4286,6 +4272,22 @@ def cmd_create(args):
         decrypted_ofs = value
       else:
         decrypted_ofs = parse_decrypted_ofs_arg(arg)
+    elif arg.startswith('--align-ofs='):
+      value = arg[arg.find('=') + 1:]
+      try:
+        align_ofs = int(value)
+      except ValueError:
+        raise UsageError('unsupported flag value: %s' % arg)
+      if align_ofs <= 0:
+        raise UsageError('flag must be positive, got: %s' % arg)
+    elif arg.startswith('--align-payload='):  # `cryptsetup luksFormat'.
+      value = arg[arg.find('=') + 1:]
+      try:
+        align_ofs = int(value) << 9
+      except ValueError:
+        raise UsageError('unsupported flag value: %s' % arg)
+      if align_ofs <= 0:
+        raise UsageError('flag must be positive, got: %s' % arg)
     elif arg.startswith('--mkfat='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -4535,6 +4537,9 @@ def cmd_create(args):
           raise UsageError('--add-full-header conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
         if do_add_backup is True:
           raise UsageError('--add-backup conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
+        if truecrypt_version < 0x600 and (align_ofs and 512 % align_ofs):
+          raise UsageError('--align-ofs=%d conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' %
+                           (align_ofs, truecrypt_version >> 8, truecrypt_version & 255))
       if device_size is not None and device_size < 65536:  # Limitation of TrueCrypt 7.1a and VeraCrypt 1.17 tools.
         if isinstance(decrypted_ofs, (int, long)) and decrypted_ofs != 512:
           raise UsageError('--ofs=%d conflicts with --type=%s --size=%d, try omitting --ofs=... or increasing size to --size=65536' % (decrypted_ofs, type_value, device_size))
@@ -4760,14 +4765,31 @@ def cmd_create(args):
       assert isinstance(fatfs_size, (int, long))
       decrypted_ofs = fatfs_size
     elif decrypted_ofs is None:
+      if align_ofs and device_size <= align_ofs:
+        raise UsageError('raw device too small for --align-ofs=%d, actual size: %d, try omitting --align-ofs=...' %
+                         (align_ofs, device_size))
       if type_value == 'luks':
-        decrypted_ofs = get_recommended_luks_decrypted_ofs(device_size)
+        decrypted_ofs = get_common_multiple(get_recommended_luks_decrypted_ofs(device_size), align_ofs or 1)
       elif truecrypt_version and (truecrypt_version or 0x600) < 0x600:
         decrypted_ofs = 512
       else:
-        decrypted_ofs = get_recommended_veracrypt_decrypted_ofs(
-            device_size, do_add_full_header)
+        decrypted_ofs = get_common_multiple(get_recommended_veracrypt_decrypted_ofs(
+            device_size, do_add_full_header), align_ofs or 1)
     assert isinstance(decrypted_ofs, (int, long))
+    if type_value == 'luks':
+      check_luks_decrypted_ofs(decrypted_ofs)
+    else:
+      check_decrypted_ofs(decrypted_ofs)
+    if device_size <= decrypted_ofs:
+      if align_ofs:
+        hint = ', try omitting --align-ofs=...'
+      else:
+        hint = ''
+      raise UsageError('raw device too small for decrypted_ofs %d, actual size: %d%s' %
+                       (decrypted_ofs, device_size, hint))
+    if align_ofs and decrypted_ofs % align_ofs:
+      raise UsageError('decrypted_ofs %d conflicts with --align-ofs=%d, try omitting --align-ofs=...' %
+                       (decrypted_ofs, align_ofs))
 
     if decrypted_size is None:
       decrypted_size = device_size - decrypted_ofs - min(0x20000, decrypted_ofs) * bool(do_add_backup)
@@ -4842,6 +4864,9 @@ def cmd_create(args):
 
     if type_value == 'luks':
       if device_size < 2066432:  # 2018 KiB, imposed by `cryptsetup open'.
+        # `cryptsetup luksDump' and `cryptSetup open ... --type=luks' in
+        # cryptsetup-1.7.3 both report this error for <2MiB volumes:
+        # `LUKS requires at least 2066432 bytes.'.
         # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
         raise UsageError('raw device too small for LUKS volume, minimum is 2066432 (2018K), actual size: %d' %
                          device_size)
@@ -5092,7 +5117,6 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
-    # !! Add create --align-payload=SECTORS (for `cryptsetup luksFormat').
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add --help.
     # !! Add `cat' command with get_crypt_sectors_funcs, fast if root.
