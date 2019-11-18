@@ -7,6 +7,8 @@ type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
 type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
 type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
 type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
+python -c 'import sys; sys.exit(sys.version_info >= (3,) and
+"%s: Python 2.x needed" % sys.argv[1])' "$0" || exit "$?"
 exec python -- ${1+"$@"}; exit 1
 
 This script works with Python 2.5, 2.6 and 2.7 out of the box, and with
