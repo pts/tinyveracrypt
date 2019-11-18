@@ -1,7 +1,7 @@
 #! /bin/sh
 # by pts@fazekas.hu at Sat Oct 29 19:43:26 CEST 2016
 
-""":" #tinyveracrypt: VeraCrypt-compatible block device encryption setup
+""":" #tinyveracrypt: versatile and compatible block device encryption setup
 
 type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
 type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
@@ -11,10 +11,356 @@ python -c 'import sys; sys.exit(sys.version_info >= (3,) and
 "%s: Python 2.x needed" % sys.argv[1])' "$0" || exit "$?"
 exec python -- ${1+"$@"}; exit 1
 
-This script works with Python 2.5, 2.6 and 2.7 out of the box, and with
-Python 2.4 if the hashlib is installed from PyPi. It doesn't work with older
-versions of Python or Python 3.x.
+This script works with Python 2.5, 2.6 and 2.7 out of the box, and slowly
+with Python 2.4. It doesn't work with older versions of Python or Python 3.x.
+
+tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt,
+TrueCrypt and LUKS encrypted volumes, and to open (mount) them on Linux.
+It's a drop-in replacement for the cryptsetup, veracrypt and truecrypt tools
+for the subset of commands and flags it understands. It's implemented in
+Python 2 with only standard Python modules and dmsetup(8) as dependencies.
+It has some additional features such as plaintext UUID, plaintext FAT
+filesystem in front of the encrypted volume and volume creation with old
+ciphers compatible with old TrueCrypt.
+
+Usage for creating an encrypted volume:
+
+  $ ./tinyveracrypt.py init --type=<type> [<flag>...] [<mkfs-command>...] <device.img>
+  Enter passphrase:
+
+An alternative usage for creating an encrypted volume, compatible with
+the veracrypt and truecrypt tools:
+
+  $ ./tinyveracrypt --text --create [<flag>...] <device.img>
+  Enter passphrase:
+
+An alternative usage for creating an encrypted volume, compatible with
+the cryptsetup tool:
+
+  $ ./tinyveracrypt luksFormat [<flag>...] <device.img>
+  Enter passphrase:
+
+Usage for opening an encrypted volume on Linux:
+
+  $ sudo ./tinyveracrypt.py open [<flag>...] <device.img> <name>
+  Enter passphrase:
+  $ sudo mount /dev/mapper/<name> <mountdir>
+
+An alternative usage for opening an encrypted volume, compatible with
+the veracrypt and truecrypt tools:
+
+  $ sudo ./tinyveracrypt --text --mount [<flag>...] <device.img>
+  Enter passphrase:
+  info: using dmsetup table <name>: veracrypt1
+  $ sudo mount /dev/mapper/veracrypt1 <mountdir>
+
+Usage for closing an encrypted volume on Linux:
+
+  $ sudo umount /dev/mapper/<name>
+  $ sudo ./tinyveracrypt.py close <name>
+
+Usage for displaying the dmsetup table for an encrypted volume:
+
+  $ ./tinyveracrypt.py get-table [<flag>...] <device.img>
+  Enter passphrase:
+
+Usage for opening an encrypted volume on Linux by supplying the parts of the
+dmsetup table line as flags:
+
+  $ ./tinyveracrypt.py open-table [<flag>...] <name>
+
+Use --help-flags for a description of all command-line flags.
+
+See https://github.com/pts/tinyveracrypt for more information.
 """
+
+
+WELCOME_PATTERN = (
+    '%s\nThis is free software, GNU GPL >=2.0. '
+    'There is NO WARRANTY. Use at your risk.\n\n')
+
+FLAGS_MSG = """
+Flags for init, create and luksFormat:
+
+* --type=veracrypt: Create encrypted volume with VeraCrypt header.
+* --type=truecrypt: Create encrypted volume with TrueCrypt header.
+* --type=luks1: Create encrypted volume with LUKS1 header.
+* --type=luks: Equivalent to --type=luks.
+* <mkfs-command>...: A command starting with `mkfs.', and some command-line
+  arguments. If specified, it's eqivalent to --filesystem=custom.
+* --password=...: Password to use for opening the encrypted volume. This
+  flag is insecure (because it adds the password to your shell history),
+  please don't specify it, but type the passwords interactively instead.
+* --test-passphrase: Equivalent to --test-password.
+* --test-password: Equivalent to
+  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this password for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this password embedded, so
+  it's faster to create (test) volumes with it than with other passwords.
+* --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
+  as K, M G are supported.) If not speficied (or --size=auto or
+  --size=max is specified), then the size gets autodetected, and the
+  encrypted volume spans over the end of the raw device.
+* --truncate: If a specific --size=... is specified, truncate <device.img>
+  (disk image file) to that size. Enabled by default.
+* --no-truncate: Disable --truncate.
+* --keytable=<hex>: Hex string containing the data encryption key (as printed by
+  `dmsetup table --showkeys ...'. The default is a random string of the
+  right size. This flag is insecure (because it adds the password to your shell
+  history), please don't specify it, but use `--random-source=...' instead.
+* --cipher=...: The cipher (encryption scheme) to use. See below for a list of
+  supported values. The default is aes-xts-plain64 (most secure).
+* --hash=...: The hash (message digest) algorithm to use for key derivation.
+  The default is sha512 (secure) or sha1, whichever is supported by the
+  format (--type=...) and version (--truecrypt-version=...).
+* --pim=<number>: Affects the number of iterations of --hash=... during key
+  derivation. A larger number makes opening the encrypted volume slower, so
+  the user experiences slowness, and it's also harder for the attacker to
+  open without a password. The formula for computing the number of iterations
+  from PIM is complicated, but it's compatible with VeraCrypt. If the default
+  hash is used, then for --type=veracrypt and --type=luks, the default
+  number of iterations will be 500000, and for --type=truecrypt, it will be
+  1000.
+* --salt=<hex>: Hex string used as a unique starting value for key
+  derivation. The default is random string of the right size.
+* --fake-luks-uuid=<hex>: Create a fake LUKS header with the specified UUID
+  with the VeraCrypt or TrueCrypt header. By default this feature is disabled.
+* --any-luks-uuid: The value of --fake-luks-uuid=... or --uuid=... can be
+  any string (not just hex digits). Unfortunately cryptsetup fails to open
+  the encrypted volume unless hex digits are used. (This is not a problem for
+  --fake-luks-uuid=... .)
+* --no-any-luks-uuid: Disable --any-luks-uuid.
+* --uuid=<hex>: Create the LUKS header with the specified UUID. The default
+  is random.
+* --volume-type=normal: Compatibility flag, ignored.
+* --encryption=aes: Compatibility flag, ignored.
+* --af-stripes=<number>. Exapansion factor in the LUKS key material (AFSplit).
+  The value of 1 means the encrypted master key is stored once (without
+  expansion) in each key slot. cryptsetup 2.1.0 open requires 4000. The default
+  depends on the raw device size.
+* --filesystem=none: Don't create a filesystem on the encrypted volume. This
+  is the default.
+* --filesystem=custom: Create a filesystem on the encrypted volume by
+  running the specified <mkfs-command>... with its arguments. If this flag is
+  specified, then <mkfs-command> may be anything, it doesn't have to start
+  with `mkfs.'. Example invocation: `tinyveracrypt.py init --type=veracrypt
+  --filesystem=custom --size=32M mkfs.ext4 -L mylabel myvol.img'.
+* --filesystem=fat1: Create a FAT12 or FAT16 filesystem on the encrypted
+  volume using code embedded to tinyveracrypt. See also the --fat-* flags.
+* --filesystem=...: Create a filesystem on the encrypted volume by
+  running the specified `mkfs.' + arg command with its arguments.
+  Example invocation: `tinyveracrypt.py init --type=veracrypt
+  --filesystem=ext4 --size=32M -L mylabel myvol.img'.
+* --fat-fstype=<fstype>: Either fat12 or fat16. Specifies the type of
+  filesystem to create for --mkfat=... and --filesystem=fat1.
+* --fat-label=...: Specifies the FAT volume label
+  for --mkfat=... and --filesystem=fat1.
+* --fat-uuid=<hex> Specifies the FAT UUID (as 8 hex digits)
+  for --mkfat=... and --filesystem=fat1. The default is a random value.
+* --fat-rootdir-entry-count=<number>: Specifies the maximum number of root
+  directory entries for --mkfat=... and --filesystem=fat1. The default is
+  based on the filesystem size.
+* --fat-cluster-size=<bytes>: Specifies the number bytes in a cluster for
+  --mkfat=... and --filesystem=fat1. (1024-based suffixes such
+  as K, M G are supported.) The default is based on the filesystem size.
+* --fat-count=<number>: Either of 1 or 2. Specifies the number file
+  alloation tables (FATs) for mkfat=... and --filesystem=fat1. The default
+  is is 1.
+* --keyfiles=: Compatibility flag, ignored.
+* --random-source=<filename>: File to read random bytes from. Default random
+  source is os.urandom (if available, uses /dev/urandom), otherwise
+  random.randrange(0, 255).
+* --use-urandom: Equivalent to --random-source=/dev/urandom.
+* --use-random: Equivalent to --random-source=/dev/random.
+* --batch-mode: Compatibility flag, ignored.
+* --ofs=<bytes>: Number of bytes from the start of the raw device where
+  the encrypted volume starts. (1024-based suffixes such
+  as K, M G are supported.) The default is a reasonable value based on the
+  size of the raw device.
+* --ofs=fat: Autodetect an unencrypted FAT12 or FAT16 filesystem at the
+  start of the raw device, and use its size as --ofs=... .
+* --align-ofs=<bytes>: Specifies the minimum alignment for the number of
+  bytes from the start of the raw device. Makes sense if --ofs=... isn't
+  specified. (1024-based suffixes such as K, M G are supported.) The default
+  is 1 (no alignment, but the reasonable default of --ofs=... has a good,
+  fast alignment).
+* --align-payload=<sectors>. Equivalent to --align-ofs=... with <sectors>
+  multiplied by 512.
+* --mkfat=<bytes>: Create an unencrypted FAT16 or FAT16 filesystem of the
+  specified size at the start of the raw device, just in front of the
+  encrypted volume. (1024-based suffixes such as K, M G are supported.)
+* --text: Compatibility flag, ignored.
+* --quick: Don't overwrite the non-header part of the raw device with random
+  bytes. This is the default.
+* --no-quick: Overwrite the non-header part of the raw device with random
+  bytes.
+* --add-full-header: In addition to the 512 bytes of VeraCrypt or TrueCrypt
+  header, add the full 128 KiB of header (and populate it with random bytes
+  after the first 512 bytes). The default is based on the size of the raw
+  device.
+* --no-add-full-header: Disable --add-full-header.
+* --add-backup: Add backup header (for VeraCrypt or TrueCrypt) of 128 KiB
+  near the end of the raw device. The backup header can be used to recover
+  the data encryption key in case the header gets corrupted. The default is
+  based on the size of the raw device.
+* --no-add-backup: Disable --add-backup.
+* --opened: Use the parameters (--cipher=..., --ofs=..., --keytable=...,
+  encrypted size etc.) of an encrypted volume which is already open. The
+  headers will be regenerated and overwritten with the specified password.
+  The encrypted data will be kept intact. Instead of <device.img>, a
+  directory name or a block device pathname should be specified. This
+  feature is disabled by default.
+* --no-opened: Disable --opened. This is the default.
+* --passphrase-once: Ask for the password once. This is the default.
+* --passphrase-twice: ask for the password twice and confirm that the user
+  typed the same password.
+* --verify-passphprase: Eqivalent to --passphrase-twice.
+* --truecrypt: Equivalent to --type=truecrypt.
+* --no-truecrypt: Equivalent to --type=veracrypt.
+* --veracrypt: Equivalent to --type=veracrypt.
+* --truecrypt-version: ... Also implies --type=truecrypt.
+
+Please note that create is different from init:
+
+* --quick must be specified explicitly to override the default --no-quick.
+* --volume-type=normal mulst be specified explicitly.
+* --size=... must be specified explicitly.
+* --encryption=aes (or other --cipher=...) must be specified explicitly.
+* --hash=sha512 (or other) must be specified explicitly.
+* --pim=0 (or other) must be specified explicitly.
+* --filesystem=none (or other) must be specified explicitly.
+* --keyfiles= must be specified explicitly.
+* --random-source=/dev/urandom must be specified explicitly.
+* --passphrase-once must be specified to override the default
+  --passphrase-twice.
+
+Please note that luksFormat is different from init:
+
+* --use-urandom (or other --random-source=...) must be specified explicitly.
+* --batch-mode must be specified explicitly.
+* --type=luks1 is the default (matches cryptsetup 1.7.3) and can't be
+  changed.
+* --hash=sha256 is the default (matches cryptsetup 1.7.3).
+* --key-size=256 is the default (matches cryptsetup 1.7.3).
+
+* Flags for open and mount:
+
+* --veracrypt-pim=...: Eqivalent to --pim=... .
+* --no-truecrypt: Equivalent to --type=veracrypt.
+* --truecrypt: Eqivalent to --type=truecrypt.
+* --maybe-truecrypt: Searches for both TrueCrypt and VeraCrypt header.
+* --veracrypt: Equivalent to --maybe-truecrypt.
+* --type=truecrypt: Searches for TrueCrypt header only.
+* --type=veracrypt: Searches for VeraCrypt header only.
+* --type=luks1: Recognizes the LUKS1 header only.
+* --type=luks: Equivalent to --type=luks.
+* --password=...: Password to use for opening the encrypted volume. This
+  flag is insecure (because it adds the password to your shell history),
+  please don't specify it, and type the passwords interactively instead.
+* --test-passphrase: Equivalent to --test-password.
+* --test-password: Equivalent to
+  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this password for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this password embedded, so
+  it's faster to create (test) volumes with it than with other passwords.
+* --keyfiles=: Compatibility flag, ignored.
+* --protect-hidden=no: Compatibility flag, ignored.
+* --custom-name: Specify the dm-crypt device name in the command-line as
+  <name>. This is the default.
+* --no-custom-name: Autogenerate the dm-crypt device name using --slot=...
+* --slot=<number>: If specified as a positive integer, use veracrypt<number>
+  as a dm-crypt device name. If not specified, but --no-custom-name is in
+  effect, then find the first positive integer which is not already in use.
+* --encryption=aes: Compatibility flag, ignored.
+* --hash=...: The hash (message digest) algorithm to use for key derivation.
+  The default is trying everything possible. (For --type=luks1, there is only 1
+  possibility, the one specified in the LUKS header.)
+* --pim=<number>: Affects the number of iterations of --hash=... during key
+  derivation. The default is trying the most common defaults. (For
+  --type=luks1, there is only 1 possibility, the one specified in the LUKS
+  header.)
+* --filesystem=none: Compatibility flag, ignored.
+* --text: Compatibility flag, ignored.
+
+Please note that mount is different from open:
+
+* --encryption=aes must be specified explicitly.
+* --filesystem=none (or other) must be specified explicitly.
+* --keyfiles= must be specified explicitly.
+* --protect-hidden=no must be specified explicitly.
+* <name> can't be specified, so --no-custom-name is the default
+  (--slot=... is a replacement).
+
+Flags for close:
+
+* (Same flags as for `dmsetup remove'.)
+
+Flags for get-table:
+
+* --no-truecrypt: Equivalent to --type=veracrypt.
+* --truecrypt: Equivalent to --type=truecrypt.
+* --maybe-truecrypt: Searches for both TrueCrypt and VeraCrypt header.
+* --veracrypt: Equivalent to --maybe-truecrypt.
+* --type=truecrypt: Searches for TrueCrypt header only.
+* --type=veracrypt: Searches for VeraCrypt header only.
+* --type=luks1: Recognizes the LUKS1 header only.
+* --type=luks: Equivalent to --type=luks.
+* --password=...: Password to use for opening the encrypted volume. This
+  flag is insecure (because it adds the password to your shell history),
+  please don't specify it, but type the passwords interactively instead.
+* --test-passphrase: Equivalent to --test-password.
+* --test-password: Equivalent to
+  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this password for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this password embedded, so
+  it's faster to create (test) volumes with it than with other passwords.
+* --hash=...: The hash (message digest) algorithm to use for key derivation.
+  The default is trying everything possible. (For --type=luks1, there is only 1
+  possibility, the one specified in the LUKS header.)
+* --pim=<number>: Affects the number of iterations of --hash=... during key
+  derivation. The default is trying the most common defaults. (For
+  --type=luks1, there is only 1 possibility, the one specified in the LUKS
+  header.)
+* --display-device=...: String to print instead of <device.img> in the
+  output table.
+* --showkeys: Instead of hex 00s, show the actual data encryption key
+  (keytable).
+* --no-showkeys: Show hex 00s instead of the data encryption key. This is
+  the default.
+
+Flags for open-table:
+
+* --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
+  as K, M G are supported.) If not speficied (or --size=auto or
+  --size=max is specified), then the size gets autodetected, and the
+  encrypted volume spans over the end of the raw device.
+* --ofs=<bytes>: Number of bytes from the start of the raw device where
+  the encrypted volume starts. (1024-based suffixes such
+  as K, M G are supported.)
+* --end-ofs=<bytes>: Number of bytes from the end of the raw device where
+  the encrypted volume ends. (1024-based suffixes such
+  as K, M G are supported.)
+* --iv-ofs=<bytes>: Encryption IV offset to use, in bytes. (1024-based
+  suffixes such as K, M G are supported.) The default is the --ofs=... value.
+  LUKS needs 0, TrueCrypt with --cipher=aes-lrw-benbi needs 0, others need
+  the default.
+* --key-size=<bits>. Number of bits of the data encryption key (keytable). Used
+  when randomly generating it.
+* --keytable=<hex>: Hex string containing the data encryption key (as printed by
+  `dmsetup table --showkeys ...'. The default is a random string of the
+  right size. This flag is insecure (because it adds the password to your shell
+  history), please don't specify it, but use `--random-source=...' instead.
+* --cipher=...: Name of the cipher to use.
+
+Supported --cipher=... values: aes-xts-plain64 (default, most secure,
+recommended), aes-cbc-essiv:sha256, aes-lrw-benbi, aes-cbc-tcw and some
+others, see FAQ entry Q4 on https://github.com/pts/tinyveracrypt .
+
+Supported --hash=... values: sha512 (default, most secure, recommended),
+sha256, sha1, ripemd160, whirlpool and some others, see
+FAQ entry Q4 on https://github.com/pts/tinyveracrypt .
+"""
+
 
 import itertools
 import os
@@ -1936,9 +2282,9 @@ def get_get_random_bytes_func(random_source):
 
 
 def get_common_multiple(a, b):
-  """Returns the smallest common multiple of a and b."""
+  """Returns the least common multiple of a and b."""
   oa, ob = a, b
-  while b: 
+  while b:
     a, b = b, a % b
   return a and (oa // a) * ob
 
@@ -2420,7 +2766,7 @@ def build_veracrypt_header(
     decrypted_size: Size of the decrypted block device, this is 0x20000
         bytes smaller than the encrypted block device.
   Returns:
-    enchd, the encrypted 512-byte header to be saved to the beginning
+    enchd, the encrypted 512-byte header to be saved to the start
     of the raw device.
   """
   if cipher == 'aes-xts-plain64' and (truecrypt_version or 0x500) >= 0x500:
@@ -2444,7 +2790,7 @@ def build_veracrypt_header(
     if enchd_suffix:  # Command-line flag parsing catches this before.
       raise ValueError('enchd_suffix not supported by cipher %s' % cipher)
     if fake_luks_uuid is not None:
-      raise ValueError('fake_luuks_uuid not supported by cipher %s' % cipher)
+      raise ValueError('fake_luks_uuid not supported by cipher %s' % cipher)
   else:
     if len(enchd_suffix) > 192:
       # veracrypt_keytable is at dechd[256 : 512 - 192], no room for >192
@@ -2545,7 +2891,7 @@ def get_fat_sizes(fat_header):
     raise ValueError('FAT32 detected, but it is not supported.')
   if sector_count1:
     sector_count = sector_count1
-  fstype = fstype.rstrip(' ')
+  fstype = fstype.rstrip(' ').upper()
   label = label.lstrip(' ')
   del sector_count1
   #assert 0, sorted((k, v) for k, v in locals().iteritems() if k not in ('data', 'struct'))
@@ -3006,7 +3352,7 @@ def find_dm_crypt_device(device):
     stat_obj = os.stat(device)
     if stat.S_ISDIR(stat_obj.st_mode):  # A directory on a mounted filesystem on a dm-crypt encrypted device.
       major_minor = stat_obj.st_dev >> 8, stat_obj.st_dev & 255
-    elif stat.S_ISBLK(stat_obj.st_mode):  # A dm-crypt device.
+    elif stat.S_ISBLK(stat_obj.st_mode):  # A device.
       major_minor = stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255
     else:
       raise UsageError(
@@ -3415,7 +3761,7 @@ def build_luks_header(
 
   Returns:
     String containing the LUKS1 partition header (phdr) and the key material.
-    To open it, copy it to the beginning of a raw device, and use
+    To open it, copy it to the start of a raw device, and use
     `sudo cryptsetup open ... --type=luks'.
   """
   # Based on https://gitlab.com/cryptsetup/cryptsetup/blob/master/docs/on-disk-format.pdf
@@ -3781,6 +4127,8 @@ def cmd_mount(args):
     i += 1
     if arg == '--':
       break
+    elif arg == '--text':
+      pass  # Ignored for compatibility with the veracrypt binary.
     elif arg.startswith('--pim=') or arg.startswith('--veracrypt-pim='):
       pim = parse_pim_arg(arg)
       if truecrypt_mode == 2:
@@ -4174,7 +4522,7 @@ def cmd_create(args):
       if value == 'NO NAME' or not value:
         value = None
       fat_label = value
-    elif arg.startswith('--fat-uuid'):
+    elif arg.startswith('--fat-uuid='):
       value = arg[arg.find('=') + 1:].replace('-', '').lower()
       try:
         value = value.decode('hex')
@@ -4205,7 +4553,7 @@ def cmd_create(args):
     elif arg.startswith('--fat-cluster-size='):
       value = arg[arg.find('=') + 1:]
       try:
-        fat_cluster_size = int(value)
+        fat_cluster_size = parse_byte_size(value)
       except ValueError:
         raise UsageError('unsupported flag value: %s' % arg)
       if (fat_cluster_size >> 9) not in (1, 2, 4, 8, 16, 32, 64, 128):
@@ -4277,7 +4625,7 @@ def cmd_create(args):
     elif arg.startswith('--align-ofs='):
       value = arg[arg.find('=') + 1:]
       try:
-        align_ofs = int(value)
+        align_ofs = parse_byte_size(value)
       except ValueError:
         raise UsageError('unsupported flag value: %s' % arg)
       if align_ofs <= 0:
@@ -4401,7 +4749,8 @@ def cmd_create(args):
     raise UsageError('missing flag: --filesystem=...')
   else:
     mkfs_args = list(args[i:])
-    mkfs_args[:0] = ('mkfs.' + filesystem,)
+    if filesystem != 'custom':
+      mkfs_args[:0] = ('mkfs.' + filesystem,)
     if device is None:
       if i >= len(args):
         raise UsageError('missing raw <device> hosting the encrypted volume')
@@ -4410,6 +4759,9 @@ def cmd_create(args):
     if decrypted_ofs is not None:
       raise UsageError('--mkfat=... conflicts with --ofs=...')
     decrypted_ofs = 'mkfat'
+  if align_ofs and isinstance(decrypted_ofs, (int, long)) and decrypted_ofs % align_ofs:
+    raise UsageError('--ofs=%d conflicts with --align-ofs=%d, try omitting --align-ofs=...' %
+                     (decrypted_ofs, align_ofs))
   if filesystem == 'fat1':
     if mkfs_args != ['mkfs.fat1']:
       # This happens only after double --.
@@ -4598,6 +4950,7 @@ def cmd_create(args):
         raise UsageError('--opened conflicts with --key-size=...')
       if cipher is not None:
         raise UsageError('--opened conflicts with --cipher=...')
+      # !! TODO(pts): Find it even for disk images (`losetup -a').
       name, expected_device_id = find_dm_crypt_device(device)
       device = None  # Don't use it accidentally.
       setup_path_for_dmsetup()
@@ -5052,10 +5405,42 @@ def cmd_create(args):
       xf.close()
 
 
+def get_welcome_msg(doc):
+  i = doc.find('\n')
+  assert i >= 0
+  return WELCOME_PATTERN % doc[:i].lstrip('" :#')
+
+
+def cmd_welcome(doc):
+  sys.stderr.write(get_welcome_msg(doc))
+
+
+def cmd_help(doc, argv0, do_print_flags):
+  msg1 = get_welcome_msg(doc)
+  i = doc.find('\n')
+  assert i >= 0
+  while 1:
+    i = doc.find('\n\n', i)
+    if i < 0:
+      break
+    i += 2
+    if (doc[i : i + 11] != 'type python' and
+        doc[i : i + 12] != 'This script '):
+      break
+  while doc[i : i + 1] == '\n':
+    i += 1
+  doc = doc[i:].rstrip('\n')
+  doc = doc.replace('$ ./tinyveracrypt.py ', '$ %s ' % shell_escape(argv0))
+  sys.stdout.write('%s%s\n%s' %
+                   (msg1, doc, FLAGS_MSG * bool(do_print_flags)))
+
+
 def main(argv):
   passphrase = TEST_PASSPHRASE
   if len(argv) < 2:
-    raise UsageError('missing command')
+    cmd_welcome(__doc__)
+    raise UsageError('missing command, use --help for usage')
+  argv0 = argv[0]
   if len(argv) > 1 and argv[1] == '--text':
     del argv[1]
   elif len(argv) > 2 and argv[1] == '--truecrypt' and argv[2] == '--text':
@@ -5072,7 +5457,11 @@ def main(argv):
 
   command = argv[1].lstrip('-')
   del argv[:2]
-  if command == 'get-table':
+  if command == 'help':
+    cmd_help(__doc__, argv0, do_print_flags=False)
+  elif command in ('help-flags', 'helpfull'):
+    cmd_help(__doc__, argv0, do_print_flags=True)
+  elif command == 'get-table':
     # Doesn't emulates: dmsetup table [--showkeys] NAME
     cmd_get_table(argv)
   elif command == 'mount':
@@ -5095,7 +5484,7 @@ def main(argv):
     # Difference; --quick is also respected for disk images (not only actual block devices).
     # Difference: --size=auto can be used to detect the size. (--size=... contains the value of the device size).
     # Difference: --ofs=<size>, --salt=... is not supported by veracrypt.
-    # Difference: --ofs=fat (autodetecting FAT filessyem at the beginning of the device) is not supported by veracrypt.
+    # Difference: --ofs=fat (autodetecting FAT filessyem at the start of the raw device) is not supported by veracrypt.
     # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt.
     # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt.
     # Difference: --truecrypt is respected.
@@ -5119,21 +5508,25 @@ def main(argv):
     # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
+    # !! Add version number.
+    # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
+    # !! Add full support for flag `--key-file=...' (cryptsetup) and `--keyfiles=...' (veracrypt). Are these equivalent?
+    # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
-    # !! Add --help.
     # !! Add `cat' command with get_crypt_sectors_funcs, fast if root.
     # !! Add `open-fuse' command.
     # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
     # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
     # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
-    # !! BUG: cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
+    # !! BUG: cryptsetup 2.1.0 open needs --af-stripes=4000 (since which version?); report bug
     # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:
     #         The compatible behavior (matching what TrueCrypt 7.1a and VeraCrypt 1.17 do ignoring decrypted_ofs and decrypted_size only if the raw device size is at most 64 KiB.
     # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_activate: `dmd.size = hdr->d.volume_size / hdr->d.sector_size;', should be the entire device ((device_size(crypt_metadata_device(cd), &size) < 0)) if minimum_version_to_extract < 0x600.
-    raise UsageError('unknown command: %s' % command)
+    cmd_welcome(__doc__)
+    raise UsageError('unknown command: %s, use --help for usage' % command)
 
 
 if __name__ == '__main__':

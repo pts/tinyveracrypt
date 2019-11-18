@@ -1,12 +1,13 @@
-tinyveracrypt: VeraCrypt-compatible block device encryption setup
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tinyveracrypt: versatile and compatible block device encryption setup
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt,
 TrueCrypt and LUKS encrypted volumes, and to open (mount) them on Linux.
 It's a drop-in replacement for the cryptsetup, veracrypt and truecrypt tools
 for the subset of commands and flags it understands. It's implemented in
 Python 2 with only standard Python modules and dmsetup(8) as dependencies.
-It has some additional features such as plaintext UUID or plaintext FAT
-filesystem in front of the encrypted volume.
+It has some additional features such as plaintext UUID, plaintext FAT
+filesystem in front of the encrypted volume and volume creation with old
+ciphers compatible with old TrueCrypt.
 
 Features
 ~~~~~~~~
@@ -77,6 +78,10 @@ Usage for LUKS:
   $ sudo dmsetup table myvol
   0 4090 crypt aes-xts-plain64 00...00 0 luks.img 8 1 allow_discards
   $ sudo ./tinyveracrypt.py close myvol
+
+To get a full description of the supported command-line flags:
+
+  $ ./tinyveracrypt.py --help-flags
 
 FAQ
 ~~~
@@ -229,7 +234,7 @@ Q9. How to create a VeraCrypt encrypted volume?
 """""""""""""""""""""""""""""""""""""""""""""""
 This functionality is available from the command-line:
 
-  $ ./tinyveracrypt.py init RAWDEVICE
+  $ ./tinyveracrypt.py init --type=veracrypt RAWDEVICE
 
 tinyveracrypt also supports the `veracrypt --create' syntax, e.g. these are
 equivalent:
@@ -244,7 +249,7 @@ Q10. How to create TrueCrypt encrypted volume?
 """"""""""""""""""""""""""""""""""""""""""""""
 This functionality is available from the command-line:
 
-  $ ./tinyveracrypt.py init --truecrypt RAWDEVICE
+  $ ./tinyveracrypt.py init --type=truecrypt RAWDEVICE
 
 tinyveracrypt also supports the `truecrypt --create' syntax, e.g. these are
 equivalent:
@@ -382,16 +387,16 @@ loss: ext2, ext3, ext4, btrfs, reiserfs, jfs, nilfs, hfsplus, iso9660, udf,
 minix and ocfs2, because they don't use the first 512 bytes of the volume.
 Example:
 
-  $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 DEVICE.img
+  $ sudo ./tinyveracrypt.py init --type=veracrypt --ofs=0 --size=10M --filesystem=ext2 DEVICE.img
 
 You can pass flags to mkfs.ext2 (e.g. -L) like this:
 
-  $ sudo ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=ext2 -- -L MYLABEL -b 1024 DEVICE.img
+  $ sudo ./tinyveracrypt.py init --type=veracrypt --ofs=0 --size=10M --filesystem=ext2 -- -L MYLABEL -b 1024 DEVICE.img
 
 tinyveracrypt has special code to make --ofs=0 work with FAT12 and FAT16
 filesystems (but no FAT32 or NTFS). Use --filesystem=fat1:
 
-  $ ./tinyveracrypt.py init --ofs=0 --size=10M --filesystem=fat1 DEVICE.img
+  $ ./tinyveracrypt.py init --type=veracrypt --ofs=0 --size=10M --filesystem=fat1 DEVICE.img
 
 Some other filesystems and data structures which don't work safely (because
 they use the first 512 bytes of the raw device in their headers) include
@@ -408,7 +413,7 @@ Alternative, manual way to create the encrypted filesytem with --ofs=0:
   $ sudo ./tinyveracrypt.py open-table --keytable=random --ofs=0 --end-ofs=0 DEVICE.img NAME
   $ sudo mkfs.ext2 /dev/mapper/NAME
   $ #sudo mount /dev/mapper/NAME /media/NAMEDIR  # Optional.
-  $ sudo ./tinyveracrypt.py init --opened --fake-luks-uuid=random /dev/mapper/NAME
+  $ sudo ./tinyveracrypt.py init --type=veracrypt --opened --fake-luks-uuid=random /dev/mapper/NAME
   warning: abort now, otherwise the first 512 bytes of /dev/loop0 will be overwritten, destroying filesystems such as vfat, ntfs, xfs
   warning: abort now, otherwise encryption headers on /dev/loop0 will be replaced by a new veracrypt, old passwords will be lost, encrypted data will be kept intact
   Enter passphrase:
@@ -419,7 +424,7 @@ The advantage of --fake-luks-uuid=random is that /sbin/blkid is able to
 detect the UUID above without opening the encrypted volume (i.e. without
 knowing the passphrase).
 
-The simple `tinyveracrypt.py init --ofs=0 --filesystem=...' commands above
+The simple `tinyveracrypt.py init --type=veracrypt --ofs=0 --filesystem=...' commands above
 also support `--fake-luks-uuid=...'.
 
 The reason why mkfs was run before `tinyveracrypt.py init' is that mkfs
@@ -437,7 +442,7 @@ tinyveracrypt can create a VeraCrypt or TrueCrypt encrypted volume with a
 fake LUKS header containing an unencrypted UUID (recognized by blkid in
 util-linux and Busybox):
 
-  $ ./tinyveracrypt.py init --fake-luks-uuid=random RAWDEVICE
+  $ ./tinyveracrypt.py init --type=veracrypt --fake-luks-uuid=random RAWDEVICE
 
 The LUKS (LUKS1) headers don't contain a volume label field, so it's not
 possible to specify one.
@@ -448,7 +453,7 @@ tcrypt --veracrypt' flag.
 
 Alternatively, you can run
 
-  $ ./tinyveracrypt.py init --mkfat=2K --fat-label=... --fat-uuid=... ... RAWDEVICE
+  $ ./tinyveracrypt.py init --type=veracrypt --mkfat=2K --fat-label=... --fat-uuid=... ... RAWDEVICE
 
 , but the FAT filesystem has only a short (4-byte) UUID.
 
@@ -489,7 +494,7 @@ However, tinyveracrypt can create a VeraCrypt encrypted volume with a fake
 LUKS header containing an unencrypted UUID (recognized by blkid in
 util-linux and Busybox):
 
-  $ ./tinyveracrypt.py init --fake-luks-uuid=random RAWDEVICE
+  $ ./tinyveracrypt.py init --type=veracrypt --fake-luks-uuid=random RAWDEVICE
 
 The LUKS (LUKS1) headers don't contain a volume label field, so it's not
 possible to specify one.
@@ -664,7 +669,7 @@ VeraCrypt and TrueCrypt headers, or from LUKS?
 Yes. To regenerate the TrueCrypt/VeraCrypt/LUKS header, open the encrypted
 volume (as NAME), and then run:
 
-  $ sudo ./tinyveracrypt.py init --opened --type=TYPE /dev/mapper/NAME
+  $ sudo ./tinyveracrypt.py init --type=veracrypt --opened --type=TYPE /dev/mapper/NAME
 
 Pass flag `--type=truecrypt' to `init' if you want to generate a TrueCrypt
 header or `--type=luks' if you want to generate a LUKS header. If needed,
@@ -833,7 +838,7 @@ Q30. How to create encrypted volumes tinyveracrypt in offline mode?
 Example:
 
   $ rm -f DEVICE.img
-  $ ./tinyveracrypt.py init --no-add-backup --no-truncate --size=10G DEVICE.img
+  $ ./tinyveracrypt.py init --type=veracrypt --no-add-backup --no-truncate --size=10G DEVICE.img
   Enter passphrase:
   $ ssh root@HOST 'cat >/dev/sdX' <DEVICE.img
 
@@ -913,5 +918,9 @@ Some resources:
   VeraCrypt.
 * https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
 * https://www.veracrypt.fr/en/Encryption%20Algorithms.html
+
+Q35. What is the license of tinyveracrypt?
+""""""""""""""""""""""""""""""""""""""""""
+It is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your risk.
 
 __END__
