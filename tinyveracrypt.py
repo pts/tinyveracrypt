@@ -4088,7 +4088,7 @@ def cmd_get_table(args):
     truecrypt_mode = 1
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume')
+      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
     device = args[i]
     i += 1
   if i != len(args):
@@ -4200,7 +4200,7 @@ def cmd_mount(args):
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume')
+      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
     device = args[i]
     i += 1
   if name is None and is_custom_name:
@@ -4389,7 +4389,7 @@ def cmd_open_table(args):
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume')
+      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
     device = args[i]
     i += 1
   if name is None:
