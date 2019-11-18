@@ -4466,7 +4466,7 @@ def cmd_create(args):
   do_passphrase_twice = True
   salt = ''
   is_any_luks_uuid = False
-  type_value = 'veracrypt'
+  type_value = None
   is_opened = False
   is_batch_mode = False
   do_restrict_luksformat_defaults = False
@@ -4727,6 +4727,8 @@ def cmd_create(args):
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
 
+  if type_value is None:
+    raise UsageError('missing flag: --type=..., use --help-flags for flag info')
   if filesystem == 'none':
     if (i < len(args) and
         (args[i].startswith('mkfs.') or '/mkfs.' in args[i])):
@@ -5494,7 +5496,7 @@ def main(argv):
       cmd_mount(open_default_args + ('--type=plain', '--', argv[1], argv[0]))  # `cryptsetup create' (obsolete syntax).
     else:
       # Use `init --type=luks' instead for LUKS.
-      cmd_create(('--restrict-type=no-luks',) + tuple(argv))
+      cmd_create(('--restrict-type=no-luks', '--type=veracrypt') + tuple(argv))
   elif command in ('luksFormat', 'luks-format'):  # For compatibility with `cryptsetup luksFormat'.
     # This is a legacy command, use `./tinyveracrypt.py init --type=luks' for better defaults.
     # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512
