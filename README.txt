@@ -370,10 +370,6 @@ tools won't be able to open the encrypted volume:
   --veracrypt' in cryptsetup 1.7.3 has a bug (it doesn't decrease the
   decrypted volume size) and it fails with `Device ... is too small'.
 
-  Unfortunately, neither TrueCrypt 7.1a or VeraCrypt 1.17 was able to open
-  the TrueCrypt-encrypted bad_ofs0_tc.bin example file: both chopped of
-  the first 512 bytes in the decrypted, open view.
-
   Unfortunately TrueCrypt 7.1a and VeraCrypt 1.17 ignore --ofs=...
   (and also the encrypted volume size field in the header)
   if the raw device is smaller than 64 KiB.
