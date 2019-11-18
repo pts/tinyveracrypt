@@ -111,7 +111,9 @@ Supported ciphers:
 * (TL;DR Supports all AES-based ciphers supported by VeraCrypt and TrueCrypt,
   plus the most common AES-based ciphers used with LUKS1. Doesn't support
   non-AES-based ciphers such as serpent, twofish, camellia, kuznyechik,
-  cast5, des3_ede, blowfish_le, and cascades: multiple ciphers combined.)
+  cast5, des3_ede, blowfish_le, and cascades: multiple ciphers combined.
+  Doesn't support cipher modes *-cbc-tcrypt and *-cbci-tcrypt, because they
+  correspond to non-AES-based ciphers or cascades.)
 * aes-xts-plain64. This is the default and the most common for TrueCrypt
   (7.1a, >= 5.0), VeraCrypt (1.17) and LUKS1 (cryptsetup >= 1.6.0,
   cryptsetup 2.1.0). For TrueCrypt and VeraCrypt encrypted volumes,

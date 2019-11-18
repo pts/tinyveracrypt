@@ -5123,9 +5123,6 @@ def main(argv):
     # !! Add `open-fuse' command.
     # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
     # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
-    # !! Add TrueCrypt support for aes-cbc-tcw and aes-lrw-benbi.
-    # !! Not adding mode *-cbci-tcrypt, because it's not used for aes-* single cipher.
-    # !! Not adding mode *-cbc-tcrypt, because it's not used for aes-* single cipher.
     # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
     # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
     # !! BUG: cryptsetup init 2.1.0 needs --af-stripes=4000 (since which version?); report bug
