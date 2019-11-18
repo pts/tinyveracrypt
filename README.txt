@@ -197,7 +197,7 @@ key.
 LUKS has a standard header format, and thus LUKS encrypted volumes can be
 detected as such by /sbin/blkid and other tools. (tinyveracrypt also
 supports this for VeraCrypt and TrueCrypt encrypted volumes, just create
-them with `tinyveracrypt init --use-luks-uuid=random ...' etc.)
+them with `tinyveracrypt.py init --use-luks-uuid=random ...' etc.)
 
 Q6. Can tinyveracrypt open an encrypted volume created by
 tinyveracrypt, VeraCrypt, TrueCrypt or `cryptsetup luksFormat'?
