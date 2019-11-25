@@ -3401,6 +3401,9 @@ class DmCryptFlushingFile(object):
   As a workaround, this class emulates writing to the raw device by writing
   decrypted AES blocks to the /dev/mapper/... device, and also calling
   fsync and the ioctl BLKFLSBUF.
+
+  The methods of this class are not thread-safe (because how they use
+  self._state), so don't call them from multiple threads at the same time.
   """
 
   __slots__ = ('_do', '_ds', '_codebooks', '_iv_ofs', '_f', '_df', '_fsync',
@@ -3485,21 +3488,27 @@ class DmCryptFlushingFile(object):
     return self._f.seek(*args)
 
   def read(self, size):
+    if size == 0:
+      return ''
     if ofs + size <= self._do or ofs >= self._do + self._ds:
       return self._f.read(size)
     # TODO(pts): Add support if needed, use _crypt_aes_xts_sectors.
     raise ValueError('Reading from the encrypted region not suported.')
 
   def write(self, data):
-    data = buffer(data)
-    ofs = self._f.tell()
     codebooks, yield_crypt_sectors_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._yield_crypt_sectors_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
+    data, ofs = buffer(data), f.tell()
     while data:
       if ofs + len(data) <= do or ofs >= do + ds:
         f.write(data)  # Shortcut.
         return
-      size = min(len(data), 512 - (ofs & 511))
-      if do <= ofs < do + ds:
+      elif ofs < do:
+        size = min(len(data), do - ofs)
+        f.write(buffer(data, 0, size))
+      else:
+        assert do <= ofs < do + ds
+        if len(data) & 15:
+          raise ValueError('Write size must be divisible by 16, got: %d' % len(data))
         ofs512 = ofs & 511
         if ofs512:
           if crypt_is_seek16:
@@ -3507,20 +3516,18 @@ class DmCryptFlushingFile(object):
               raise ValueError('Write offset must be divisible by 16, got: %d' % ofs)
           else:
             raise ValueError('Write offset must be divisible by 512, got: %d' % ofs)
-        if size & 15:
-          raise ValueError('Write size must be divisible by 16, got: %d' % size)
+          size = min(len(data), 512 - (ofs & 511))
+        else:
+          size = min(len(data), do + ds - ofs, 65536) & ~511
         if ofs + size > do + ds:
           raise ValueError('Write spans from decrypted to raw.')
         df.seek(ofs - do)
         sector_idx = (ofs - do + iv_ofs) >> 9
         if ofs512:
-          df.write(''.join(yield_crypt_sectors_func(codebooks, data, False, sector_idx, ofs=ofs512)))
+          df.write(''.join(yield_crypt_sectors_func(codebooks, buffer(data, 0, size), False, sector_idx, ofs=ofs512)))
         else:
-          # TODO(pts): Do 65536 bytes at once, if possible.
-          df.write(''.join(yield_crypt_sectors_func(codebooks, data, False, sector_idx)))
+          df.write(''.join(yield_crypt_sectors_func(codebooks, buffer(data, 0, size), False, sector_idx)))
         f.seek(ofs + size)
-      else:
-        f.write(data)
       ofs += size
       data = buffer(data, size)
 
