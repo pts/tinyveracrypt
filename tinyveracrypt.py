@@ -64,6 +64,11 @@ Usage for displaying the dmsetup table for an encrypted volume:
   $ ./tinyveracrypt.py get-table [<flag>...] <device.img>
   Enter passphrase:
 
+Usage for decrypting the encrypted volume to stdout (slow):
+
+  $ ./tinyveracrypt.py cat [<flag>...] <device.img>
+  Enter passphrase:
+
 Usage for opening an encrypted volume on Linux by supplying the parts of the
 dmsetup table line as flags:
 
@@ -105,7 +110,7 @@ Flags for init, create and luksFormat:
   (disk image file) to that size. Enabled by default.
 * --no-truncate: Disable --truncate.
 * --keytable=<hex>: Hex string containing the data encryption key (as printed by
-  `dmsetup table --showkeys ...'. The default is a random string of the
+  `dmsetup table --showkeys ...'). The default is a random string of the
   right size. This flag is insecure (because it adds the password to your shell
   history), please don't specify it, but use `--random-source=...' instead.
 * --cipher=...: The cipher (encryption scheme) to use. See below for a list of
@@ -295,7 +300,7 @@ Flags for close:
 
 * (Same flags as for `dmsetup remove'.)
 
-Flags for get-table:
+Flags for get-table and cat:
 
 * --no-truecrypt: Equivalent to --type=veracrypt.
 * --truecrypt: Equivalent to --type=truecrypt.
@@ -2727,6 +2732,49 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
   return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher, do_showkeys)
 
 
+def parse_dm_crypt_table_line(table_line):
+  if not table_line:
+    raise ValueError('Empty dmsetup table.')
+  table_line = table_line.rstrip('\n')
+  if '\n' in table_line or not table_line:
+    raise ValueError('Expected single dmsetup table line.')
+  try:
+    (start_sector, sector_count, target_type, sector_format, keytable,
+     iv_offset, device_id, sector_offset) = table_line.split(' ')[:8]
+  except ValueError:
+    # Don't print table_line, it may contain the keytable.
+    raise ValueError('Not a dmsetup table line.')
+  if target_type != 'crypt':
+    raise ValueError('target_type must be crypt, got: %r' % target_type)
+  if start_sector != '0':
+    # Don't print table_line, it may contain the keytable.
+    raise ValueError('start_sector must be 0, got: %r' % stat_sector)
+  try:
+    sector_count = int(sector_count)
+  except ValueError:
+    raise ValueError('sector_count must be an integer, got: %r' % sector_count)
+  if sector_count <= 0:
+    raise ValueError('sector count must be positive, got: %d' % sector_count)
+  try:
+    keytable = keytable.decode('hex')
+  except (TypeError, ValueError):
+    raise ValueError('keytable must be hex, got: %s' % keytable)
+  try:
+    iv_offset = int(iv_offset)
+  except ValueError:
+    raise ValueError('iv_offset must be an integer, got: %r' % iv_offset)
+  if iv_offset < 0:
+    raise ValueError('iv_offset must be nonnegative, got: %d' % iv_offset)
+  try:
+    sector_offset = int(sector_offset)
+  except ValueError:
+    raise ValueError('sector_offset must be an integer, got: %r' % sector_offset)
+  if sector_offset < 0:
+    raise ValueError('sector count must be nonnegative, got: %d' % sector_offset)
+  cipher = sector_format
+  return (sector_count, cipher, keytable, iv_offset, device_id, sector_offset)
+
+
 def convert_veracrypt_keytable_to_dm(keytable, cipher):
   """Converts TrueCrypt/VeraCrypt keytable to Linux dm-crypt keytable."""
   check_veracrypt_keytable(keytable)
@@ -4043,7 +4091,19 @@ def is_luks1(enchd):
   return True
 
 
-# ---
+# --- Platform-specific code.
+
+
+def set_stdout_binary():
+  """Make sure that os.write(1, ...) doesn't write extra \r bytes."""
+  import sys
+  if sys.platform.startswith('win'):
+    import os
+    import msvcrt
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+
+
+# --- Command-line commands.
 
 
 class UsageError(SystemExit):
@@ -4081,7 +4141,7 @@ def cmd_get_table(args):
 
   truecrypt_mode = None
   pim = device = passphrase = hash = display_device = None
-  do_showkeys = False
+  do_cat = do_showkeys = False
 
   i, value = 0, None
   while i < len(args):
@@ -4121,6 +4181,8 @@ def cmd_get_table(args):
       do_showkeys = True
     elif arg == '--no-showkeys':
       do_showkeys = False
+    elif arg == '--cat':
+      do_cat = True
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4134,10 +4196,44 @@ def cmd_get_table(args):
   if i != len(args):
     raise UsageError('too many command-line arguments')
 
+  if do_cat and do_showkeys:
+    raise UsageError('--cat conflicts with --showkeys')
+
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
-  sys.stdout.write(get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=do_showkeys, display_device=display_device))
-  sys.stdout.flush()
+  table_line = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=(do_showkeys or do_cat), display_device=display_device)
+  if not do_cat:
+    sys.stdout.write(table_line)
+    sys.stdout.flush()
+    return
+  # TODO(pts): Use Linux dm-crypt if available and already running as root.
+  sector_count, cipher, keytable, iv_offset, device_id, sector_offset = (
+      parse_dm_crypt_table_line(table_line))
+  # It's slow because yield_crypt_sectors_func (even with an AES
+  # implementation in C) is much slower than Linux dm-crypt.
+  print >>sys.stderr, 'info: decrypting %d bytes to stdout slowly' % (sector_count << 9)
+  yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(keytable))
+  codebooks = get_codebooks_func(keytable)
+  sector_idx, sector_limit = iv_offset, iv_offset + sector_count
+  f = open(device, 'rb')
+  try:
+    of = sys.stdout
+    set_stdout_binary()
+    f.seek(0, 2)
+    device_size = f.tell()
+    f.seek(sector_offset << 9)
+    while sector_idx < sector_limit:
+      data = f.read(65536)
+      if not data:
+        raise EOFError('Device %r ended at %d bytes, expecting %d bytes.' %
+                       (device, min(device_size, (sector_idx - iv_offset + sector_offset) << 9), (sector_limit - iv_offset + sector_offset) << 9))
+      if len(data) & 511:
+        raise ValueError('Read size from device %r must be a multiple of 512.' % device)
+      of.write(''.join(yield_crypt_sectors_func(codebooks, data, False, sector_idx)))
+      of.flush()
+      sector_idx += len(data) >> 9
+  finally:
+    f.close()
 
 
 def parse_veracrypt_hash_arg(arg):
@@ -4996,48 +5092,10 @@ def cmd_create(args):
       name, expected_device_id = find_dm_crypt_device(device)
       device = None  # Don't use it accidentally.
       setup_path_for_dmsetup()
-      data = run_and_read_stdout(('dmsetup', 'table', '--showkeys', name), is_dmsetup=True)
-      if not data:
-        raise ValueError('Empty dmsetup table.')
-      data = data.rstrip('\n')
-      if '\n' in data or not data:
-        raise ValueError('Expected single dmsetup table line.')
-      try:
-        (start_sector, sector_count, target_type, sector_format, keytable,
-         iv_offset, device_id, sector_offset) = data.split(' ')[:8]
-      except ValueError:
-        # Don't print data, it may contain the keytable.
-        raise ValueError('Not a dmsetup table line.')
-      if target_type != 'crypt':
-        raise ValueError('target_type must be crypt, got: %r' % target_type)
-      if start_sector != '0':
-        # Don't print data, it may contain the keytable.
-        raise ValueError('start_sector must be 0, got: %r' % stat_sector)
-      try:
-        sector_count = int(sector_count)
-      except ValueError:
-        raise ValueError('sector_count must be an integer, got: %r' % sector_count)
-      if sector_count <= 0:
-        raise ValueError('sector count must be positive, got: %d' % sector_count)
-      decrypted_size = sector_count << 9
-      try:
-        keytable = keytable.decode('hex')
-      except (TypeError, ValueError):
-        raise ValueError('keytable must be hex, got: %s' % keytable)
-      key_size = len(keytable) << 3
-      cipher = sector_format
-      try:
-        iv_offset = int(iv_offset)
-      except ValueError:
-        raise ValueError('iv_ofs must be an integer, got: %r' % iv_offset)
-      if iv_offset < 0:
-        raise ValueError('iv_offset must be nonnegative, got: %d' % iv_offset)
-      try:
-        sector_offset = int(sector_offset)
-      except ValueError:
-        raise ValueError('sector_offset must be an integer, got: %r' % sector_offset)
-      if sector_offset < 0:
-        raise ValueError('sector count must be nonnegative, got: %d' % sector_offset)
+      table_line = run_and_read_stdout(('dmsetup', 'table', '--showkeys', name), is_dmsetup=True)
+      sector_count, cipher, keytable, iv_offset, device_id, sector_offset = (
+          parse_dm_crypt_table_line(table_line))
+      key_size, decrypted_ofs, decrypted_size = len(keytable) << 3, sector_offset << 9, sector_count << 9
       if type_value == 'luks':
         try:
           get_crypt_sectors_funcs(cipher, key_size >> 3)  # key_size can be None here, good.
@@ -5067,7 +5125,6 @@ def cmd_create(args):
       device_id = parse_device_id(device_id)  # (major, minor)
       if expected_device_id is not None and device_id != expected_device_id:
         raise ValueError('Unexpected device_id, expecting %r, got: %r' % (expected_device_id, device_id))
-      decrypted_ofs = sector_offset << 9
       device = find_device_by_id(device_id)
       if device_size == 'auto':  # Default, without --size=... flag.
         f = open(device, 'rb')
@@ -5504,8 +5561,10 @@ def main(argv):
   elif command in ('help-flags', 'helpfull'):
     cmd_help(__doc__, argv0, do_print_flags=True)
   elif command == 'get-table':
-    # Doesn't emulates: dmsetup table [--showkeys] NAME
+    # Similar to (but without dm-crypt): dmsetup table [--showkeys] NAME
     cmd_get_table(argv)
+  elif command == 'cat':
+    cmd_get_table(('--cat',) + tuple(argv))
   elif command == 'mount':
     # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
     # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
@@ -5551,11 +5610,12 @@ def main(argv):
     cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
   else:
     # !! Add version number.
+    # !! Add `--help-flags' message to `unknown flag:'.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
     # !! Add full support for flag `--key-file=...' (cryptsetup) and `--keyfiles=...' (veracrypt). Are these equivalent?
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
-    # !! Add `cat' command with get_crypt_sectors_funcs, fast if root.
+    # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .
     # !! Add `open-fuse' command.
     # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
     # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
