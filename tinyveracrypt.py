@@ -3550,6 +3550,28 @@ class DmCryptFlushingFile(object):
     # TODO(pts): Add support if needed, use _crypt_aes_xts_sectors.
     raise ValueError('Reading from the encrypted region not suported.')
 
+  def write_decrypted_fast(self, data):
+    """Like .write(...), but data is decrypted or random."""
+    do, ds, df, f, crypt_is_seek16 = self._do, self._ds, self._df, self._f, self._crypt_is_seek16
+    data, ofs = buffer(data), f.tell()
+    if not data:
+      return
+    if do > ofs or ofs + len(data) > do + ds:
+      raise ValueError('Fast write works only in the decrypting region.')
+    if len(data) & 15:
+      raise ValueError('Write size must be divisible by 16, got: %d' % len(data))
+    ofs512 = ofs & 511
+    if ofs512:
+      if crypt_is_seek16:
+        if ofs & 15:
+          raise ValueError('Write offset must be divisible by 16, got: %d' % ofs)
+      else:
+        raise ValueError('Write offset must be divisible by 512, got: %d' % ofs)
+    self.full_flush(2)
+    df.seek(ofs - do)
+    df.write(data)
+    f.seek(ofs + len(data))
+
   def write(self, data):
     codebooks, yield_crypt_sectors_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._yield_crypt_sectors_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
     data, ofs = buffer(data), f.tell()
@@ -5403,11 +5425,23 @@ def cmd_create(args):
         xf.seek(len(mkfs_data))
     if not is_quick:
       print >>sys.stderr, 'info: overwriting device with random data'
+      random_write_func = getattr(xf, 'write_decrypted_fast', None)
+      if callable(random_write_func):
+        # Write random bytes before the decrypting region.
+        i = min(random_size, decrypted_ofs - xf.tell())
+        random_size -= i
+        while i > 0:
+          # TODO(pts): Generate faster random.
+          data = get_random_bytes_func(min(i, 65536))
+          xf.write(data)
+          i -= len(data)
+      else:
+        random_write_func = xf.write
       i = random_size
       while i > 0:
         # TODO(pts): Generate faster random.
         data = get_random_bytes_func(min(i, 65536))
-        xf.write(data)
+        random_write_func(data)
         i -= len(data)
       if enchd_backup:
         xf.write(enchd_backup)
@@ -5432,11 +5466,15 @@ def cmd_create(args):
       if decrypted_ofs == 0:  # First 512 bytes written as part of enchd.
         sector_idx += 1
         i += 512
-      yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(short_keytable))
-      codebooks = get_codebooks_func(short_keytable)
-      for i in xrange(i, len(mkfs_data), 65536):
-        xf.write(''.join(yield_crypt_sectors_func(codebooks, buffer(mkfs_data, i, 65536), do_encrypt=True, sector_idx=sector_idx)))
-        sector_idx += 128
+      decrypted_write_func = getattr(xf, 'write_decrypted_fast', None)
+      if callable(decrypted_write_func):
+        decrypted_write_func(mkfs_data)
+      else:
+        yield_crypt_sectors_func, get_codebooks_func = get_crypt_sectors_funcs(cipher, len(short_keytable))
+        codebooks = get_codebooks_func(short_keytable)
+        for i in xrange(i, len(mkfs_data), 65536):
+          xf.write(''.join(yield_crypt_sectors_func(codebooks, buffer(mkfs_data, i, 65536), do_encrypt=True, sector_idx=sector_idx)))
+          sector_idx += 128
     if isinstance(xf, DmCryptFlushingFile):
       xf.full_flush()
     else:
