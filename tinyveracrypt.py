@@ -3407,7 +3407,8 @@ class DmCryptFlushingFile(object):
   """
 
   __slots__ = ('_do', '_ds', '_codebooks', '_iv_ofs', '_f', '_df', '_fsync',
-               '_ioctl', '_BLKFLSBUF', '_yield_crypt_sectors_func', '_crypt_is_seek16')
+               '_ioctl', '_BLKFLSBUF', '_yield_crypt_sectors_func', '_state',
+               '_crypt_is_seek16')
 
   def __init__(self, filename, decrypted_ofs, decrypted_size, decrypted_filename, keytable, iv_ofs, cipher):
     import fcntl
@@ -3417,6 +3418,7 @@ class DmCryptFlushingFile(object):
     self._ioctl = fcntl.ioctl
     # Linux ioctl number for `blockdev --flushbufs', we need it in __del__.
     self._BLKFLSBUF = 0x1261
+    self._state = 0
     # Is this call needed? Playing it safe and detecting the block device
     # early. This call fails unless self._f is a block device.
 
@@ -3447,26 +3449,30 @@ class DmCryptFlushingFile(object):
     # as well.
     if self._df:  # Earlier or later?
       try:
-        self._df.flush()  # Needed.
-        self._fsync(self._df.fileno())
+        if self._state:
+          self._df.flush()  # Needed.
+          self._fsync(self._df.fileno())
         self._df.close()
       finally:
         self._df = None
     if self._f:
       try:
-        self._f.flush()
-        self._fsync(self._f.fileno())  # Not needed, but playing it safe.
-        self._ioctl(self._f.fileno(), self._BLKFLSBUF)
+        if self._state:
+          self._f.flush()
+          self._fsync(self._f.fileno())  # Not needed, but playing it safe.
+          self._ioctl(self._f.fileno(), self._BLKFLSBUF)  # Flush page cache.
         self._f.close()
       finally:
         self._f = None
 
-  def full_flush(self):
-    self._df.flush()
-    self._fsync(self._df.fileno())
-    self._f.flush()
-    self._fsync(self._f.fileno())
-    self._ioctl(self._f.fileno(), self._BLKFLSBUF)
+  def full_flush(self, new_state=0):
+    if self._state != new_state:
+      self._f.flush()
+      self._df.flush()
+      self._fsync(self._df.fileno())
+      self._fsync(self._f.fileno())
+      self._ioctl(self._f.fileno(), self._BLKFLSBUF)  # Flush page cache.
+      self._state = new_state
 
   def __del__(self):
     self.close()
@@ -3491,6 +3497,7 @@ class DmCryptFlushingFile(object):
     if size == 0:
       return ''
     if ofs + size <= self._do or ofs >= self._do + self._ds:
+      self.full_flush(1)
       return self._f.read(size)
     # TODO(pts): Add support if needed, use _crypt_aes_xts_sectors.
     raise ValueError('Reading from the encrypted region not suported.')
@@ -3498,12 +3505,37 @@ class DmCryptFlushingFile(object):
   def write(self, data):
     codebooks, yield_crypt_sectors_func, iv_ofs, do, ds, df, f, crypt_is_seek16 = self._codebooks, self._yield_crypt_sectors_func, self._iv_ofs, self._do, self._ds, self._df, self._f, self._crypt_is_seek16
     data, ofs = buffer(data), f.tell()
+    # The reason why we call self.full_flush(...) before each read and
+    # write is the following: Linux has a page cache (each page is 4 KiB)
+    # over which all reads and writes go through, and we want to flush the
+    # page cache manually to prevent Linux from flusing it (partially)
+    # later, which may cause old data to overwrite new data. Example with
+    # decrypted_ofs=1024 without explicit flushing:
+    #
+    # 1. dcff.seek(0)
+    # 2. dcff.write('X' * 1024)
+    #    This leaves a dirty page of 4096 bytes in the page cache, and
+    #    the 1024 changed bytes don't make it to the raw device.
+    # 3. dcff.write('Y' * 1024)
+    #    We write it through self._df (/dev/mapper/NAME dm-crypt device),
+    #    which creates a dirty page on its page cache
+    #    (TODO(pts): Confirm this: does it use the page cache?)
+    # 4. Let's assume that Linux flushes the page cache of the dm-crypt
+    #    device, writing the encryted 'Y' bytes (+ 3072 bytes) to the
+    #    raw device.
+    # 5. Now Linux flushes the page cache of the raw device, writing the
+    #    first 4096 bytes, overwriting the encrypted 'Y' bytes.
+    #
+    # By flushing the page cache between step #2 and #3, we prevent step #5,
+    # thus the overwrite behavior doesn't happen.
     while data:
       if ofs + len(data) <= do or ofs >= do + ds:
+        self.full_flush(1)
         f.write(data)  # Shortcut.
         return
       elif ofs < do:
         size = min(len(data), do - ofs)
+        self.full_flush(1)
         f.write(buffer(data, 0, size))
       else:
         assert do <= ofs < do + ds
@@ -3521,6 +3553,7 @@ class DmCryptFlushingFile(object):
           size = min(len(data), do + ds - ofs, 65536) & ~511
         if ofs + size > do + ds:
           raise ValueError('Write spans from decrypted to raw.')
+        self.full_flush(2)
         df.seek(ofs - do)
         sector_idx = (ofs - do + iv_ofs) >> 9
         if ofs512:
