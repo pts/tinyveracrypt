@@ -5332,7 +5332,7 @@ def cmd_create(args):
             encrypted_data_msg = 'overwritten with a new %s filesystem' % filesystem
           else:
             encrypted_data_msg = 'kept intact'
-          sys.stderr.write('warning: abort now, otherwise encryption headers on %s will be replaced by a new %s, old passwords will be lost, encrypted data will be %s\n' %
+          sys.stderr.write('warning: abort now, otherwise encryption headers on %s will be replaced by a new %s, old passphrases will be lost, encrypted data will be %s\n' %
                            (device, type_value, encrypted_data_msg))
         else:
           sys.stderr.write('warning: abort now, otherwise all data on %s will be lost\n' % device)

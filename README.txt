@@ -411,7 +411,7 @@ Alternative, manual way to create the encrypted filesytem with --ofs=0:
   $ #sudo mount /dev/mapper/NAME /media/NAMEDIR  # Optional.
   $ sudo ./tinyveracrypt.py init --type=veracrypt --opened --fake-luks-uuid=random /dev/mapper/NAME
   warning: abort now, otherwise the first 512 bytes of /dev/loop0 will be overwritten, destroying filesystems such as vfat, ntfs, xfs
-  warning: abort now, otherwise encryption headers on /dev/loop0 will be replaced by a new veracrypt, old passwords will be lost, encrypted data will be kept intact
+  warning: abort now, otherwise encryption headers on /dev/loop0 will be replaced by a new veracrypt, old passphrases will be lost, encrypted data will be kept intact
   Enter passphrase:
   $ /sbin/blkid DEVICE.img
   DEVICE.img: UUID="1b564eef-2801-91f6-505c-cfd49044c8c0" TYPE="crypto_LUKS"
@@ -654,7 +654,7 @@ tinyveracrypt?
 * volume type other than VeraCrypt, TrueCrypt and LUKS1 (e.g. LUKS2)
 * mounting a filesystem at open time
 * opening volumes on non-Linux systems (e.g. macOS or Windows)
-* adding another password (slot) to a LUKS volume after creation (this would
+* adding another passphrase (slot) to a LUKS volume after creation (this would
   be easy to add)
 * verbose debug info similar to `cryptsetup --debug -v -v -v'
 * volume diagnostics similar to `cryptsetup luksDump'
