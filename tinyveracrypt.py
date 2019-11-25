@@ -4816,7 +4816,7 @@ def cmd_create(args):
       raise UsageError('--filesystem=fat1 conflicts with --mkfat=...')
     if fake_luks_uuid_flag is not None and decrypted_ofs == 0:
       raise UsageError('--filesystem=fat1 conflicts with --fake-luks-uuid=... --ofs=0')
-    if device_size is not None:
+    if device_size != 'auto':
       if device_size - (decrypted_ofs or 0) < 2048:
         minimum_size_with_fat1 = (2560, 6144)[type_value == 'luks']
         raise UsageError('--size=%d is too small for --filesystem=fat1, try --size=%s' % (device_size, minimum_size_with_fat1))
@@ -4936,7 +4936,7 @@ def cmd_create(args):
         if truecrypt_version < 0x600 and (align_ofs and 512 % align_ofs):
           raise UsageError('--align-ofs=%d conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' %
                            (align_ofs, truecrypt_version >> 8, truecrypt_version & 255))
-      if device_size is not None and device_size < 65536:  # Limitation of TrueCrypt 7.1a and VeraCrypt 1.17 tools.
+      if device_size != 'auto' and device_size < 65536:  # Limitation of TrueCrypt 7.1a and VeraCrypt 1.17 tools.
         if isinstance(decrypted_ofs, (int, long)) and decrypted_ofs != 512:
           raise UsageError('--ofs=%d conflicts with --type=%s --size=%d, try omitting --ofs=... or increasing size to --size=65536' % (decrypted_ofs, type_value, device_size))
       if not is_opened and MIN_TRUECRYPT_VERSION_FOR_CIPHER[cipher] > truecrypt_version:
