@@ -2636,11 +2636,14 @@ class IncorrectPassphraseError(ValueError):
   passphrase."""
 
 
+HASHLIB_NO_OPENSSL_HASHES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
+
+
 def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
   # This function doesn't support LUKS, the caller should.
   if truecrypt_mode not in (0, 1, 2):
     raise ValueError('Unknown truecrypt_mode: %r' % truecrypt_mode)
-  if hash is not None and not is_hash_supported(hash):
+  if hash is not None and not is_hash_supported(hash) and hash != 'sha':
     # We shouldn't reach this, parse_veracrypt_hash_arg(...) should have
     # caught it already.
     raise SystemExit('unsupported hash requested: %s' % hash)
@@ -2652,7 +2655,11 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
     else:
       setup_modes = list(SETUP_MODES)
     if hash is not None:
-      setup_modes = [m for m in setup_modes if m[3] == hash]
+      if hash == 'sha':
+        setup_modes = [m for m in setup_modes if m[3].startswith(hash) and
+                       m[3] in HASHLIB_NO_OPENSSL_HASHES]
+      else:
+        setup_modes = [m for m in setup_modes if m[3] == hash]
       if not setup_modes:
         pim = 0  # Try to get some more modes below.
     else:
@@ -2661,8 +2668,8 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
         raise ValueError('No setup modes remaining (unexpected).')
   if pim is not None:
     setup_modes = []
-    if hash is None:
-      hash = 'sha512'
+    if hash is None or hash == 'sha':
+      hash = 'sha512'  # TODO(pts): If veracrypt --pim=... tries many hashes, then try many.
     if truecrypt_mode in (2, 1):  # Try TrueCrypt first.
       setup_modes.append((0, 0, 'pbkdf2', hash, get_iterations(pim, True, hash)))
     if truecrypt_mode in (0, 1):
@@ -4188,6 +4195,7 @@ def cmd_get_table(args):
         type_value = args[i]
         i += 1
       truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
+      del type_value
     elif arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
@@ -4196,7 +4204,7 @@ def cmd_get_table(args):
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--hash='):
-      hash = parse_veracrypt_hash_arg(arg)
+      hash = parse_veracrypt_hash_arg(arg, is_sha_ok=True)
     elif arg.startswith('--display-device='):
       display_device = arg[arg.find('=') + 1:]
     elif arg == '--showkeys':  # Similar to `dmsetup table --showkeys'.
@@ -4220,6 +4228,8 @@ def cmd_get_table(args):
 
   if do_cat and do_showkeys:
     raise UsageError('--cat conflicts with --showkeys')
+  if truecrypt_mode == 3 and hash is not None:
+    raise UsageError('--hash=... conflicts with --type=luks')
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
@@ -4258,9 +4268,13 @@ def cmd_get_table(args):
     f.close()
 
 
-def parse_veracrypt_hash_arg(arg):
+def parse_veracrypt_hash_arg(arg, is_sha_ok):
   value = arg[arg.find('=') + 1:].lower().replace('-', '')
   allowed_values = set(item[3] for item in SETUP_MODES)
+  if is_sha_ok:
+    if value == 'sha':
+      return value
+    allowed_values.add('sha')
   if value not in allowed_values:
     raise UsageError('hash not allowed in TrueCrypt/VeraCrypt volumes, choose any of %r: %s' %
                      (tuple(allowed_values), arg))
@@ -4275,7 +4289,7 @@ def cmd_mount(args):
   import subprocess
 
   is_custom_name = False
-  pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = type_value = name = None
+  pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = name = None
 
   i, value = 0, None
   while i < len(args):
@@ -4326,6 +4340,7 @@ def cmd_mount(args):
       if type_value in ('plain', 'loopaes', 'luks2'):
         raise UsageError('unsupported type, run this instead: cryptsetup open --type=%s ...' % type_value)
       truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
+      del type_value
     elif arg.startswith('--slot='):
       value = arg[arg.find('=') + 1:]
       try:
@@ -4345,7 +4360,7 @@ def cmd_mount(args):
         raise UsageError('unsupported flag value: %s' % arg)
       encryption = 'aes'
     elif arg.startswith('--hash='):
-      hash = parse_veracrypt_hash_arg(arg)
+      hash = parse_veracrypt_hash_arg(arg, is_sha_ok=True)
     elif arg.startswith('--filesystem='):
       value = arg[arg.find('=') + 1:].lower().replace('-', '')
       if value != 'none':
@@ -4383,6 +4398,8 @@ def cmd_mount(args):
     raise UsageError('missing flag: --keyfiles=')
   if name is not None and slot is not None:
     raise UsageError('<name> conflicts with --slot=')
+  if truecrypt_mode == 3 and hash is not None:
+    raise UsageError('--hash=... conflicts with --type=luks')
 
   setup_path_for_dmsetup()
   had_dmsetup = False
@@ -4751,7 +4768,7 @@ def cmd_create(args):
       if value == 'auto':
         hash = value
       else:
-        hash = parse_veracrypt_hash_arg(arg)
+        hash = parse_veracrypt_hash_arg(arg, is_sha_ok=False)
     elif arg.startswith('--filesystem='):
       filesystem = arg[arg.find('=') + 1:]
       if filesystem.lower().replace('-', '') == 'none':
@@ -5650,7 +5667,7 @@ def main(argv):
     # !! Add version number.
     # !! Add `--help-flags' message to `unknown flag:'.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
-    # !! Add full support for flag `--key-file=...' (cryptsetup) and `--keyfiles=...' (veracrypt). Are these equivalent?
+    # !! Add full support for flag `--key-file=...' (cryptsetup) and `--keyfiles=...' (veracrypt) instead of the insecure --password=... (shell history). Are these equivalent?
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .
