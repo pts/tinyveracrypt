@@ -95,6 +95,10 @@ tinyveracrypt runs on any operating system with Python 2.4, 2.5, 2.6 or 2.7
 on it. This includes Linux, macOS and Windows (but on Windows invoke it as
 `python tinyveracrypt.py' instead of `./tinyveracrypt.py').
 
+These commands need a Linux system with dm-crypt support and the dmsetup(8)
+command-line tool: `open', `open-table', `--mount', `init --opened',
+`close', `remove'.
+
 tinyveracrypt needs <10 MiB of memory, of which <1 MiB is needed for data,
 the rest is the in-memory representation of the Python code.
 
