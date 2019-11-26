@@ -87,10 +87,30 @@ FAQ
 ~~~
 Q1. Is tinyveracrypt ready for production use?
 """"""""""""""""""""""""""""""""""""""""""""""
-Yes, for encrypted volume creation (`init' or --create), getting the
-keytable (`get-table'), opening (`open', --mount or `open-table') and
-closing (`close') encrypted volumes on Linux. Other features are
-experimental.
+Yes.
+
+Q1B. What are the system requirements of tinyveracrypt?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+tinyveracrypt runs on any operating system with Python 2.4, 2.5, 2.6 or 2.7
+on it. This includes Linux, macOS and Windows (but on Windows invoke it as
+`python tinyveracrypt.py' instead of `./tinyveracrypt.py').
+
+tinyveracrypt needs <10 MiB of memory, of which <1 MiB is needed for data,
+the rest is the in-memory representation of the Python code.
+
+tinyveracrypt needs <400 KiB of storage space for the tinyveracrypt.py
+program file, plus <100 MiB for the Python installation, plus the space
+occupied by the raw devices. (As a small (<8 MiB) Python interpreter for
+Linux or macOS, use the python2.7-static executable from
+https://github.com/pts/staticpython . Unfortunately it doesn't contain
+OpenSSL hashes, so you need --hash=sha to avoid slowness, see below.)
+
+To avoid extremely slow passphrase processing (PBKDF2), have Python >= 2.5
+(or Python 2.4 with hashlib) and OpenSSL-enabled Python installed. If
+unsure, just use the newest Python 2.7. If you are stuck with Python >= 2.5
+without OpenSSL, specify --hash=sha for `tinyveracrypt open ...' to prevent
+the extremely slow hashes from being tried. If you are stuck with Python
+2.4, specify --hash=sha1 (but this weakens security substantially).
 
 Q2. Can tinyveracrypt create TrueCrypt and VeraCrypt hidden volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
