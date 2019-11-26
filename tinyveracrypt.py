@@ -5666,8 +5666,10 @@ def main(argv):
   else:
     # !! Add version number.
     # !! Add `--help-flags' message to `unknown flag:'.
+    # !! Add `open --allow-discards'.
+    # !! Add legacry `luksOpen <device> <name>' syntax.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
-    # !! Add full support for flag `--key-file=...' (cryptsetup) and `--keyfiles=...' (veracrypt) instead of the insecure --password=... (shell history). Are these equivalent?
+    # !! Add full support for flag `--key-file=...' (cryptsetup, sensitive to trailing '\n') but not `--keyfiles=...' (veracrypt and truecrypt; they are not equivalent) instead of the insecure --password=... (shell history).
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .

@@ -678,6 +678,7 @@ tinyveracrypt?
   be easy to add)
 * verbose debug info similar to `cryptsetup --debug -v -v -v'
 * volume diagnostics similar to `cryptsetup luksDump'
+* using keyfiles (--keyfiles=...) the way the veracrypt and truecrypt tools do
 
 Q24. Can tinyveracrypt regenerate the volume header or convert between
 VeraCrypt and TrueCrypt headers, or from LUKS?
