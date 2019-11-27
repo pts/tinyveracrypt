@@ -227,6 +227,10 @@ Flags for init, create and luksFormat:
 * --no-truecrypt: Equivalent to --type=veracrypt.
 * --veracrypt: Equivalent to --type=veracrypt.
 * --truecrypt-version: ... Also implies --type=truecrypt.
+* --allow-discards: Create the dm-crypt table (for --filesystem=... and
+  mkfs) with the allow_discards option, making deletion from the filesystem
+  more efficient on SSD, but less secure. Disabled by default.
+* --no-allow-discards: Disable --allow-discards.
 
 Please note that create is different from init:
 
@@ -291,6 +295,10 @@ Please note that luksFormat is different from init:
   header.)
 * --filesystem=none: Compatibility flag, ignored.
 * --text: Compatibility flag, ignored.
+* --allow-discards: Create the dm-crypt table with the allow_discards
+  option, making deletion from the filesystem more efficient on SSD,
+  but less secure. Disabled by default.
+* --no-allow-discards: Disable --allow-discards.
 
 Please note that mount is different from open:
 
@@ -339,6 +347,10 @@ Flags for get-table and cat:
   (keytable).
 * --no-showkeys: Show hex 00s instead of the data encryption key. This is
   the default.
+* --allow-discards: Create the dm-crypt table with the allow_discards
+  option, making deletion from the filesystem more efficient on SSD,
+  but less secure. Disabled by default.
+* --no-allow-discards: Disable --allow-discards.
 
 Flags for open-table:
 
@@ -364,6 +376,10 @@ Flags for open-table:
   shell history), please don't specify it, but use `--random-source=...'
   instead.
 * --cipher=...: Name of the cipher to use.
+* --allow-discards: Create the dm-crypt table with the allow_discards
+  option, making deletion from the filesystem more efficient on SSD,
+  but less secure. Disabled by default.
+* --no-allow-discards: Disable --allow-discards.
 
 Supported --cipher=... values: aes-xts-plain64 (default, most secure,
 recommended), aes-cbc-essiv:sha256, aes-lrw-benbi, aes-cbc-tcw and some
@@ -2532,13 +2548,17 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
 
 def build_table(
     keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher,
-    do_showkeys, opt_params=('allow_discards',)):
+    do_showkeys, opt_params, do_allow_discards):
   check_aes_xts_key(keytable)
   check_decrypted_size(decrypted_size)
   if isinstance(display_device, (list, tuple)):
     display_device = '%d:%d' % tuple(display_device)
   offset = decrypted_ofs
   start_offset_on_logical = 0
+  if do_allow_discards or do_allow_discards is None:
+    opt_params = list(opt_params)
+    if 'allow_discards' not in opt_params:
+      opt_params.append('allow_discards')
   if opt_params:
     opt_params_str = ' %d %s' % (len(opt_params), ' '.join(opt_params))
   else:
@@ -2707,7 +2727,7 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
-def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys, display_device=None):
+def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys, display_device=None, do_allow_discards=None):
   """Called by `open' and --create."""
   luks_device_size = None
   f = open(device)
@@ -2744,7 +2764,7 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
     iv_ofs = 0
   if display_device is None:
     display_device = device_id
-  return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher, do_showkeys)
+  return build_table(keytable, decrypted_size, decrypted_ofs, display_device, iv_ofs, cipher, do_showkeys, (), do_allow_discards)
 
 
 def parse_dm_crypt_table_line(table_line):
@@ -4189,6 +4209,7 @@ def cmd_get_table(args):
   truecrypt_mode = None
   pim = device = passphrase = hash = display_device = None
   do_cat = do_showkeys = False
+  do_allow_discards = False
 
   i, value = 0, None
   while i < len(args):
@@ -4231,6 +4252,10 @@ def cmd_get_table(args):
       do_showkeys = True
     elif arg == '--no-showkeys':
       do_showkeys = False
+    elif arg == '--allow-discards':  # cryptsetup flag.
+      do_allow_discards = True
+    elif arg == '--no-allow-discards':
+      do_allow_discards = False
     elif arg == '--cat':
       do_cat = True
     else:
@@ -4255,7 +4280,10 @@ def cmd_get_table(args):
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
-  table_line = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=(do_showkeys or do_cat), display_device=display_device)
+  table_line = get_table(  # Slow.
+      device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode,
+      hash=hash, do_showkeys=(do_showkeys or do_cat),
+      display_device=display_device, do_allow_discards=do_allow_discards)
   if not do_cat:
     sys.stdout.write(table_line)
     sys.stdout.flush()
@@ -4312,6 +4340,7 @@ def cmd_mount(args):
 
   is_custom_name = False
   pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = name = None
+  do_allow_discards = False
 
   i, value = 0, None
   while i < len(args):
@@ -4392,6 +4421,10 @@ def cmd_mount(args):
       filesystem = value
     elif arg.startswith('--pim='):
       pim = parse_pim_arg(arg)
+    elif arg == '--allow-discards':  # cryptsetup flag.
+      do_allow_discards = True
+    elif arg == '--no-allow-discards':
+      do_allow_discards = False
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4456,7 +4489,9 @@ def cmd_mount(args):
       raise SystemExit('dmsetup table <name> already in use: %s' % name)
 
   def block_device_callback(block_device, fd, device_id):
-    table = get_table(device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode, hash=hash, do_showkeys=True)  # Slow.
+    table = get_table(  # Slow.
+        device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode,
+        hash=hash, do_showkeys=True, do_allow_discards=do_allow_discards)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
@@ -4554,6 +4589,7 @@ def cmd_open_table(args):
   keytable = key_size = device = name = decrypted_ofs = end_ofs = iv_ofs = random_source = None
   cipher = 'aes-xts-plain64'
   had_keytable = False
+  do_allow_discards = False
 
   i, value = 0, None
   while i < len(args):
@@ -4585,6 +4621,10 @@ def cmd_open_table(args):
       random_source = '/dev/urandom'
     elif arg == '--use-random':  # `cryptsetup luksFormat'.
       random_source = '/dev/random'
+    elif arg == '--allow-discards':  # cryptsetup flag.
+      do_allow_discards = True
+    elif arg == '--no-allow-discards':
+      do_allow_discards = False
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4629,7 +4669,7 @@ def cmd_open_table(args):
     iv_ofs = decrypted_ofs
 
   def block_device_callback(block_device, fd, device_id):
-    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, cipher, True)
+    table = build_table(keytable, decrypted_size, decrypted_ofs, device_id, iv_ofs, cipher, True, (), do_allow_discards)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
@@ -4678,6 +4718,7 @@ def cmd_create(args):
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
   key_size = None
   do_skip_dash_dash = False
+  do_allow_discards = False
 
   i, value = 0, None
   while i < len(args):
@@ -4926,6 +4967,10 @@ def cmd_create(args):
         raise UsageError('unsupported flag value: %s' % arg)
     elif arg == '--restrict-luksformat-defaults':
       do_restrict_luksformat_defaults = True
+    elif arg == '--allow-discards':  # cryptsetup flag.
+      do_allow_discards = True
+    elif arg == '--no-allow-discards':
+      do_allow_discards = False
     else:
       raise UsageError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -5540,7 +5585,7 @@ def cmd_create(args):
         table = build_table(
             keytable, decrypted_size, decrypted_ofs, device_id,
             iv_ofs=decrypted_ofs * bool(type_value != 'luks'),
-            cipher='aes-xts-plain64', do_showkeys=True)
+            cipher='aes-xts-plain64', do_showkeys=True, opt_params=(), do_allow_discards=do_allow_discards)
         run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
         is_ok = False
         try:
@@ -5698,8 +5743,7 @@ def main(argv):
   else:
     # !! Add version number.
     # !! Add `--help-flags' message to `unknown flag:'.
-    # !! Add `open --allow-discards'.
-    # !! Add legacry `luksOpen <device> <name>' syntax.
+    # !! Add legacy `luksOpen <device> <name>' syntax.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
