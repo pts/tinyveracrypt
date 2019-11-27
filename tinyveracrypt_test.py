@@ -445,6 +445,7 @@ def test_veracrypt():
     i += 1
   # print 'CHANGED', i
   assert i == 32, i
+
   rec = tinyveracrypt.get_recommended_veracrypt_decrypted_ofs
   assert rec(1 << 30, False) == 2 << 20  # No need for more than 2 MiB alignment.
   assert rec(512 << 20, False) == 2 << 20  # At most 0.4% overhead, good SSD block alignment (same as default 2 MiB LUKS header size by cryptsetup).
@@ -466,6 +467,7 @@ def test_veracrypt():
   assert rec(32 << 20, True) == 128 << 10
   assert rec((32 << 20) - 1, True) == 128 << 10
   assert rec(0, True) == 128 << 10
+
   utm = tinyveracrypt.update_truecrypt_mode
   assert utm(0, 'tcrypt') == 0
   assert utm(1, 'tcrypt') == 2
@@ -476,12 +478,32 @@ def test_veracrypt():
   assert utm(2, 'veracrypt') == 0
   assert utm(0, 'luks') == 3
 
+  assert tinyveracrypt.get_iterations(None, False, 'sha512') == 500000
+  assert tinyveracrypt.get_iterations(None, True, 'sha512') == 1000
+
+  header_key = tinyveracrypt.pbkdf2_hmac(  # Fast, hard-coded.
+      'sha512', tinyveracrypt.TEST_PASSPHRASE, tinyveracrypt.TEST_SALT,
+      500000, 64)
+  enchd = tinyveracrypt.build_veracrypt_header(
+      decrypted_size=1 << 20, decrypted_ofs=4096,
+      passphrase=tinyveracrypt.TEST_PASSPHRASE,
+      enchd_prefix=tinyveracrypt.TEST_SALT,
+      hash='sha512', cipher='aes-xts-plain64', keytable=keytable)
+  dechd = crypt_veracrypt_encdechd(enchd, header_key, 'aes-xts-plain64', False)
+  check_full_dechd(dechd)
+  keytable2, decrypted_size, decrypted_ofs = parse_dechd(
+      dechd, 'aes-xts-plain64', (1 << 20 | 1 << 16))
+  assert keytable2 == keytable
+  assert decrypted_size == 1 << 20
+  assert decrypted_ofs == 4096
+
 
 def test_luks():
   size = 2066432
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
   key_size = 48 << 3
-  keytable = ''.join(map(chr, xrange(3, 3 + (key_size >> 3))))
+  #keytable = ''.join(map(chr, xrange(32, 32 + (key_size >> 3))))
+  keytable = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNO'
   header = tinyveracrypt.build_luks_header(
       passphrase=(tinyveracrypt.TEST_PASSPHRASE, 'abc'),
       #pim=-14,
@@ -505,7 +527,7 @@ def test_luks():
   #open('mkluks_demo.bin', 'w+b').write(full_header)
   del full_header  # Save memory.
   assert tinyveracrypt.build_table(keytable, size - decrypted_ofs, decrypted_ofs, '7:0', 0, 'aes-xts-plain64', True, (), True) == (
-      '0 4028 crypt aes-xts-plain64 030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132 0 7:0 8 1 allow_discards\n')
+      '0 4028 crypt aes-xts-plain64 %s 0 7:0 8 1 allow_discards\n' % keytable.encode('hex'))
   decrypted_ofs2, keytable2, cipher = tinyveracrypt.get_open_luks_info(f=cStringIO.StringIO(''.join((header, header_padding, '\0' * 512))), passphrase='abc')
   assert cipher == 'aes-xts-plain64'
   assert (decrypted_ofs2, keytable2) == (decrypted_ofs, keytable), ((decrypted_ofs2, keytable2), (decrypted_ofs, keytable))
@@ -571,10 +593,8 @@ def test():
 def test_slow():
   print 'SLOW'
   sys.stdout.flush()
-  passphrase = 'foo'
-  # Runs PBKDIF2 with SHA-512 in 15000 iterations.
   # Takes about 6..60 seconds.
-  assert tinyveracrypt.build_header_key(passphrase, SALT) == (HEADER_KEY, passphrase)
+  assert tinyveracrypt.pbkdf2_hmac('sha512', 'foo', SALT, 500000, 64) == HEADER_KEY
 
 
 if __name__ == '__main__':
@@ -600,6 +620,8 @@ if __name__ == '__main__':
       tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'] = (tinyveracrypt.SlowWhirlpool,) + tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'][1:]
     elif arg == '--slow-crc32':
       tinyveracrypt.crc32 = tinyveracrypt.slow_crc32
+    elif arg == '--slow-pbkdf2-hmac':
+      tinyveracrypt.pbkdf2_hmac = tinyveracrypt.slow_pbkdf2_hmac
     elif arg == '--slow':
       do_slow = True
     else:

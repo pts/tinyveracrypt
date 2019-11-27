@@ -1800,8 +1800,8 @@ def find_best_digest_cons(hash, pycrypto_name, default=None):
     #    'or upgrade to Python >=2.5.')
     return default
   closure = None
-  # Ensure that __name__ can be extracted from the result, for the hash_name
-  # argument of hashlib.pbkdf2_hmac.
+  # Ensure that __name__ can be extracted from the result. pbkdf2_hmac doesn't
+  # use it anymore, but it's still useful.
   return type(f)(f.func_code, f.func_globals, hash, f.func_defaults, closure)
 
 
@@ -1861,18 +1861,23 @@ def do_hmac(key, msg, digest_cons, blocksize):
 
 # Faster than `import pbkdf2' (available on pypi) or `import
 # Crypto.Protocol.KDF', because of less indirection.
-def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize):
+def slow_pbkdf2_hmac(hash, passphrase, salt, iterations, size):
   """Computes an binary key from a passphrase using PBKDF2.
 
   This is deliberately slow (to make dictionary-based attacks on passphrase
   slower), especially when iterations is high.
   """
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
   # strxor is the slowest operation in pbkdf2. For example, for
   # iterations=500000, digest_cons=sha512, len(passphrase) == 3, calls to
   # strxor take 0.2s with Crypto.Util.strxor.strxor, and 11.6s with the pure
   # Python make_strxor above. Other operations within the pbkdf2 call take
   # about 5.9s if hashlib.sha512 is used, and 12.4s if
   # Crypto.Hash._SHA512.new (also implemented in C) is used.
+  #
+  # TODO(pts): Is Linux kernel-mode crypto (AF_ALG,
+  # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
+  # cryptsetup seems to be using it. Can we drive it from Python (no sendmsg)?
   if digest_cons.__name__.startswith('Slow') and iterations > 10:
     # TODO(pts): Also show this earlier, before asking for a passphrase.
     sys.stderr.write('warning: running %d iterations of PBKDF2 using a very slow hash implementation, it may take hours; install a newer Python or hashlib to speed it up\n' % iterations)
@@ -1892,29 +1897,45 @@ def slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksiz
   return ''.join(key)[:size]
 
 
-pbkdf2 = slow_pbkdf2
-try:
-  if ((maybe_import_and_getattr('hashlib', 'sha512') or (lambda x: 0)).__name__.startswith('openssl_') and
-      getattr(__import__('hashlib'), 'pbkdf2_hmac', None)):
+TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
+TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
+
+
+# {(hash, passphrase, salt, iterations): pkbdf2_hmac_value_for_size_64}.
+# salt is often TEST_SALT, used for VeraCrypt and TrueCrypt.
+PRECOMPUTED_PBKDF2_HMAC_64_ENTRIES = {
+    ('sha512', TEST_PASSPHRASE, TEST_SALT, 500000): '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33',
+    ('sha512', TEST_PASSPHRASE, '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f', 500000): '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF',
+    ('sha512', TEST_PASSPHRASE, '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f', 500000): '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,',
+    ('sha512', TEST_PASSPHRASE, TEST_SALT, 1000): '\x05\xab"\xe7|ZM\xcbt\xd9\xa4QF\x05o6\\v8\xf82=\x97\x8b\x01\xbcS\xe9\xabj\xd8#\x8dQ\xa5\xf1\xc9\\\x12\x9d=i\xb5\x119\xe1\xfdI\xc3\x1b\x0bN6\xdc\x15\xfd.\xd4}U4%\xc5\xc7',
+}
+
+have_hashlib_pbkdf2_hmac = bool(
+    (maybe_import_and_getattr('hashlib', 'sha512') or (lambda x: 0)).__name__.startswith('openssl_') and
+    maybe_import_and_getattr('hashlib', 'pbkdf2_hmac'))
+
+
+def pbkdf2_hmac(hash, passphrase, salt, iterations, size):
+  hash2 = hash.lower().replace('-', '')
+  if 0 <= size <= 64:
+    result = PRECOMPUTED_PBKDF2_HMAC_64_ENTRIES.get((hash2, passphrase, salt, iterations))
+    if result is not None:
+      return result[:size]
+  if have_hashlib_pbkdf2_hmac:
     # If pbkdf2_hmac is available (since Python 2.7.8), use it. This is a
     # speedup from 8.8s to 7.0s user time, in addition to openssl_sha512.
     #
     # TODO(pts): Also use https://pypi.python.org/pypi/backports.pbkdf2 , if
     # available and it uses OpenSSL.
-    def pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize):
-      import hashlib
-      hash_name = digest_cons.__name__.lower()
-      if hash_name.startswith('openssl_'):
-        hash_name = hash_name[hash_name.find('_') + 1:]
-      try:
-        hashlib.new(hash_name).digest()
-      except ValueError:
-        # Fallback if digest_cons isn't supported by hashlib.
-        return slow_pbkdf2(passphrase, salt, size, iterations, digest_cons, digest_blocksize)
-      # Ignore `digest_blocksize'. It's embedded in hash_name.
-      return hashlib.pbkdf2_hmac(hash_name, passphrase, salt, iterations, size)
-except ImportError:
-  pass
+    try:
+      return __import__('hashlib').pbkdf2_hmac(hash2, passphrase, salt, iterations, size)
+    except ValueError:  # Usually because of unknown hash.
+      # E.g. if hash=='whirlpool' and hashlib isn't OpenSSL-enabled.
+      pass
+  # TODO(pts): Is kernel-mode crypto (AF_ALG,
+  # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
+  # cryptsetup seems to be using it.
+  return slow_pbkdf2_hmac(hash2, passphrase, salt, iterations, size)
 
 
 # --- Creating loopback devices (with losetup(8) etc.).
@@ -2387,6 +2408,11 @@ def check_dechd(dechd):
     raise ValueError('dechd must be 512 bytes, got: %d' % len(dechd))
 
 
+def check_enchd(enchd):
+  if len(enchd) != 512:
+    raise ValueError('enchd must be 512 bytes, got: %d' % len(enchd))
+
+
 def check_veracrypt_header(data):
   if len(data) != 512:
     raise ValueError('TrueCrypt/VeraCrypt header must be 512 bytes, got: %d' % len(data))
@@ -2403,6 +2429,8 @@ def check_salt(salt):
 
 
 def check_decrypted_ofs(decrypted_ofs):
+  if not isinstance(decrypted_ofs, (int, long)):
+    raise TypeError
   if decrypted_ofs < 0:
     # The value of 0 works with veracrypt.
     # Typical value is 0x20000 for non-hidden volumes.
@@ -2632,37 +2660,6 @@ def get_iterations(pim, is_truecrypt=False, hash='sha512'):
     else:  # --pim=485 corresponds to iterations=500000
       return 500000
 
-
-# Slow, takes about 6..60 seconds.
-def build_header_key(passphrase, salt_or_enchd, pim=None, is_truecrypt=False, iterations=None, hash='sha512'):
-  if len(salt_or_enchd) < 64:
-    raise ValueError('Salt too short.')
-  salt = salt_or_enchd[:64]
-  if iterations is None:
-    iterations = get_iterations(pim, is_truecrypt, hash)
-  passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
-  # Speedup for testing.
-  if hash == 'sha512' and passphrase == 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume':
-    if iterations == 500000:
-      if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
-        return '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33', passphrase
-      elif salt == '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
-        return '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF', passphrase
-      elif salt == '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f':
-        return '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,', passphrase
-    elif iterations == 1000:
-      if salt == "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3":
-        return '\x05\xab"\xe7|ZM\xcbt\xd9\xa4QF\x05o6\\v8\xf82=\x97\x8b\x01\xbcS\xe9\xabj\xd8#\x8dQ\xa5\xf1\xc9\\\x12\x9d=i\xb5\x119\xe1\xfdI\xc3\x1b\x0bN6\xdc\x15\xfd.\xd4}U4%\xc5\xc7', passphrase
-
-  # We could use a different hash algorithm and a different iteration count.
-  header_key_size = 64
-  digest_cons, digest_blocksize = get_hash_digest_params(hash)
-  # TODO(pts): Is kernel-mode crypto (AF_ALG,
-  # https://www.kernel.org/doc/html/v4.16/crypto/userspace-if.html) faster?
-  # cryptsetup seems to be using it.
-  return pbkdf2(passphrase, salt, header_key_size, iterations, digest_cons, digest_blocksize), passphrase
-
-
 def parse_dechd(dechd, cipher, device_size):
   check_dechd(dechd)
   keytable = convert_veracrypt_keytable_to_dm(buffer(dechd, 256, 64), cipher)
@@ -2690,6 +2687,7 @@ HASHLIB_NO_OPENSSL_HASHES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha51
 
 
 def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
+  check_enchd(enchd)
   # This function doesn't support LUKS, the caller should.
   if truecrypt_mode not in (0, 1, 2):
     raise ValueError('Unknown truecrypt_mode: %r' % truecrypt_mode)
@@ -2736,7 +2734,8 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
     #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
     # Slow.
     #print (is_veracrypt, hash, iterations)
-    header_key, passphrase = build_header_key(passphrase, enchd, pim=None, is_truecrypt=not is_veracrypt, iterations=iterations, hash=hash)
+    passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
+    header_key = pbkdf2_hmac(hash, passphrase, enchd[:64], iterations, 64)  # Slow.
     for cipher in VERACRYPT_AND_TRUECRYPT_CIPHERS[not is_veracrypt]:
       dechd = crypt_veracrypt_encdechd(enchd, header_key, cipher=cipher, do_encrypt=False)
       try:
@@ -2861,9 +2860,9 @@ CRYPT_BY_OFS_MAX_512_FUNCS = {
 
 
 def build_veracrypt_header(
-    decrypted_size, passphrase, hash, cipher,
+    decrypted_size, decrypted_ofs, passphrase, hash, cipher,
     enchd_prefix='', enchd_suffix='',
-    decrypted_ofs=None, pim=None, fake_luks_uuid=None,
+    pim=None, fake_luks_uuid=None,
     truecrypt_version=False, keytable=None, get_random_bytes_func=None):
   """Returns 512 bytes.
 
@@ -2915,8 +2914,12 @@ def build_veracrypt_header(
       raise ValueError('enchd_prefix value conflicts with with luks_header.')
     enchd_prefix = luks_header + enchd_prefix[len(luks_header):]
     assert len(enchd_prefix) <= 64
-  salt = enchd_prefix + get_random_bytes_func(64 - len(enchd_prefix))
-  header_key, _ = build_header_key(passphrase, salt, pim=pim, is_truecrypt=bool(truecrypt_version), hash=hash)  # Slow.
+  salt = enchd_prefix
+  if len(salt) < 64:
+    salt += get_random_bytes_func(64 - len(salt))
+  passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
+  header_key = pbkdf2_hmac(  # Slow.
+      hash, passphrase, salt, get_iterations(pim, bool(truecrypt_version), hash), 64)
   header_keytable = convert_veracrypt_keytable_to_dm(header_key, cipher)
   if fake_luks_uuid is not None:
     zeros_ofs = 160  # Must be divisible by 16 for ofs= below.
@@ -3762,13 +3765,14 @@ def luks_af_join(data, stripe_count, digest_cons):
 
 def build_luks_active_key_slot(
     slot_iterations, slot_salt, keytable, passphrase,
-    digest_cons, digest_blocksize, key_material_ofs, stripe_count,
+    hash, key_material_ofs, stripe_count,
     yield_crypt_sectors_func, get_codebooks_func, af_salt=None,
     get_random_bytes_func=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
   check_luks_slot_salt(slot_salt)
   active_tag = 0xac71f3
+  digest_cons, digest_blocksize = get_hash_digest_params(hash)
   # If there is any invalid keyslot, then
   # `sudo /sbin/cryptsetup luksOpen mkluks_demo.bin foo --debug' will fail
   # without considering other keyslots.
@@ -3776,9 +3780,7 @@ def build_luks_active_key_slot(
   key_material_size = len(keytable) * stripe_count
   assert len(split_key) == key_material_size
   assert luks_af_join(split_key, stripe_count, digest_cons) == keytable
-  header_key = pbkdf2(  # Slow.
-      passphrase, slot_salt, len(keytable), slot_iterations, digest_cons,
-      digest_blocksize)
+  header_key = pbkdf2_hmac(hash, passphrase, slot_salt, slot_iterations, len(keytable))  # Slow.
   header_codebooks = get_codebooks_func(header_key)
   key_material = ''.join(yield_crypt_sectors_func(header_codebooks, split_key, do_encrypt=True))
   assert len(key_material) == key_material_size
@@ -3892,7 +3894,7 @@ def build_luks_header(
     # keytable is called ``master_key' by LUKS.
     raise ValueError('keytable must be %d bytes, got %d' %
                      (keytable_size, len(keytable)))
-  digest_cons, digest_blocksize = get_hash_digest_params(hash)
+  get_hash_digest_params(hash)  # Just check.
   if slot_count < 8:
     sys.stderr.write('warning: only %d of 8 slots are usable, increase decrypted_ofs to %d or decrease af_stripe_count to %d to get all\n' %
                      (slot_count, (2 + 8 * key_material_sector_count) << 9, ((decrypted_ofs - 1024) >> 12 << 9) // keytable_size))
@@ -3917,9 +3919,8 @@ def build_luks_header(
 
   signature = 'LUKS\xba\xbe'
   version = 1
-  mk_digest = pbkdf2(  # Slow.
-      keytable, keytable_salt, 20, keytable_iterations,
-      digest_cons, digest_blocksize)
+  # !! To speed this up, use the hardcoded keytable for --test-passphrase.
+  mk_digest = pbkdf2_hmac(hash, keytable, keytable_salt, keytable_iterations, 20)  # Slow.
   output = [struct.pack(
       '>6sH32s32s32sLL20s32sL40s',
       signature, version, cipher_name, cipher_mode, hash, decrypted_ofs >> 9,
@@ -3939,7 +3940,7 @@ def build_luks_header(
       key_slot_data, key_material = build_luks_active_key_slot(
           slot_iterations, slot_salt or get_random_bytes_func(32), keytable,
           passphrases[i],
-          digest_cons, digest_blocksize, key_material_ofs, af_stripe_count,
+          hash, key_material_ofs, af_stripe_count,
           yield_crypt_sectors_func, get_codebooks_func, af_salt,
           get_random_bytes_func)
       assert key_material
@@ -4034,15 +4035,11 @@ def get_open_luks_info(f, passphrase):
     slot_key_material = f.read(slot_key_material_size)
     if len(slot_key_material) < slot_key_material_size:
       raise ValueError('EOF in slot %d key material on raw device.' % slot_idx)
-    slot_header_key = pbkdf2(  # Slow.
-        passphrase, slot_salt, keytable_size, slot_iterations, digest_cons,
-        digest_blocksize)
+    slot_header_key = pbkdf2_hmac(hash, passphrase, slot_salt, slot_iterations, keytable_size)  # Slow.
     slot_header_codebooks = get_codebooks_func(slot_header_key)
     slot_split_key = ''.join(yield_crypt_sectors_func(slot_header_codebooks, slot_key_material, do_encrypt=False))
     slot_keytable = luks_af_join(slot_split_key, slot_stripe_count, digest_cons)
-    slot_mk_digest = pbkdf2(  # Slow.
-        slot_keytable, keytable_salt, 20, keytable_iterations,
-        digest_cons, digest_blocksize)
+    slot_mk_digest = pbkdf2_hmac(hash, slot_keytable, keytable_salt, keytable_iterations, 20)  # Slow.
     if slot_mk_digest == mk_digest:
       print >>sys.stderr, 'info: passphrase correct for slot %d' % slot_idx
       break
@@ -4103,11 +4100,6 @@ class UsageWithHelpError(UsageError):
 
 class UnknownFlagError(UsageError):
   """Raised when there is an unknown command-line flag."""
-
-
-TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
-TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
-
 
 def parse_byte_size(size_str):
   """Returns the corresponding byte size."""
@@ -4272,8 +4264,8 @@ def cmd_get_table(args):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
-      # With --test-passphase --salt=test it's faster, because
-      # build_header_key is much faster.
+      # With --test-passphase it's faster, because
+      # pbkdf2_hmac is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--key-file='):  # cryptsetup flag.
       passphrase = (arg[arg.find('=') + 1:],)
@@ -4399,8 +4391,8 @@ def cmd_mount(args):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
-      # With --test-passphase --salt=test it's faster, because
-      # build_header_key is much faster.
+      # With --test-passphase it's faster, because
+      # pbkdf2_hmac is much faster.
       passphrase = TEST_PASSPHRASE
     elif arg.startswith('--key-file='):  # cryptsetup flag.
       passphrase = (arg[arg.find('=') + 1:],)
@@ -4768,8 +4760,8 @@ def cmd_create(args):
       passphrase = parse_passphrase(arg)
       is_test_passphrase = False
     elif arg in ('--test-passphrase', '--test-password'):
-      # With --test-passphase --salt=test it's faster, because
-      # build_header_key is much faster.
+      # With --test-passphase it's faster, because
+      # pbkdf2_hmac is much faster.
       passphrase = TEST_PASSPHRASE
       is_test_passphrase = True
     elif arg.startswith('--key-file='):  # cryptsetup flag.
