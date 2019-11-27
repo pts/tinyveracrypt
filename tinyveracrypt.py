@@ -95,12 +95,15 @@ Flags for init, create and luksFormat:
   arguments. If specified, it's eqivalent to --filesystem=custom.
 * --passphrase=...: Passphrase to use for opening the encrypted volume. This
   flag is insecure (because it adds the passphrase to your shell history),
-  please don't specify it, but type the passphrases interactively instead.
+  please don't specify it, but type the passphrases interactively or use
+  --key-file=... instead.
 * --test-passphrase: Equivalent to
   --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
   is insecure, don't use this passphrase for anything other than testing.
   tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
   it's faster to create (test) volumes with it than with other passphrases.
+* --key-file=<filename>: Read the passphrase from the specified file (- for
+  stdin). Don't make any changes, e.g. don't strip trailing newlines.
 * --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
   as K, M G are supported.) If not speficied (or --size=auto or
   --size=max is specified), then the size gets autodetected, and the
@@ -261,12 +264,15 @@ Please note that luksFormat is different from init:
 * --type=luks: Equivalent to --type=luks.
 * --passphrase=...: Passphrase to use for opening the encrypted volume. This
   flag is insecure (because it adds the passphrase to your shell history),
-  please don't specify it, and type the passphrases interactively instead.
+  please don't specify it, but type the passphrases interactively or use
+  --key-file=... instead.
 * --test-passphrase: Equivalent to
   --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
   is insecure, don't use this passphrase for anything other than testing.
   tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
   it's faster to create (test) volumes with it than with other passphrases.
+* --key-file=<filename>: Read the passphrase from the specified file (- for
+  stdin). Don't make any changes, e.g. don't strip trailing newlines.
 * --keyfiles=: Compatibility flag, ignored.
 * --protect-hidden=no: Compatibility flag, ignored.
 * --custom-name: Specify the dm-crypt device name in the command-line as
@@ -311,12 +317,15 @@ Flags for get-table and cat:
 * --type=luks: Equivalent to --type=luks.
 * --passphrase=...: Passphrase to use for opening the encrypted volume. This
   flag is insecure (because it adds the passphrase to your shell history),
-  please don't specify it, but type the passphrases interactively instead.
+  please don't specify it, but type the passphrases interactively or use
+  --key-file=... instead.
 * --test-passphrase: Equivalent to
   --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
   is insecure, don't use this passphrase for anything other than testing.
   tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
   it's faster to create (test) volumes with it than with other passphrases.
+* --key-file=<filename>: Read the passphrase from the specified file (- for
+  stdin). Don't make any changes, e.g. don't strip trailing newlines.
 * --hash=...: The hash (message digest) algorithm to use for key derivation.
   The default is trying everything possible. (For --type=luks1, there is only 1
   possibility, the one specified in the LUKS header.)
@@ -4142,6 +4151,16 @@ TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
 TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
 
 
+def read_key_file(filename):
+  if filename == '-':
+    return sys.stdin.read()
+  f = open(filename, 'rb')
+  try:
+    return f.read()
+  finally:
+    f.close()
+
+
 def update_truecrypt_mode(truecrypt_mode, type_value):
   if type_value == 'tcrypt':
     if truecrypt_mode == 0:  # Keep --veracrypt.
@@ -4202,6 +4221,8 @@ def cmd_get_table(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--key-file='):  # cryptsetup flag.
+      passphrase = (arg[arg.find('=') + 1:],)
     elif arg.startswith('--hash='):
       hash = parse_veracrypt_hash_arg(arg, is_sha_ok=True)
     elif arg.startswith('--display-device='):
@@ -4229,6 +4250,8 @@ def cmd_get_table(args):
     raise UsageError('--cat conflicts with --showkeys')
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if isinstance(passphrase, tuple):
+    passphrase = read_key_file(passphrase[0])
 
   #device_id = '7:0'
   device_id = device  # TODO(pts): Option to display major:minor.
@@ -4317,6 +4340,8 @@ def cmd_mount(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--key-file='):  # cryptsetup flag.
+      passphrase = (arg[arg.find('=') + 1:],)
     elif arg.startswith('--keyfiles='):
       value = arg[arg.find('=') + 1:]
       if value != '':
@@ -4399,6 +4424,8 @@ def cmd_mount(args):
     raise UsageError('<name> conflicts with --slot=')
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if isinstance(passphrase, tuple):
+    passphrase = read_key_file(passphrase[0])
 
   setup_path_for_dmsetup()
   had_dmsetup = False
@@ -4669,6 +4696,8 @@ def cmd_create(args):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+    elif arg.startswith('--key-file='):  # cryptsetup flag.
+      passphrase = (arg[arg.find('=') + 1:],)
     elif arg.startswith('--keytable='):
       keytable = parse_keytable_arg(arg)  # Can remain None for random.
     elif arg.startswith('--salt='):
@@ -5329,6 +5358,10 @@ def cmd_create(args):
       del fat1_header
     else:
       mkfs_data = None
+
+    if isinstance(passphrase, tuple):
+      passphrase = read_key_file(passphrase[0])
+
     def prompt_passphrase_with_warning():
       prompt_device_size = read_device_size
       if prompt_device_size is None:
@@ -5668,7 +5701,6 @@ def main(argv):
     # !! Add `open --allow-discards'.
     # !! Add legacry `luksOpen <device> <name>' syntax.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
-    # !! Add full support for flag `--key-file=...' (cryptsetup, sensitive to trailing '\n') but not `--keyfiles=...' (veracrypt and truecrypt; they are not equivalent) instead of the insecure --passwphrase=... (shell history).
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .

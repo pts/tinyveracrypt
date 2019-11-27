@@ -944,4 +944,14 @@ Q35. What is the license of tinyveracrypt?
 """"""""""""""""""""""""""""""""""""""""""
 It is free software, GNU GPL >=2.0. There is NO WARRANTY. Use at your risk.
 
+Q36. Does tinyveracrypt support reading the passphrase from a key file?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Yes, use `--key-file=<filename>' or --key-file=- for stdin. This flag is
+compatible with cryptsetup. Please note that the contents of the file will
+be used as is, newlines (\r or \n) won't be removed.
+
+tinyveracrypt doesn't support the `--keyfiles=...' flag used by truecrypt
+and veracrypt, except with an empty value (which disables the use of
+keyfiles).
+
 __END__
