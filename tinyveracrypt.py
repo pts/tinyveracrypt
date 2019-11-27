@@ -2104,7 +2104,7 @@ def _losetup_add_cmd(filename):
   # remove', a manual run of `losetup -d' will be needed.
 
   if filename.startswith('-'):
-    raise UsageError('raw device must not start with dash: %s' % filename)
+    raise ValueError('raw device must not start with dash: %s' % filename)
   # Alternative, without race conditions, but doesn't work with busybox:
   # sudo losetup --show -f RAWDEVICE
   data = run_and_read_stdout(('losetup', '-f'))
@@ -2420,9 +2420,9 @@ def check_decrypted_size(decrypted_size):
 
 def check_table_name(name):
   if '/' in name or '\0' in name or not name or name.startswith('-'):
-    raise UsageError('invalid dmsetup table name: %r' % name)
+    raise ValueError('invalid dmsetup table name: %r' % name)
   if name == 'control':
-    raise UsageError('disallowed dmsetup table name: %r' % name)
+    raise ValueError('disallowed dmsetup table name: %r' % name)
 
 
 # Position-independent boot code starting at boot sector offset 0x17c
@@ -3269,54 +3269,6 @@ def randomize_fat_header(fat_header, get_random_bytes_func):
   return ''.join((fat_header[:3], oem_id, fat_header[11 : 62], chr(code0), chr(code1)))
 
 
-def parse_byte_size(size_str):
-  """Returns the corresponding byte size."""
-  if size_str.endswith('K'):
-    return int(size_str[:-1]) << 10
-  elif size_str.endswith('M'):
-    return int(size_str[:-1]) << 20
-  elif size_str.endswith('G'):
-    return int(size_str[:-1]) << 30
-  elif size_str.endswith('T'):
-    return int(size_str[:-1]) << 40
-  elif size_str.endswith('P'):
-    return int(size_str[:-1]) << 50
-  else:
-    return int(size_str)
-
-
-def parse_pim_arg(arg):
-  value = arg[arg.find('=') + 1:]
-  try:
-    value = int(value)
-  except ValueError:
-    raise UsageError('unsupported pim value: %s' % arg)
-  if value < -14:
-    raise UsageError('pim must be at least -14, got: %s' % arg)
-  return value
-
-
-def parse_passphrase(arg):
-  value = arg[arg.find('=') + 1:]
-  if not value:
-    raise UsageError('empty flag value: %s' % arg)
-  return value
-
-
-def prompt_passphrase(do_passphrase_twice):
-  sys.stderr.flush()
-  sys.stdout.flush()
-  import getpass
-  passphrase = getpass.getpass('Enter passphrase: ')
-  if not passphrase:
-    raise SystemExit('empty passphrase')
-  if do_passphrase_twice:
-    passphrase2 = getpass.getpass('Re-enter passphrase: ')
-    if passphrase != passphrase2:
-      raise SystemExit('passphrases do not match')
-  return passphrase
-
-
 def parse_device_id(device_id):
   try:
     major, minor = map(int, device_id.split(':'))
@@ -3389,51 +3341,6 @@ def fsync_loop_device(f):
     pass
 
 
-def parse_device_size_arg(arg):
-  value = arg[arg.find('=') + 1:]
-  if value in ('auto', 'max'):
-    value = 'auto'
-  else:
-    try:
-      value = parse_byte_size(value)
-    except ValueError:
-      raise UsageError('unsupported byte size value: %s' % arg)
-    if value <= 0:
-      raise UsageError('device size must be positive, got: %s' % arg)
-    if value & 511:
-      raise UsageError('device size must be divisible by 512, got: %s' % arg)
-  return value
-
-
-def parse_decrypted_ofs_arg(arg):
-  value = arg[arg.find('=') + 1:]
-  try:
-    value = parse_byte_size(value)
-  except ValueError:
-    raise UsageError('unsupported byte size value: %s' % arg)
-  if value < 0:
-    raise UsageError('offset must be nonnegative, got: %s' % arg)
-  if value & 511:
-    raise UsageError('offset must be divisible by 512, got: %s' % arg)
-  return value
-
-
-def parse_keytable_arg(arg, keytable_size=None):
-  if arg is None:
-    return None
-  value = arg[arg.find('=') + 1:].lower()
-  if value in ('random', 'new', 'rnd'):
-    return None
-  else:
-    try:
-      value = value.decode('hex')
-    except (TypeError, ValueError):
-      raise UsageError('keytable value must be hex: %s' % arg)
-  if keytable_size is not None and len(value) != keytable_size:
-    raise UsageError('keytable must be %d bytes after hex decoding, got %d: %s' % (keytable_size, len(value), arg))
-  return value
-
-
 def get_passphrase_str(passphrase):
   if callable(passphrase):
     passphrase = passphrase()  # Prompt the user.
@@ -3455,7 +3362,7 @@ def find_dm_crypt_device(device):
     elif stat.S_ISBLK(stat_obj.st_mode):  # A device.
       major_minor = stat_obj.st_rdev >> 8, stat_obj.st_rdev & 255
     else:
-      raise UsageError(
+      raise ValueError(
           'device must be a directory or a block device, got: %r' %
           device)
     setup_path_for_dmsetup()
@@ -4184,8 +4091,112 @@ class UsageError(SystemExit):
   """Raised when there is a problem in the command-line."""
 
 
+class UsageWithHelpError(UsageError):
+  """Raised when there is a problem in the command-line, help command
+  recommendation will also be displayer."""
+
+
+class UnknownFlagError(UsageError):
+  """Raised when there is an unknown command-line flag."""
+
+
 TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
 TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
+
+
+def parse_byte_size(size_str):
+  """Returns the corresponding byte size."""
+  if size_str.endswith('K'):
+    return int(size_str[:-1]) << 10
+  elif size_str.endswith('M'):
+    return int(size_str[:-1]) << 20
+  elif size_str.endswith('G'):
+    return int(size_str[:-1]) << 30
+  elif size_str.endswith('T'):
+    return int(size_str[:-1]) << 40
+  elif size_str.endswith('P'):
+    return int(size_str[:-1]) << 50
+  else:
+    return int(size_str)
+
+
+def parse_pim_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  try:
+    value = int(value)
+  except ValueError:
+    raise UsageError('unsupported pim value: %s' % arg)
+  if value < -14:
+    raise UsageError('pim must be at least -14, got: %s' % arg)
+  return value
+
+
+def parse_passphrase(arg):
+  value = arg[arg.find('=') + 1:]
+  if not value:
+    raise UsageError('empty flag value: %s' % arg)
+  return value
+
+
+def prompt_passphrase(do_passphrase_twice):
+  sys.stderr.flush()
+  sys.stdout.flush()
+  import getpass
+  passphrase = getpass.getpass('Enter passphrase: ')
+  if not passphrase:
+    raise SystemExit('empty passphrase')
+  if do_passphrase_twice:
+    passphrase2 = getpass.getpass('Re-enter passphrase: ')
+    if passphrase != passphrase2:
+      raise SystemExit('passphrases do not match')
+  return passphrase
+
+
+def parse_device_size_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  if value in ('auto', 'max'):
+    value = 'auto'
+  else:
+    try:
+      value = parse_byte_size(value)
+    except ValueError:
+      raise UsageError('unsupported byte size value: %s' % arg)
+    if value <= 0:
+      raise UsageError('device size must be positive, got: %s' % arg)
+    if value & 511:
+      raise UsageError('device size must be divisible by 512, got: %s' % arg)
+  return value
+
+
+def parse_decrypted_ofs_arg(arg):
+  value = arg[arg.find('=') + 1:]
+  try:
+    value = parse_byte_size(value)
+  except ValueError:
+    raise UsageError('unsupported byte size value: %s' % arg)
+  if value < 0:
+    raise UsageError('offset must be nonnegative, got: %s' % arg)
+  if value & 511:
+    raise UsageError('offset must be divisible by 512, got: %s' % arg)
+  return value
+
+
+def parse_keytable_arg(arg, keytable_size=None):
+  if arg is None:
+    return None
+  value = arg[arg.find('=') + 1:].lower()
+  if value in ('random', 'new', 'rnd'):
+    return None
+  else:
+    try:
+      value = value.decode('hex')
+    except (TypeError, ValueError):
+      raise UsageError('keytable value must be hex: %s' % arg)
+  if keytable_size is not None and len(value) != keytable_size:
+    raise UsageError('keytable must be %d bytes after hex decoding, got %d: %s' % (keytable_size, len(value), arg))
+  return value
+
+
 
 
 def read_key_file(filename):
@@ -4276,17 +4287,17 @@ def cmd_get_table(args):
     elif arg == '--cat':
       do_cat = True
     else:
-      raise UsageError('unknown flag: %s' % arg)
+      raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
   if truecrypt_mode is None:
     truecrypt_mode = 1
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
+      raise UsageWithHelpError('missing <device> hosting the encrypted volume')
     device = args[i]
     i += 1
   if i != len(args):
-    raise UsageError('too many command-line arguments')
+    raise UsageWithHelpError('too many command-line arguments')
 
   if do_cat and do_showkeys:
     raise UsageError('--cat conflicts with --showkeys')
@@ -4443,35 +4454,34 @@ def cmd_mount(args):
     elif arg == '--no-allow-discards':
       do_allow_discards = False
     else:
-      raise UsageError('unknown flag: %s' % arg)
+      raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
+      raise UsageWithHelpError('missing <device> hosting the encrypted volume')
     device = args[i]
     i += 1
   if name is None and is_custom_name:
     if i >= len(args):
-      raise UsageError('missing dmsetup table <name> for the encrypted volume')
+      raise UsageWithHelpError('missing dmsetup table <name> for the encrypted volume')
     name = args[i]
     i += 1
     check_table_name(name)
   if i != len(args):
-    raise UsageError('too many command-line arguments')
-  if truecrypt_mode is None:
-    truecrypt_mode = 1
-  if i != len(args):
-    raise UsageError('too many command-line arguments')
+    raise UsageWithHelpError('too many command-line arguments')
   if encryption != 'aes':
-    raise UsageError('missing flag: --encryption=aes')
+    raise UsageWithHelpError('missing flag: --encryption=aes')
   if filesystem != 'none':
-    raise UsageError('missing flag: --filesystem=none')
+    raise UsageWithHelpError('missing flag: --filesystem=none')
   if protect_hidden != 'no':
-    raise UsageError('missing flag: --protect-hidden=no')
+    raise UsageWithHelpError('missing flag: --protect-hidden=no')
   if keyfiles != '':
-    raise UsageError('missing flag: --keyfiles=')
+    raise UsageWithHelpError('missing flag: --keyfiles=')
+
   if name is not None and slot is not None:
     raise UsageError('<name> conflicts with --slot=')
+  if truecrypt_mode is None:
+    truecrypt_mode = 1
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
   if isinstance(passphrase, tuple):
@@ -4643,34 +4653,34 @@ def cmd_open_table(args):
     elif arg == '--no-allow-discards':
       do_allow_discards = False
     else:
-      raise UsageError('unknown flag: %s' % arg)
+      raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
   if device is None:
     if i >= len(args):
-      raise UsageError('missing <device> hosting the encrypted volume, use --help-flags for flag info')
+      raise UsageWithHelpError('missing <device> hosting the encrypted volume')
     device = args[i]
     i += 1
   if name is None:
     if i >= len(args):
-      raise UsageError('missing dmsetup table <name> for the encrypted volume')
+      raise UsageWithHelpError('missing dmsetup table <name> for the encrypted volume')
     name = args[i]
     i += 1
     check_table_name(name)
   if i != len(args):
-    raise UsageError('too many command-line arguments')
+    raise UsageWithHelpError('too many command-line arguments')
 
   get_random_bytes_func = get_get_random_bytes_func(random_source)
   if keytable and len(keytable) == 64 and cipher.startswith('aes-lrw-'):
     keytable = keytable[:48]  # Ignore last 16 bytes for convenience.
   key_size = get_best_key_size(cipher, keytable, key_size)
   if not had_keytable:
-    raise UsageError('missing flag: --keytable=...')
+    raise UsageWithHelpError('missing flag: --keytable=...')
   if keytable is None:
     keytable = get_random_bytes_func(key_size >> 3)
   if decrypted_ofs is None:
-    raise UsageError('missing flag: --ofs=...; try --ofs=8192')
+    raise UsageWithHelpError('missing flag: --ofs=...; try --ofs=8192')
   if end_ofs is None:
-    raise UsageError('missing flag: --end-ofs=...; try --end-ofs=0')
+    raise UsageWithHelpError('missing flag: --end-ofs=...; try --end-ofs=0')
 
   if device_size == 'auto':
     f = open(device, 'rb')
@@ -4989,11 +4999,11 @@ def cmd_create(args):
     elif arg == '--no-allow-discards':
       do_allow_discards = False
     else:
-      raise UsageError('unknown flag: %s' % arg)
+      raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
 
   if type_value is None:
-    raise UsageError('missing flag: --type=..., use --help-flags for flag info')
+    raise UsageWithHelpError('missing flag: --type=...')
   if filesystem == 'none':
     if (i < len(args) and
         (args[i].startswith('mkfs.') or '/mkfs.' in args[i])):
@@ -5001,26 +5011,26 @@ def cmd_create(args):
       mkfs_args = list(args[i:])
       if device is None:
         if i + 1 == len(args):
-          raise UsageError(
+          raise UsageWithHelpError(
               'missing raw <device> hosting the encrypted volume, after mkfs')
         device = mkfs_args.pop()
     elif device is None:
       if i >= len(args):
-        raise UsageError('missing raw <device> hosting the encrypted volume')
+        raise UsageWithHelpError('missing raw <device> hosting the encrypted volume')
       device = args[i]
       i += 1
       mkfs_args = []
       if i != len(args):
-        raise UsageError('too many command-line arguments')
+        raise UsageWithHelpError('too many command-line arguments')
   elif filesystem is None:
-    raise UsageError('missing flag: --filesystem=...')
+    raise UsageWithHelpError('missing flag: --filesystem=...')
   else:
     mkfs_args = list(args[i:])
     if filesystem != 'custom':
       mkfs_args[:0] = ('mkfs.' + filesystem,)
     if device is None:
       if i >= len(args):
-        raise UsageError('missing raw <device> hosting the encrypted volume')
+        raise UsageWithHelpError('missing raw <device> hosting the encrypted volume')
       device = mkfs_args.pop()
   if fatfs_size is not None:
     if decrypted_ofs is not None:
@@ -5051,9 +5061,9 @@ def cmd_create(args):
   # the device filename or the filesystem size.
 
   if volume_type != 'normal':
-    raise UsageError('missing flag: --volume-type=normal')
+    raise UsageWithHelpError('missing flag: --volume-type=normal')
   if cipher is None:
-    raise UsageError('missing flag: --encryption=aes')
+    raise UsageWithHelpError('missing flag: --encryption=aes')
   if cipher == 'auto':
     if is_opened:
       cipher = None
@@ -5066,18 +5076,18 @@ def cmd_create(args):
     else:
       cipher = TRUECRYPT_AUTO_CIPHER_ORDER[0]
   if keyfiles != '':
-    raise UsageError('missing flag: --keyfiles=')
+    raise UsageWithHelpError('missing flag: --keyfiles=')
   if random_source is None:
     if do_restrict_luksformat_defaults:
-      raise UsageError('missing flag: --use-urandom')
+      raise UsageWithHelpError('missing flag: --use-urandom')
     else:
-      raise UsageError('missing flag: --random-source=/dev/urandom')
+      raise UsageWithHelpError('missing flag: --random-source=/dev/urandom')
   else:
     get_random_bytes_func = get_get_random_bytes_func(random_source)
   if not is_batch_mode and do_restrict_luksformat_defaults:
-      raise UsageError('missing flag: --batch-mode')
+      raise UsageWithHelpError('missing flag: --batch-mode')
   if hash is None:
-    raise UsageError('missing flag: --hash=...')
+    raise UsageWithHelpError('missing flag: --hash=...')
   if hash == 'auto':
     if truecrypt_version:
       for hash in TRUECRYPT_AUTO_HASH_ORDER:
@@ -5088,7 +5098,7 @@ def cmd_create(args):
     else:
       hash = TRUECRYPT_AUTO_HASH_ORDER[0]  # 'sha512'.
   if device_size is None:
-    raise UsageError('missing flag: --size=..., recommended but not compatible with veracrypt create: --size=auto')
+    raise UsageWithHelpError('missing flag: --size=..., recommended but not compatible with veracrypt create: --size=auto')
   if pim is None:  # For compatibility with `veracrypt --create'.
     if type_value == 'truecrypt':
       pim = 0
@@ -5741,83 +5751,93 @@ def main(argv):
 
   command = argv[1].lstrip('-')
   del argv[:2]
-  if command in ('help', 'help-flags', 'helpfull'):
-    if len(argv) == 1:
-      help_command = argv[0]
+  try:
+    if command in ('help', 'help-flags', 'helpfull'):
+      if len(argv) == 1:
+        help_command = argv[0]
+      else:
+        help_command = None
+      cmd_help(__doc__, argv0, command=help_command, do_print_flags=bool(command != 'help' or help_command))
+    elif len(argv) == 1 and argv[0] == '--help':
+      cmd_help(__doc__, argv0, command=command, do_print_flags=True)
+    elif command == 'get-table':
+      # Similar to (but without dm-crypt): dmsetup table [--showkeys] NAME
+      cmd_get_table(argv)
+    elif command == 'cat':
+      cmd_get_table(('--cat',) + tuple(argv))
+    elif command == 'mount':
+      # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
+      # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
+      #
+      # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
+      cmd_mount(argv)
+    elif command == 'open':
+      # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME  # Creates /dev/mapper/NAME
+      cmd_mount(open_default_args + tuple(argv))
+    elif command == 'open-table':
+      cmd_open_table(argv)
+    elif command in ('close', 'remove'):
+      # Emulates: `cryptsetup close <device>' and `dmsetup remove <device>'.
+      cmd_close(argv)
+    elif command == 'create':  # For compatibility with `veracrypt --create' and `cryptsetup create' (obsolete).
+      # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
+      # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
+      # Difference; --quick is also respected for disk images (not only actual block devices).
+      # Difference: --size=auto can be used to detect the size. (--size=... contains the value of the device size).
+      # Difference: --ofs=<size>, --salt=... is not supported by veracrypt.
+      # Difference: --ofs=fat (autodetecting FAT filessyem at the start of the raw device) is not supported by veracrypt.
+      # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt.
+      # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt.
+      # Difference: --truecrypt is respected.
+      # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
+      # For --pim=0, --pim=485 is used with --hash=sha512.
+      if len(argv) == 2 and not argv[0].startswith('-') and not argv[1].startswith('-'):
+        cmd_mount(open_default_args + ('--type=plain', '--', argv[1], argv[0]))  # `cryptsetup create' (obsolete syntax).
+      else:
+        # Use `init --type=luks' instead for LUKS.
+        cmd_create(('--restrict-type=no-luks', '--type=veracrypt') + tuple(argv))
+    elif command in ('luksFormat', 'luks-format'):  # For compatibility with `cryptsetup luksFormat'.
+      # This is a legacy command, use `./tinyveracrypt.py init --type=luks' for better defaults.
+      # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512
+      # Defaults from `--hash=sha256 --key-size=256' below are from cryptsetup-1.7.3 in Debian.
+      # Difference: `cryptsetup luksFormat' silently ignores `--type=tcrypt', we refuse it.
+      cmd_create(veracrypt_create_args + ('--type=luks', '--hash=sha256', '--key-size=256', '--restrict-type=luks', '--restrict-luksformat-defaults') + tuple(argv))
+    elif command == 'init':  # Like create, but with better (shorter) defaults.
+      # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
+      # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
+      # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
+      # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
+      cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
     else:
-      help_command = None
-    cmd_help(__doc__, argv0, command=help_command, do_print_flags=bool(command != 'help' or help_command))
-  elif len(argv) == 1 and argv[0] == '--help':
-    cmd_help(__doc__, argv0, command=command, do_print_flags=True)
-  elif command == 'get-table':
-    # Similar to (but without dm-crypt): dmsetup table [--showkeys] NAME
-    cmd_get_table(argv)
-  elif command == 'cat':
-    cmd_get_table(('--cat',) + tuple(argv))
-  elif command == 'mount':
-    # Emulates: veracrypt --text --mount --keyfiles= --protect-hidden=no --pim=0 --filesystem=none --encryption=aes RAWDEVICE  # Creates /dev/mapper/veracrypt1
-    # Difference: Doesn't mount a fuse filesystem (veracrypt needs sudo umount /tmp/.veracrypt_aux_mnt1; truecrypt needs sudo umount /tmp/.truecrypt_aux_mnt1)
-    #
-    # Creates /dev/mapper/veracrypt1 , use this to show the keytable: sudo dmsetup table --showkeys veracrypt1
-    cmd_mount(argv)
-  elif command == 'open':
-    # Emulates: cryptsetup open --type tcrypt --veracrypt RAWDEVICE NAME  # Creates /dev/mapper/NAME
-    cmd_mount(open_default_args + tuple(argv))
-  elif command == 'open-table':
-    cmd_open_table(argv)
-  elif command in ('close', 'remove'):
-    # Emulates: `cryptsetup close <device>' and `dmsetup remove <device>'.
-    cmd_close(argv)
-  elif command == 'create':  # For compatibility with `veracrypt --create' and `cryptsetup create' (obsolete).
-    # Emulates: veracrypt --create --text --quick --volume-type=normal --size=104857600 --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
-    # Recommended: tinyveracrypt.py --create --quick --volume-type=normal --size=auto --encryption=aes --hash=sha512 --filesystem=none --pim=0 --keyfiles= --random-source=/dev/urandom DEVICE.img
-    # Difference; --quick is also respected for disk images (not only actual block devices).
-    # Difference: --size=auto can be used to detect the size. (--size=... contains the value of the device size).
-    # Difference: --ofs=<size>, --salt=... is not supported by veracrypt.
-    # Difference: --ofs=fat (autodetecting FAT filessyem at the start of the raw device) is not supported by veracrypt.
-    # Difference: --mkfat=<size>, --fat-* are not supported by veracrypt.
-    # Difference: --veracrypt, --no-quick, --test-passphrase, --passphrase-once, --passphrase-twice, --no-add-full-header, --no-add-backup etc. are not supported by veracrypt.
-    # Difference: --truecrypt is respected.
-    # --pim=485 corresponds to iterations=500000 (https://www.veracrypt.fr/en/Header%20Key%20Derivation.html says that for --hash=sha512 iterations == 15000 + 1000 * pim).
-    # For --pim=0, --pim=485 is used with --hash=sha512.
-    if len(argv) == 2 and not argv[0].startswith('-') and not argv[1].startswith('-'):
-      cmd_mount(open_default_args + ('--type=plain', '--', argv[1], argv[0]))  # `cryptsetup create' (obsolete syntax).
+      # !! Add version number.
+      # !! Add legacy `luksOpen <device> <name>' syntax.
+      # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
+      # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
+      # !! Add `tcryptDump' (`cryptsetup tcryptDump').
+      # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .
+      # !! Add `open-fuse' command.
+      # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
+      # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
+      # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
+      # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
+      # !! BUG: cryptsetup 2.1.0 open needs --af-stripes=4000 (since which version?); report bug
+      # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
+      # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
+      # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:
+      #         The compatible behavior (matching what TrueCrypt 7.1a and VeraCrypt 1.17 do ignoring decrypted_ofs and decrypted_size only if the raw device size is at most 64 KiB.
+      # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_activate: `dmd.size = hdr->d.volume_size / hdr->d.sector_size;', should be the entire device ((device_size(crypt_metadata_device(cd), &size) < 0)) if minimum_version_to_extract < 0x600.
+      cmd_welcome(__doc__)
+      raise UsageError('unknown command: %s, use --help for usage' % command)
+  except (UnknownFlagError, UsageWithHelpError), e:
+    msg = str(e)
+    i = msg.find('=')
+    if i > 0:
+      msg = msg[:i] + '=...'
+    if isinstance(e, UsageWithHelpError):
+      msg += ', specify this to see usage: help %s' % command
     else:
-      # Use `init --type=luks' instead for LUKS.
-      cmd_create(('--restrict-type=no-luks', '--type=veracrypt') + tuple(argv))
-  elif command in ('luksFormat', 'luks-format'):  # For compatibility with `cryptsetup luksFormat'.
-    # This is a legacy command, use `./tinyveracrypt.py init --type=luks' for better defaults.
-    # `init --type=luks' is similar to: cryptsetup luksFormat --batch-mode --use-urandom --hash=sha512 --key-size=512
-    # Defaults from `--hash=sha256 --key-size=256' below are from cryptsetup-1.7.3 in Debian.
-    # Difference: `cryptsetup luksFormat' silently ignores `--type=tcrypt', we refuse it.
-    cmd_create(veracrypt_create_args + ('--type=luks', '--hash=sha256', '--key-size=256', '--restrict-type=luks', '--restrict-luksformat-defaults') + tuple(argv))
-  elif command == 'init':  # Like create, but with better (shorter) defaults.
-    # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test tiny.img  # Fast.
-    # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --ofs=fat tiny.img
-    # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=30 && ./tinyveracrypt.py init --test-passphrase --mkfat=24M tiny.img  # For discard (TRIM) boundary on SSDs.
-    # Example usage: dd if=/dev/zero of=tiny.img bs=1M count=10 && ./tinyveracrypt.py init --test-passphrase --salt=test --mkfat=128K tiny.img  # Fast.
-    cmd_create(veracrypt_create_args + ('--random-source=/dev/urandom',) + tuple(argv))
-  else:
-    # !! Add version number.
-    # !! Add `--help-flags' message to `unknown flag:'.
-    # !! Add legacy `luksOpen <device> <name>' syntax.
-    # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
-    # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
-    # !! Add `tcryptDump' (`cryptsetup tcryptDump').
-    # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .
-    # !! Add `open-fuse' command.
-    # !! Add `passwd' command for changing the passphrase (root not needed). Should it also work for /dev/mapper/... or a mounted filesystem -- probably yes?
-    # !! Add --dismount (-d), compatible with veracrypt and truecrypt.
-    # !! Add --fake-jfs-label=... and --fake-jfs-uuid=... from set_jfs_id.py; these are stored 0x8000...0x8200 (32768..33280), which is smaller than 0x20000 for --type=truecrypt and --type=veracrypt.
-    # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
-    # !! BUG: cryptsetup 2.1.0 open needs --af-stripes=4000 (since which version?); report bug
-    # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
-    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
-    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:
-    #         The compatible behavior (matching what TrueCrypt 7.1a and VeraCrypt 1.17 do ignoring decrypted_ofs and decrypted_size only if the raw device size is at most 64 KiB.
-    # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_activate: `dmd.size = hdr->d.volume_size / hdr->d.sector_size;', should be the entire device ((device_size(crypt_metadata_device(cd), &size) < 0)) if minimum_version_to_extract < 0x600.
-    cmd_welcome(__doc__)
-    raise UsageError('unknown command: %s, use --help for usage' % command)
+      msg += ', specify this to get a list of flags: help %s' % command
+    raise type(e)(msg)
 
 
 if __name__ == '__main__':
@@ -5837,7 +5857,7 @@ if __name__ == '__main__':
     print >>sys.stderr, 'fatal: %s%s' % (msg[:1].lower(), msg[1:].rstrip('.'))
     sys.exit(2)
   except UsageError, e:
-    print >>sys.stderr, 'fatal: usage: %s' % e
+    print >>sys.stderr, 'usage: %s' % e
     sys.exit(1)
   except SystemExit, e:
     if len(e.args) == 1 and isinstance(e.args[0], str):
