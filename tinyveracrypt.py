@@ -14,6 +14,7 @@ exec python -- ${1+"$@"}; exit 1
 This script works with Python 2.5, 2.6 and 2.7 out of the box, and slowly
 with Python 2.4. It doesn't work with older versions of Python or Python 3.x.
 
+### -
 tinyveracrypt is a Swiss army knife command-line tool to create VeraCrypt,
 TrueCrypt and LUKS encrypted volumes, and to open (mount) them on Linux.
 It's a drop-in replacement for the cryptsetup, veracrypt and truecrypt tools
@@ -23,29 +24,34 @@ It has some additional features such as plaintext UUID, plaintext FAT
 filesystem in front of the encrypted volume and volume creation with old
 ciphers compatible with old TrueCrypt.
 
+### init
 Usage for creating an encrypted volume:
 
   $ ./tinyveracrypt.py init --type=<type> [<flag>...] [<mkfs-command>...] <device.img>
   Enter passphrase:
 
+### create
 An alternative usage for creating an encrypted volume, compatible with
 the veracrypt and truecrypt tools:
 
   $ ./tinyveracrypt --text --create [<flag>...] <device.img>
   Enter passphrase:
 
+### luksFormat luks-format
 An alternative usage for creating an encrypted volume, compatible with
 the cryptsetup tool:
 
   $ ./tinyveracrypt luksFormat [<flag>...] <device.img>
   Enter passphrase:
 
+### open
 Usage for opening an encrypted volume on Linux:
 
   $ sudo ./tinyveracrypt.py open [<flag>...] <device.img> <name>
   Enter passphrase:
   $ sudo mount /dev/mapper/<name> <mountdir>
 
+### mount
 An alternative usage for opening an encrypted volume, compatible with
 the veracrypt and truecrypt tools:
 
@@ -54,26 +60,31 @@ the veracrypt and truecrypt tools:
   info: using dmsetup table <name>: veracrypt1
   $ sudo mount /dev/mapper/veracrypt1 <mountdir>
 
+### close remove
 Usage for closing an encrypted volume on Linux:
 
   $ sudo umount /dev/mapper/<name>
   $ sudo ./tinyveracrypt.py close <name>
 
+### get-table
 Usage for displaying the dmsetup table for an encrypted volume:
 
   $ ./tinyveracrypt.py get-table [<flag>...] <device.img>
   Enter passphrase:
 
+### cat
 Usage for decrypting the encrypted volume to stdout (slow):
 
   $ ./tinyveracrypt.py cat [<flag>...] <device.img>
   Enter passphrase:
 
+### open-table
 Usage for opening an encrypted volume on Linux by supplying the parts of the
 dmsetup table line as flags:
 
   $ ./tinyveracrypt.py open-table [<flag>...] <name>
 
+### -
 Use --help-flags for a description of all command-line flags.
 
 See https://github.com/pts/tinyveracrypt for more information.
@@ -85,6 +96,7 @@ WELCOME_PATTERN = (
     'There is NO WARRANTY. Use at your risk.\n\n')
 
 FLAGS_MSG = """
+### init create luksFormat luks-format
 Flags for init, create and luksFormat:
 
 * --type=veracrypt: Create encrypted volume with VeraCrypt header.
@@ -255,7 +267,8 @@ Please note that luksFormat is different from init:
 * --hash=sha256 is the default (matches cryptsetup 1.7.3).
 * --key-size=256 is the default (matches cryptsetup 1.7.3).
 
-* Flags for open and mount:
+### open mount
+Flags for open and mount:
 
 * --veracrypt-pim=...: Eqivalent to --pim=... .
 * --no-truecrypt: Equivalent to --type=veracrypt.
@@ -309,10 +322,12 @@ Please note that mount is different from open:
 * <name> can't be specified, so --no-custom-name is the default
   (--slot=... is a replacement).
 
+### close
 Flags for close:
 
 * (Same flags as for `dmsetup remove'.)
 
+### get-table cat
 Flags for get-table and cat:
 
 * --no-truecrypt: Equivalent to --type=veracrypt.
@@ -352,6 +367,7 @@ Flags for get-table and cat:
   but less secure. Disabled by default.
 * --no-allow-discards: Disable --allow-discards.
 
+### open-table
 Flags for open-table:
 
 * --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
@@ -381,6 +397,7 @@ Flags for open-table:
   but less secure. Disabled by default.
 * --no-allow-discards: Disable --allow-discards.
 
+### *
 Supported --cipher=... values: aes-xts-plain64 (default, most secure,
 recommended), aes-cbc-essiv:sha256, aes-lrw-benbi, aes-cbc-tcw and some
 others, see FAQ entry Q4 on https://github.com/pts/tinyveracrypt .
@@ -5645,8 +5662,38 @@ def get_welcome_msg(doc):
 def cmd_welcome(doc):
   sys.stderr.write(get_welcome_msg(doc))
 
+def select_help_for_command(doc, command):
+  command = (command or '').lstrip('-')
+  commands = ()
+  # We don't use `import re' to avoid the dependency.
+  output, i = [], 0
+  while 1:
+    if i == 0 and doc.startswith('### '):
+      j = 4
+    else:
+      j = doc.find('\n### ', i)
+      do_display = not command or not commands or command in commands
+      if j < 0:
+        if do_display:
+          output.append(doc[i:])
+        break
+      if do_display:
+        output.append(doc[i : j + 1])
+      j += 5
+    i = doc.find('\n', j)
+    if i < 0:
+      break
+    commands = doc[j : i].split()
+    if '*' in commands:
+      commands = ()
+    elif '-' in commands:
+      commands = ('',)
+    # output.append('[%s]\n' % doc[j : i])
+    i += 1
+  return ''.join(output)
 
-def cmd_help(doc, argv0, do_print_flags):
+
+def cmd_help(doc, argv0, command, do_print_flags):
   msg1 = get_welcome_msg(doc)
   i = doc.find('\n')
   assert i >= 0
@@ -5660,10 +5707,16 @@ def cmd_help(doc, argv0, do_print_flags):
       break
   while doc[i : i + 1] == '\n':
     i += 1
-  doc = doc[i:].rstrip('\n')
+  doc = select_help_for_command(doc[i:], command).rstrip('\n')
   doc = doc.replace('$ ./tinyveracrypt.py ', '$ %s ' % shell_escape(argv0))
-  sys.stdout.write('%s%s\n%s' %
-                   (msg1, doc, FLAGS_MSG * bool(do_print_flags)))
+  if do_print_flags:
+    flags_msg = select_help_for_command(FLAGS_MSG, command)
+  else:
+    flags_msg = ''
+  sys.stdout.write(
+      '%s%s\n%s%s' %
+      (msg1, doc, flags_msg,
+       '\n' * bool(flags_msg and not flags_msg.endswith('\n'))))
 
 
 def main(argv):
@@ -5688,10 +5741,14 @@ def main(argv):
 
   command = argv[1].lstrip('-')
   del argv[:2]
-  if command == 'help':
-    cmd_help(__doc__, argv0, do_print_flags=False)
-  elif command in ('help-flags', 'helpfull'):
-    cmd_help(__doc__, argv0, do_print_flags=True)
+  if command in ('help', 'help-flags', 'helpfull'):
+    if len(argv) == 1:
+      help_command = argv[0]
+    else:
+      help_command = None
+    cmd_help(__doc__, argv0, command=help_command, do_print_flags=bool(command != 'help' or help_command))
+  elif len(argv) == 1 and argv[0] == '--help':
+    cmd_help(__doc__, argv0, command=command, do_print_flags=True)
   elif command == 'get-table':
     # Similar to (but without dm-crypt): dmsetup table [--showkeys] NAME
     cmd_get_table(argv)
