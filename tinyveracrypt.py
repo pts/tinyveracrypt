@@ -4746,6 +4746,7 @@ def cmd_create(args):
   key_size = None
   do_skip_dash_dash = False
   do_allow_discards = False
+  is_test_passphrase = False
 
   i, value = 0, None
   while i < len(args):
@@ -4760,12 +4761,15 @@ def cmd_create(args):
         break
     elif arg.startswith('--passphrase=') or arg.startswith('--password='):
       passphrase = parse_passphrase(arg)
+      is_test_passphrase = False
     elif arg in ('--test-passphrase', '--test-password'):
       # With --test-passphase --salt=test it's faster, because
       # build_header_key is much faster.
       passphrase = TEST_PASSPHRASE
+      is_test_passphrase = True
     elif arg.startswith('--key-file='):  # cryptsetup flag.
       passphrase = (arg[arg.find('=') + 1:],)
+      is_test_passphrase = False
     elif arg.startswith('--keytable='):
       keytable = parse_keytable_arg(arg)  # Can remain None for random.
     elif arg.startswith('--salt='):
@@ -5136,7 +5140,7 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --add-backup')
     if do_add_full_header is False:
       raise UsageError('--type=luks conflicts with --no-add-full-header')
-    if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths.
+    if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths, also support --test-passphrase.
       raise UsageError('--type=luks conflicts with --salt=...')
     if decrypted_ofs == 'fat':
       raise UsageError('--type=luks conflicts with --ofs=fat')
@@ -5313,13 +5317,13 @@ def cmd_create(args):
     else:
       short_keytable = keytable
 
-    if decrypted_ofs in ('fat', 'mkfat') or filesystem == 'fat1':
+    if decrypted_ofs in ('fat', 'mkfat') or (filesystem == 'fat1' and decrypted_ofs == 0):
       if salt == '':
-        do_randomize_salt = True
+        do_randomize_salt = not is_test_passphrase
       elif salt == TEST_SALT:
         do_randomize_salt = False
       else:
-        raise UsageError('specific --salt=... value conflicts with --ofs=fat or --mkfat=... or --filesystem=fat1')
+        raise UsageError('specific --salt=... value conflicts with --ofs=fat or --mkfat=... or --filesystem=fat1 --ofs=0')
 
     need_read_first = device_size == 'auto' or decrypted_ofs == 'fat'
     read_device_size = None
@@ -5397,7 +5401,7 @@ def cmd_create(args):
         if decrypted_size != device_size - 512:
           raise ValueError('decrypted size %d conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version' % (decrypted_size, truecrypt_version >> 8, truecrypt_version & 255))
 
-    if (filesystem == 'fat1' or decrypted_ofs_any == 'mkfat') and not do_randomize_salt:
+    if ((filesystem == 'fat1' and decrypted_ofs == 0) or decrypted_ofs_any == 'mkfat') and not do_randomize_salt:
       if fat_label is None:
         fat_label = 'minifat3'
       if fat_uuid is None:
@@ -5416,7 +5420,7 @@ def cmd_create(args):
           label=fat_label, uuid=fat_uuid, fatfs_size=decrypted_size, fstype=fat_fstype,
           rootdir_entry_count=fat_rootdir_entry_count, fat_count=fat_fat_count,
           cluster_size=fat_cluster_size,
-          do_randomize_salt=(do_randomize_salt and decrypted_ofs == 0),
+          do_randomize_salt=(decrypted_ofs == 0 and do_randomize_salt),
           get_random_bytes_func=get_random_bytes_func)
       fat1_header = build_fat_boot_sector(fat1_header, FAT_NO_BOOT_CODE)
       fatfs_size2 = get_fat_sizes(fat1_header)[0]  # Also checks fat1_header.
@@ -5501,6 +5505,9 @@ def cmd_create(args):
         enchd_prefix = crypt_func(short_keytable, mkfs_data[:64], do_encrypt=True, ofs=0)
         padded_mkfs_suffix = '\0' * (-mkfs_suffix_size & 15) + mkfs_data[512 - mkfs_suffix_size : 512]
         enchd_suffix = crypt_func(short_keytable, padded_mkfs_suffix, do_encrypt=True, ofs=512 - len(padded_mkfs_suffix))
+      elif is_test_passphrase and not salt:
+        enchd_prefix = TEST_SALT
+        enchd_suffix = ''
       else:
         enchd_prefix = salt
         enchd_suffix = ''
@@ -5730,7 +5737,6 @@ def cmd_help(doc, argv0, command, do_print_flags):
 
 
 def main(argv):
-  passphrase = TEST_PASSPHRASE
   if len(argv) < 2:
     cmd_welcome(__doc__)
     raise UsageError('missing command, use --help for usage')
