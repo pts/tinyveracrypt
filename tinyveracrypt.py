@@ -1899,16 +1899,23 @@ def slow_pbkdf2_hmac(hash, passphrase, salt, iterations, size):
 
 TEST_PASSPHRASE = 'ThisIsMyVeryLongPassphraseForMyVeraCryptVolume'
 TEST_SALT = "~\xe2\xb7\xa1M\xf2\xf6b,o\\%\x08\x12\xc6'\xa1\x8e\xe9Xh\xf2\xdd\xce&\x9dd\xc3\xf3\xacx^\x88.\xe8\x1a6\xd1\xceg\xebA\xbc]A\x971\x101\x163\xac(\xafs\xcbF\x19F\x15\xcdG\xc6\xb3"
+TEST_KEYTABLE = '\x10\xff,\x08\xc6\xfd\xf4\xc7n}\x0f\x10\xcf1!Z&\x9d!\xe2\x0f[\x10\xa5D\x0c\xb1\x82l\xcf\xd8\xc4\xbe\x02\xe3\xe8{\x88\xf4I]\xdf\\]\xbe\x01L\xee\xbf\xb2\x05\xc0(\xcb/G\xce\xbcP\xf3\xe77ky'
 
 
 # {(hash, passphrase, salt, iterations): pkbdf2_hmac_value_for_size_64}.
 # salt is often TEST_SALT, used for VeraCrypt and TrueCrypt.
 PRECOMPUTED_PBKDF2_HMAC_64_ENTRIES = {
+    # For ./tinyveracrypt.py create --type=veracrypt --test-passphrase.
     ('sha512', TEST_PASSPHRASE, TEST_SALT, 500000): '\x11Q\x91\xc5h%\xb2\xb2\xf0\xed\x1e\xaf\x12C6V\x7f+\x89"<\'\xd5N\xa2\xdf\x03\xc0L~G\xa6\xc9/\x7f?\xbd\x94b:\x91\x96}1\x15\x12\xf7\xc6g{Rkv\x86Av\x03\x16\n\xf8p\xc2\xa33',
     ('sha512', TEST_PASSPHRASE, '\xeb<\x90mkfs.fat\0\x02\x01\x01\0\x01\x10\0\0\x01\xf8\x01\x00 \x00@\0\0\0\0\0\0\0\0\0\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f', 500000): '\xa3\xafQ\x1e\xcb\xb7\x1cB`\xdb\x8aW\xeb0P\xffSu}\x9c\x16\xea-\xc2\xb7\xc6\xef\xe3\x0b\xdbnJ"\xfe\x8b\xb3c=\x16\x1ds\xc2$d\xdf\x18\xf3F>\x8e\x9d\n\xda\\\x8fHk?\x9d\xe8\x02 \xcaF',
     ('sha512', TEST_PASSPHRASE, '\xeb<\x90mkfs.fat\x00\x02\x01\x01\x00\x01\x10\x00\x00\x01\xf8\x01\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00)\xe3\xbe\xad\xdeminifat3   FAT12   \x0e\x1f', 500000): '\xb8\xe0\x11d\xfa!\x1c\xb6\xf8\xb9\x03\x05\xff\x8f\x82\x86\xcb,B\xa4\xe2\xfc,:Y2;\xbf\xc2Go\xc7n\x91\xad\xeeq\x10\x00:\x17X~st\x86\x95\nu\xdf\x0c\xbb\x9b\x02\xd7\xe8\xa6\x1d\xed\x91\x05#\x17,',
     ('sha512', TEST_PASSPHRASE, TEST_SALT, 1000): '\x05\xab"\xe7|ZM\xcbt\xd9\xa4QF\x05o6\\v8\xf82=\x97\x8b\x01\xbcS\xe9\xabj\xd8#\x8dQ\xa5\xf1\xc9\\\x12\x9d=i\xb5\x119\xe1\xfdI\xc3\x1b\x0bN6\xdc\x15\xfd.\xd4}U4%\xc5\xc7',
+    # For ./tinyveracrypt.py create --type=luks --test-passphrase.
+    ('sha512', TEST_KEYTABLE, TEST_SALT[:32], 62500): '\x05`\xc5f\xef\xe9\xc5\xbb\xc4\x04\xba\xac\x06\xc4\xcb\xb7i\xfc\x9f\xd9\xd70\xa16>5\xd8\x03\xcd\x991\r\x1c\xe5\x0c\xef\x82\xc2*\xdd0\x8c(y\xde)\xf1&.\xbd\xd4\x036n\xc0D\xc6\xcb%=yQ\x13*',
+    # For ./tinyveracrypt.py create --type=luks --test-passphrase.
+    ('sha512', TEST_PASSPHRASE, TEST_SALT[32:], 437500): '\x0c{\x0ce,h)\xb2~\xe8-\xf7\x90\x96\x18\x9bG\xcf\xe2\x19\x81\x0b}E=\xc9\xa1\xd1T4\xcfx\xa5\xf3,0\x19K@)_\x05\x19%\x98(\x99Q\x97\x05\xa1M\xb6$\x97J\x0c{s\xec\xf7\xc3\xaa\x86',
 }
+
 
 have_hashlib_pbkdf2_hmac = bool(
     (maybe_import_and_getattr('hashlib', 'sha512') or (lambda x: 0)).__name__.startswith('openssl_') and
@@ -1920,6 +1927,7 @@ def pbkdf2_hmac(hash, passphrase, salt, iterations, size):
   if 0 <= size <= 64:
     result = PRECOMPUTED_PBKDF2_HMAC_64_ENTRIES.get((hash2, passphrase, salt, iterations))
     if result is not None:
+      assert len(result) == 64
       return result[:size]
   if have_hashlib_pbkdf2_hmac:
     # If pbkdf2_hmac is available (since Python 2.7.8), use it. This is a
@@ -3770,6 +3778,8 @@ def build_luks_active_key_slot(
     get_random_bytes_func=None):
   check_aes_xts_key(keytable)
   check_luks_key_material_ofs(key_material_ofs)
+  if len(slot_salt) < 32:
+    slot_salt += get_random_bytes_func(32 - len(slot_salt))
   check_luks_slot_salt(slot_salt)
   active_tag = 0xac71f3
   digest_cons, digest_blocksize = get_hash_digest_params(hash)
@@ -3810,9 +3820,9 @@ def check_luks_uuid(uuid):
 
 
 def build_luks_header(
-    passphrase, decrypted_ofs=None, keytable_salt=None,
+    passphrase, decrypted_ofs=None, keytable_salt='',
     uuid=None, pim=None, keytable_iterations=None, slot_iterations=None,
-    cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt=None,
+    cipher='aes-xts-plain64', hash='sha512', keytable=None, slot_salt='',
     af_stripe_count=None, af_salt=None, key_size=None,
     get_random_bytes_func=None):
   """Builds a LUKS1 header.
@@ -3885,8 +3895,8 @@ def build_luks_header(
   elif pim and slot_iterations_orig is not None:
     raise ValueError('Both pim= and slot_iterations= are specified.')
   check_iterations(slot_iterations)
-  if not keytable_salt:
-    keytable_salt = get_random_bytes_func(32)
+  if len(keytable_salt) < 32:
+    keytable_salt += get_random_bytes_func(32 - len(keytable_salt))
   check_luks_keytable_salt(keytable_salt)
   if not keytable:
     keytable = get_random_bytes_func(keytable_size)
@@ -3919,7 +3929,6 @@ def build_luks_header(
 
   signature = 'LUKS\xba\xbe'
   version = 1
-  # !! To speed this up, use the hardcoded keytable for --test-passphrase.
   mk_digest = pbkdf2_hmac(hash, keytable, keytable_salt, keytable_iterations, 20)  # Slow.
   output = [struct.pack(
       '>6sH32s32s32sLL20s32sL40s',
@@ -5137,8 +5146,6 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --add-backup')
     if do_add_full_header is False:
       raise UsageError('--type=luks conflicts with --no-add-full-header')
-    if salt:  # TODO(pts): --salt=... and --slot-salt=... with proper lengths, also support --test-passphrase.
-      raise UsageError('--type=luks conflicts with --salt=...')
     if decrypted_ofs == 'fat':
       raise UsageError('--type=luks conflicts with --ofs=fat')
     if decrypted_ofs == 'mkfat':
@@ -5307,7 +5314,11 @@ def cmd_create(args):
           sys.stderr.write('warning: abort now, otherwise the first 512 bytes of %s will be overwritten, destroying filesystems such as vfat, ntfs, xfs\n' % device)
 
     if keytable is None:
-      keytable = get_random_bytes_func(key_size >> 3)
+      if is_test_passphrase and type_value == 'luks' and len(TEST_KEYTABLE) >= (key_size >> 3):
+        # To make pbkdf2_hmac(...) fast, using PRECOMPUTED_PBKDF2_HMAC_64_ENTRIES.
+        keytable = TEST_KEYTABLE[:key_size >> 3]
+      else:
+        keytable = get_random_bytes_func(key_size >> 3)
     assert isinstance(keytable, str)
     if len(keytable) == 64 and cipher.startswith('aes-lrw-'):
       short_keytable = keytable[:48]
@@ -5477,14 +5488,18 @@ def cmd_create(args):
         cipher2 = ('aes-cbc-plain', 'aes-cbc-plain64')[bool(decrypted_size >> 32)]
       else:
         cipher2 = cipher
+      if is_test_passphrase and not salt:
+        salt2 = TEST_SALT
+      else:
+        salt2 = salt
       enchd = build_luks_header(
           passphrase=passphrase, decrypted_ofs=decrypted_ofs,
           uuid=uuid, pim=pim, af_stripe_count=af_stripe_count,
           hash=hash, keytable=keytable, key_size=key_size, cipher=cipher2,
           keytable_iterations=None,  # TODO(pts): Add command-line flag.
           slot_iterations=None,  # TODO(pts): Add command-line flag.
-          keytable_salt=None,  # TODO(pts): Add command-line flag (--random-source=... ?)
-          slot_salt=None,  # TODO(pts): Add command-line flag.
+          keytable_salt=salt2[:32],  # 32 bytes.
+          slot_salt=salt2[32:],  # 32 bytes.
           af_salt=None,  # TODO(pts): Add command-line flag.
           get_random_bytes_func=get_random_bytes_func,
           )

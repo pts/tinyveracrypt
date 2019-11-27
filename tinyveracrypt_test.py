@@ -502,18 +502,19 @@ def test_luks():
   size = 2066432
   decrypted_ofs = 4096 # + 1024, for 8 key slots.
   key_size = 48 << 3
-  #keytable = ''.join(map(chr, xrange(32, 32 + (key_size >> 3))))
+  # keytable = ''.join(map(chr, xrange(32, 32 + (key_size >> 3))))
   keytable = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNO'
+  # Fast because pbkdf2_hmac is called with extremely small values of
+  # keytable_iterations and slot_iterations.
   header = tinyveracrypt.build_luks_header(
       passphrase=(tinyveracrypt.TEST_PASSPHRASE, 'abc'),
-      #pim=-14,
       #hash='sha1',
       key_size=key_size,
       af_salt='xyzAB' * 4000,
       af_stripe_count=13,
       decrypted_ofs=decrypted_ofs,
       uuid='40bf7c9f-12a6-403f-81da-c4bd2183b74a',
-      keytable_iterations=2, slot_iterations=3, # pim=-14,
+      keytable_iterations=2, slot_iterations=3,
       keytable=keytable,
       slot_salt=''.join(map(chr, xrange(6, 38))),
       keytable_salt=''.join(map(chr, xrange(32))),
