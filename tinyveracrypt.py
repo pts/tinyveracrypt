@@ -93,15 +93,14 @@ Flags for init, create and luksFormat:
 * --type=luks: Equivalent to --type=luks.
 * <mkfs-command>...: A command starting with `mkfs.', and some command-line
   arguments. If specified, it's eqivalent to --filesystem=custom.
-* --password=...: Password to use for opening the encrypted volume. This
-  flag is insecure (because it adds the password to your shell history),
-  please don't specify it, but type the passwords interactively instead.
-* --test-passphrase: Equivalent to --test-password.
-* --test-password: Equivalent to
-  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
-  is insecure, don't use this password for anything other than testing.
-  tinyveracrypt has the PBKDF2 output for this password embedded, so
-  it's faster to create (test) volumes with it than with other passwords.
+* --passphrase=...: Passphrase to use for opening the encrypted volume. This
+  flag is insecure (because it adds the passphrase to your shell history),
+  please don't specify it, but type the passphrases interactively instead.
+* --test-passphrase: Equivalent to
+  --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this passphrase for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
+  it's faster to create (test) volumes with it than with other passphrases.
 * --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
   as K, M G are supported.) If not speficied (or --size=auto or
   --size=max is specified), then the size gets autodetected, and the
@@ -111,8 +110,9 @@ Flags for init, create and luksFormat:
 * --no-truncate: Disable --truncate.
 * --keytable=<hex>: Hex string containing the data encryption key (as printed by
   `dmsetup table --showkeys ...'). The default is a random string of the
-  right size. This flag is insecure (because it adds the password to your shell
-  history), please don't specify it, but use `--random-source=...' instead.
+  right size. This flag is insecure (because it adds the passphrase to your
+  shell history), please don't specify it, but use `--random-source=...'
+  instead.
 * --cipher=...: The cipher (encryption scheme) to use. See below for a list of
   supported values. The default is aes-xts-plain64 (most secure).
 * --hash=...: The hash (message digest) algorithm to use for key derivation.
@@ -121,7 +121,7 @@ Flags for init, create and luksFormat:
 * --pim=<number>: Affects the number of iterations of --hash=... during key
   derivation. A larger number makes opening the encrypted volume slower, so
   the user experiences slowness, and it's also harder for the attacker to
-  open without a password. The formula for computing the number of iterations
+  open without a passphrase. The formula for computing the number of iterations
   from PIM is complicated, but it's compatible with VeraCrypt. If the default
   hash is used, then for --type=veracrypt and --type=luks, the default
   number of iterations will be 500000, and for --type=truecrypt, it will be
@@ -211,14 +211,14 @@ Flags for init, create and luksFormat:
 * --no-add-backup: Disable --add-backup.
 * --opened: Use the parameters (--cipher=..., --ofs=..., --keytable=...,
   encrypted size etc.) of an encrypted volume which is already open. The
-  headers will be regenerated and overwritten with the specified password.
+  headers will be regenerated and overwritten with the specified passphrase.
   The encrypted data will be kept intact. Instead of <device.img>, a
   directory name or a block device pathname should be specified. This
   feature is disabled by default.
 * --no-opened: Disable --opened. This is the default.
-* --passphrase-once: Ask for the password once. This is the default.
-* --passphrase-twice: ask for the password twice and confirm that the user
-  typed the same password.
+* --passphrase-once: Ask for the passphrase once. This is the default.
+* --passphrase-twice: ask for the passphrase twice and confirm that the user
+  typed the same passphrase.
 * --verify-passphprase: Eqivalent to --passphrase-twice.
 * --truecrypt: Equivalent to --type=truecrypt.
 * --no-truecrypt: Equivalent to --type=veracrypt.
@@ -259,15 +259,14 @@ Please note that luksFormat is different from init:
 * --type=veracrypt: Searches for VeraCrypt header only.
 * --type=luks1: Recognizes the LUKS1 header only.
 * --type=luks: Equivalent to --type=luks.
-* --password=...: Password to use for opening the encrypted volume. This
-  flag is insecure (because it adds the password to your shell history),
-  please don't specify it, and type the passwords interactively instead.
-* --test-passphrase: Equivalent to --test-password.
-* --test-password: Equivalent to
-  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
-  is insecure, don't use this password for anything other than testing.
-  tinyveracrypt has the PBKDF2 output for this password embedded, so
-  it's faster to create (test) volumes with it than with other passwords.
+* --passphrase=...: Passphrase to use for opening the encrypted volume. This
+  flag is insecure (because it adds the passphrase to your shell history),
+  please don't specify it, and type the passphrases interactively instead.
+* --test-passphrase: Equivalent to
+  --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this passphrase for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
+  it's faster to create (test) volumes with it than with other passphrases.
 * --keyfiles=: Compatibility flag, ignored.
 * --protect-hidden=no: Compatibility flag, ignored.
 * --custom-name: Specify the dm-crypt device name in the command-line as
@@ -310,15 +309,14 @@ Flags for get-table and cat:
 * --type=veracrypt: Searches for VeraCrypt header only.
 * --type=luks1: Recognizes the LUKS1 header only.
 * --type=luks: Equivalent to --type=luks.
-* --password=...: Password to use for opening the encrypted volume. This
-  flag is insecure (because it adds the password to your shell history),
-  please don't specify it, but type the passwords interactively instead.
-* --test-passphrase: Equivalent to --test-password.
-* --test-password: Equivalent to
-  --password=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
-  is insecure, don't use this password for anything other than testing.
-  tinyveracrypt has the PBKDF2 output for this password embedded, so
-  it's faster to create (test) volumes with it than with other passwords.
+* --passphrase=...: Passphrase to use for opening the encrypted volume. This
+  flag is insecure (because it adds the passphrase to your shell history),
+  please don't specify it, but type the passphrases interactively instead.
+* --test-passphrase: Equivalent to
+  --passphrase=ThisIsMyVeryLongPassphraseForMyVeraCryptVolume. This flag
+  is insecure, don't use this passphrase for anything other than testing.
+  tinyveracrypt has the PBKDF2 output for this passphrase embedded, so
+  it's faster to create (test) volumes with it than with other passphrases.
 * --hash=...: The hash (message digest) algorithm to use for key derivation.
   The default is trying everything possible. (For --type=luks1, there is only 1
   possibility, the one specified in the LUKS header.)
@@ -353,8 +351,9 @@ Flags for open-table:
   when randomly generating it.
 * --keytable=<hex>: Hex string containing the data encryption key (as printed by
   `dmsetup table --showkeys ...'. The default is a random string of the
-  right size. This flag is insecure (because it adds the password to your shell
-  history), please don't specify it, but use `--random-source=...' instead.
+  right size. This flag is insecure (because it adds the passphrase to your
+  shell history), please don't specify it, but use `--random-source=...'
+  instead.
 * --cipher=...: Name of the cipher to use.
 
 Supported --cipher=... values: aes-xts-plain64 (default, most secure,
@@ -3871,7 +3870,7 @@ def build_luks_header(
     `cryptsetup luksFormat' default is --hash=sha1 --cipher=aes-xts-plain64.
   * Doesn't try to autodetect iteration count based on CPU speed.
   * Specify pim=-14 to make PBKDF2 faster, but only do it if you have a very
-    strong, randomly generated password of at least 64 bytes of entropy.
+    strong, randomly generated passphrase of at least 64 bytes of entropy.
   * It's more configurable (e.g. decrypted_ofs and af_stripe_count).
   * `cryptsetup luksAddKey' will fail if af_stripe_count < 4000 (sometimes
     default).
@@ -4068,7 +4067,7 @@ def get_open_luks_info(f, passphrase):
     elif slot_active_tag != 0xdead:
       raise ValueError('Unknown slot_active_tag: 0x%x' % slot_active_tag)
   if not active_slots:
-    raise ValueError('No active LUKS slots found, it\'s impossible to open the volume even with a correct password.')
+    raise ValueError('No active LUKS slots found, it\'s impossible to open the volume even with a correct passphrase.')
   print >>sys.stderr, 'info: found %d active LUKS slot%s' % (len(active_slots), 's' * (len(active_slots) != 1))
   passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
   for slot_idx, slot_iterations, slot_key_material_sector_idx, slot_stripe_count, slot_salt in active_slots:
@@ -4196,7 +4195,7 @@ def cmd_get_table(args):
         i += 1
       truecrypt_mode = update_truecrypt_mode(truecrypt_mode, type_value)
       del type_value
-    elif arg.startswith('--password='):
+    elif arg.startswith('--passphrase=') or arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
@@ -4311,7 +4310,7 @@ def cmd_mount(args):
       truecrypt_mode = 1
     elif arg == '--truecrypt':
       truecrypt_mode = 2
-    elif arg.startswith('--password='):
+    elif arg.startswith('--passphrase=') or arg.startswith('--password='):
       # Unsafe, ps(1) can read it.
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
@@ -4664,7 +4663,7 @@ def cmd_create(args):
         do_skip_dash_dash = False
       else:
         break
-    elif arg.startswith('--password='):
+    elif arg.startswith('--passphrase=') or arg.startswith('--password='):
       passphrase = parse_passphrase(arg)
     elif arg in ('--test-passphrase', '--test-password'):
       # With --test-passphase --salt=test it's faster, because
@@ -5669,7 +5668,7 @@ def main(argv):
     # !! Add `open --allow-discards'.
     # !! Add legacry `luksOpen <device> <name>' syntax.
     # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
-    # !! Add full support for flag `--key-file=...' (cryptsetup, sensitive to trailing '\n') but not `--keyfiles=...' (veracrypt and truecrypt; they are not equivalent) instead of the insecure --password=... (shell history).
+    # !! Add full support for flag `--key-file=...' (cryptsetup, sensitive to trailing '\n') but not `--keyfiles=...' (veracrypt and truecrypt; they are not equivalent) instead of the insecure --passwphrase=... (shell history).
     # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
     # !! Add `tcryptDump' (`cryptsetup tcryptDump').
     # !! Add `cat' command with get_crypt_sectors_funcs: fast if root (dm-crypt), with --ofs=... and --output-size=... .
