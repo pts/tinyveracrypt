@@ -247,7 +247,7 @@ Flags for init, create and luksFormat:
 Please note that create is different from init:
 
 * --quick must be specified explicitly to override the default --no-quick.
-* --volume-type=normal mulst be specified explicitly.
+* --volume-type=normal must be specified explicitly.
 * --size=... must be specified explicitly.
 * --encryption=aes (or other --cipher=...) must be specified explicitly.
 * --hash=sha512 (or other) must be specified explicitly.
@@ -312,6 +312,10 @@ Flags for open and mount:
   option, making deletion from the filesystem more efficient on SSD,
   but less secure. Disabled by default.
 * --no-allow-discards: Disable --allow-discards.
+* --volume-type=...: The value any (default) causes search for normal and
+  hidden volumes. The values normal and hidden cause search for only those
+  kind of volumes.
+* --tcrypt-hidden: Equivalent to --volume-type=hidden.
 
 Please note that mount is different from open:
 
@@ -366,6 +370,10 @@ Flags for get-table and cat:
   option, making deletion from the filesystem more efficient on SSD,
   but less secure. Disabled by default.
 * --no-allow-discards: Disable --allow-discards.
+* --volume-type=...: The value any (default) causes search for normal and
+  hidden volumes. The values normal and hidden cause search for only those
+  kind of volumes.
+* --tcrypt-hidden: Equivalent to --volume-type=hidden.
 
 ### open-table
 Flags for open-table:
@@ -2790,29 +2798,36 @@ def get_open_veracrypt_info(enchds, passphrase, pim, truecrypt_mode, hash):
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
-def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys, display_device=None, do_allow_discards=None):
+def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showkeys, display_device=None, do_allow_discards=None, volume_type='any'):
   """Called by `open' and --create."""
+  if volume_type == 'hidden' and truecrypt_mode == 3:
+    raise ValueError('LUKS does not support hidden volumes.')
   luks_device_size = None
   f = open(device)
   try:
-    enchd = f.read(512)
-    if len(enchd) != 512:
-      raise ValueError('Raw device too short for encrypted volume.')
+    if volume_type in ('any', 'normal'):
+      enchd = f.read(512)
+      if len(enchd) != 512:
+        raise ValueError('Raw device too short for encrypted volume.')
+    else:
+      enchd = ''
     f.seek(0, 2)
     device_size = f.tell() & ~511
     if ((pim is None and hash is None and truecrypt_mode == 1 and is_luks1(enchd)) or
-        truecrypt_mode == 3):
+        truecrypt_mode == 3) and enchd:
       luks_device_size = device_size
       decrypted_ofs, keytable, cipher = get_open_luks_info(f, passphrase)  # Slow.
       if decrypted_ofs >= device_size:
         raise ValueError('Encrypted LUKS volume too long for raw device.')
-    if device_size > 65536:
-      f.seek(65536)
-      enchd2 = f.read(512)  # Read hidden volume header.
-      if len(enchd2) < 512:
-        enchd2 = ''
-    else:
-      enchd2 = ''
+    enchd2 = ''
+    if volume_type in ('any', 'hidden'):
+      if device_size >= 66560:
+        f.seek(65536)
+        enchd2 = f.read(512)  # Read hidden volume header.
+        if len(enchd2) < 512:
+          enchd2 = ''
+      elif volume_type == 'hidden':
+        raise ValueError('Raw device must be at least 66560 bytes for hidden volume, got: %d' % device_size)
   finally:
     f.close()
 
@@ -4281,6 +4296,13 @@ def update_truecrypt_mode(truecrypt_mode, type_value):
     raise UsageError('unsupported flag value: --type=%s' % type_value)
 
 
+def parse_volume_type_any_arg(arg):
+  value = arg[arg.find('=') + 1:].lower()
+  if value not in ('normal', 'hidden', 'any'):
+    raise UsageError('unsupported flag value: %s' % arg)
+  return value
+
+
 def cmd_get_table(args):
   # Please note that the commands cmd_get_table and cmd_get_mount are not
   # able to open all VeraCrypt, TrueCrypt and LUKS volumes: they work only
@@ -4293,6 +4315,7 @@ def cmd_get_table(args):
   pim = device = passphrase = hash = display_device = None
   do_cat = do_showkeys = False
   do_allow_discards = False
+  volume_type = 'any'
 
   i, value = 0, None
   while i < len(args):
@@ -4341,6 +4364,10 @@ def cmd_get_table(args):
       do_allow_discards = False
     elif arg == '--cat':
       do_cat = True
+    elif arg.startswith('--volume-type='):
+      volume_type = parse_volume_type_any_arg(arg)
+    elif arg == '--tcrypt-hidden':  # cryptsetup open.
+      volume_type = 'hidden'
     else:
       raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4358,6 +4385,8 @@ def cmd_get_table(args):
     raise UsageError('--cat conflicts with --showkeys')
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if volume_type == 'hidden' and truecrypt_mode == 3:
+    raise UsageError('--volume-type=hidden conflicts with --type=luks')
   if isinstance(passphrase, tuple):
     passphrase = read_key_file(passphrase[0])
 
@@ -4366,7 +4395,8 @@ def cmd_get_table(args):
   table_line = get_table(  # Slow.
       device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode,
       hash=hash, do_showkeys=(do_showkeys or do_cat),
-      display_device=display_device, do_allow_discards=do_allow_discards)
+      display_device=display_device, do_allow_discards=do_allow_discards,
+      volume_type=volume_type)
   if not do_cat:
     sys.stdout.write(table_line)
     sys.stdout.flush()
@@ -4424,6 +4454,7 @@ def cmd_mount(args):
   is_custom_name = False
   pim = keyfiles = filesystem = hash = encryption = slot = device = passphrase = truecrypt_mode = protect_hidden = name = None
   do_allow_discards = False
+  volume_type = 'any'
 
   i, value = 0, None
   while i < len(args):
@@ -4508,6 +4539,10 @@ def cmd_mount(args):
       do_allow_discards = True
     elif arg == '--no-allow-discards':
       do_allow_discards = False
+    elif arg.startswith('--volume-type='):
+      volume_type = parse_volume_type_any_arg(arg)
+    elif arg == '--tcrypt-hidden':  # cryptsetup open.
+      volume_type = 'hidden'
     else:
       raise UnknownFlagError('unknown flag: %s' % arg)
   del value  # Save memory.
@@ -4539,6 +4574,8 @@ def cmd_mount(args):
     truecrypt_mode = 1
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if volume_type == 'hidden' and truecrypt_mode == 3:
+    raise UsageError('--volume-type=hidden conflicts with --type=luks')
   if isinstance(passphrase, tuple):
     passphrase = read_key_file(passphrase[0])
 
@@ -4573,7 +4610,8 @@ def cmd_mount(args):
   def block_device_callback(block_device, fd, device_id):
     table = get_table(  # Slow.
         device, passphrase, device_id, pim=pim, truecrypt_mode=truecrypt_mode,
-        hash=hash, do_showkeys=True, do_allow_discards=do_allow_discards)
+        hash=hash, do_showkeys=True, do_allow_discards=do_allow_discards,
+        volume_type=volume_type)
     run_and_write_stdin(('dmsetup', 'create', name), table, is_dmsetup=True)
 
   ensure_block_device(device, block_device_callback)
@@ -5878,7 +5916,6 @@ def main(argv):
     else:
       # !! Add version number.
       # !! Add legacy `luksOpen <device> <name>' syntax.
-      # !! Add flag `open --volume-type=any' (current behavior), `--volume-type=hidden', `--volume-type=normal'.
       # !! Add flag `init --volume-type=hidden', compatible with veracrypt.
       # !! Document that --size=... is not compatible with veracrypt (or is it?).
       # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
