@@ -2602,11 +2602,19 @@ def check_full_dechd(dechd, enchd_suffix_size, is_truecrypt):
       (is_truecrypt and not 0x400 <= minimum_version_to_extract < 0x800)):
     raise ValueError('minimum_version_to_extract mismatch.')
   hidden_volume_size, = struct.unpack('>Q', dechd[92 : 92 + 8])
+  # TODO(pts): Accept only at hidden volume header offset.
   if hidden_volume_size:
-    # Hidden volume detected here, but currently this tool doesn't support
-    # hidden volumes.
-    raise ValueError('Unexpected hidden volume.')
-  if not is_truecrypt or minimum_version_to_extract >= 0x600:  # decrypted_ofs and decrypted_size are valid.
+    if is_truecrypt and minimum_version_to_extract < 0x600:
+      # For these old TrueCrypt versions, hidden volume header is at a
+      # different offset, and offset calculations are different.
+      # TODO(pts): Get some examples raw device files.
+      raise ValueError('Early version hidden volume not supported.')
+    decrypted_size, decrypted_ofs = struct.unpack('>QQ', dechd[100 : 100 + 16])
+    if hidden_volume_size != decrypted_size:
+      raise ValueError('hidden_volume_size must be equal to decrypted_size.')
+    check_decrypted_size(decrypted_size)
+    check_decrypted_ofs(decrypted_ofs)
+  elif not is_truecrypt or minimum_version_to_extract >= 0x600:  # decrypted_ofs and decrypted_size are valid.
     decrypted_size, decrypted_ofs, encrypted_area_size = struct.unpack('>QQQ', dechd[100 : 100 + 24])
     if encrypted_area_size != decrypted_size:
       raise ValueError('encrypted_area_size mismatch.')
@@ -2716,8 +2724,7 @@ class IncorrectPassphraseError(ValueError):
 HASHLIB_NO_OPENSSL_HASHES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
 
 
-def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
-  check_enchd(enchd)
+def get_open_veracrypt_info(enchds, passphrase, pim, truecrypt_mode, hash):
   # This function doesn't support LUKS, the caller should.
   if truecrypt_mode not in (0, 1, 2):
     raise ValueError('Unknown truecrypt_mode: %r' % truecrypt_mode)
@@ -2754,28 +2761,32 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
       setup_modes.append((0, 1, 'pbkdf2', hash, get_iterations(pim, False, hash)))
 
   e = 'No setup mode found.'
-  for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
-    # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
-    if not is_hash_supported(hash):  # We shouldn't reach this.
-      raise ValueError('Hash not supported (unexpected): %s' % hash)
-    if kdf != 'pbkdf2':  # Not supported by tinyveracrypt.
+  for enchd in enchds:
+    if not enchd:
       continue
-    # TODO(pts): Reuse the partial output of the smaller iterations.
-    #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
-    # Slow.
-    #print (is_veracrypt, hash, iterations)
-    passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
-    header_key = pbkdf2_hmac(hash, passphrase, enchd[:64], iterations, 64)  # Slow.
-    for cipher in VERACRYPT_AND_TRUECRYPT_CIPHERS[not is_veracrypt]:
-      dechd = crypt_veracrypt_encdechd(enchd, header_key, cipher=cipher, do_encrypt=False)
-      try:
-        check_open_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
-      except ValueError, e:
-        # We may want to put str(e) to the debug log, if requested.
-        #print str(e)
+    check_enchd(enchd)
+    for is_legacy, is_veracrypt, kdf, hash, iterations in setup_modes:
+      # TODO(pts): Add sha256 and ripemd160 with backup Python implementations.
+      if not is_hash_supported(hash):  # We shouldn't reach this.
+        raise ValueError('Hash not supported (unexpected): %s' % hash)
+      if kdf != 'pbkdf2':  # Not supported by tinyveracrypt.
         continue
-      check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
-      return dechd, cipher
+      # TODO(pts): Reuse the partial output of the smaller iterations.
+      #            Unfortunately hashlib.pbkdf2_hmac doesn't support that.
+      # Slow.
+      #print (is_veracrypt, hash, iterations)
+      passphrase = get_passphrase_str(passphrase)  # Prompt the user late.
+      header_key = pbkdf2_hmac(hash, passphrase, enchd[:64], iterations, 64)  # Slow.
+      for cipher in VERACRYPT_AND_TRUECRYPT_CIPHERS[not is_veracrypt]:
+        dechd = crypt_veracrypt_encdechd(enchd, header_key, cipher=cipher, do_encrypt=False)
+        try:
+          check_open_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
+        except ValueError, e:
+          # We may want to put str(e) to the debug log, if requested.
+          #print str(e)
+          continue
+        check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
+        return dechd, cipher
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
@@ -2793,6 +2804,15 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
         truecrypt_mode == 3):
       luks_device_size = device_size
       decrypted_ofs, keytable, cipher = get_open_luks_info(f, passphrase)  # Slow.
+      if decrypted_ofs >= device_size:
+        raise ValueError('Encrypted LUKS volume too long for raw device.')
+    if device_size > 65536:
+      f.seek(65536)
+      enchd2 = f.read(512)  # Read hidden volume header.
+      if len(enchd2) < 512:
+        enchd2 = ''
+    else:
+      enchd2 = ''
   finally:
     f.close()
 
@@ -2805,8 +2825,14 @@ def get_table(device, passphrase, device_id, pim, truecrypt_mode, hash, do_showk
       else:
         what = 'VeraCrypt/TrueCrypt'
       sys.stderr.write('warning: raw device has LUKS header, trying to open it as %s will likely fail\n' % what)
-    dechd, cipher = get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash)  # Slow.
+    # Call it only once, for a single password prompt.
+    #
+    # TODO(pts): In which order does veracrypt try normal volume header
+    # and hidden volume header?
+    dechd, cipher = get_open_veracrypt_info((enchd, enchd2), passphrase, pim, truecrypt_mode, hash)  # Slow.
     keytable, decrypted_size, decrypted_ofs = parse_dechd(dechd, cipher, device_size)
+    if decrypted_size + decrypted_ofs > device_size:
+      raise ValueError('Encrypted volume too long for raw device.')
     if cipher == 'aes-lrw-benbi':
       iv_ofs = 0  # For compatibility with TCRYPT_get_iv_offset and TrueCrypt 7.1a.
     else:
@@ -5852,6 +5878,9 @@ def main(argv):
     else:
       # !! Add version number.
       # !! Add legacy `luksOpen <device> <name>' syntax.
+      # !! Add flag `open --volume-type=any' (current behavior), `--volume-type=hidden', `--volume-type=normal'.
+      # !! Add flag `init --volume-type=hidden', compatible with veracrypt.
+      # !! Document that --size=... is not compatible with veracrypt (or is it?).
       # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
       # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
       # !! Add `tcryptDump' (`cryptsetup tcryptDump').

@@ -122,7 +122,23 @@ Not implemented, but it would be easy to add this feature.
 
 Q2B. Can tinyveracrypt open TrueCrypt and VeraCrypt hidden volumes?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Yes, it tries to open the normal volume first, and if it doesn't succeed, it
+tries to open the hidden volume.
+
+Q2C. Can tinyveracrypt open with the TrueCrypt and VeraCrypt backup volume
+header?
+"""""""
 Not implemented, but it would be easy to add this feature.
+
+Q2D. Can tinyveracrypt create TrueCrypt and VeraCrypt system volumes?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+No, this won't be implemented.
+
+Q2E. Can tinyveracrypt open TrueCrypt and VeraCrypt system volumes?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Not implemented, probably easy to add this feature for fully encrypted (not
+partially encrypted) system volumes. An example raw device image is needed
+to test.
 
 Q3. Can tinyveracrypt create and open TrueCrypt volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""
