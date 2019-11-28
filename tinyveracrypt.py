@@ -4032,7 +4032,7 @@ def cmd_open_table(args):
     f = open(device, 'rb')
     try:
       f.seek(0, 2)
-      device_size = f.tell()
+      device_size = f.tell() & ~511
     finally:
       f.close()
   if device_size < decrypted_ofs + end_ofs:
@@ -4616,7 +4616,7 @@ def cmd_create(args):
         f = open(device, 'rb')
         try:
           f.seek(0, 2)
-          device_size = read_device_size = f.tell()
+          device_size = read_device_size = f.tell() & ~511
         finally:
           f.close()
       if device_size < decrypted_ofs + decrypted_size:
@@ -4680,7 +4680,7 @@ def cmd_create(args):
         if do_randomize_salt:
           fat_header = randomize_fat_header(fat_header)
       xf.seek(0, 2)
-      read_device_size = xf.tell()
+      read_device_size = xf.tell() & ~511
       if device_size == 'auto':
         device_size = read_device_size
     assert isinstance(device_size, (int, long))
@@ -4767,7 +4767,7 @@ def cmd_create(args):
         if f:
           try:
             f.seek(0, 2)
-            prompt_device_size = f.tell()
+            prompt_device_size = f.tell() & ~511
           finally:
             f.close()
       if prompt_device_size:
