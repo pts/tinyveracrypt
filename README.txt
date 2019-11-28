@@ -32,7 +32,7 @@ Features
 * tinyveracrypt has some commands and flags compatible with `veracrypt' and
   `cryptsetup', so tinyveracrypt can be used as a drop-in replacement for
   these tools.
-* tinyveracrypt is implemented in less than 6000 lines of Python 2 code,
+* tinyveracrypt is implemented in less than 7000 lines of Python 2 code,
   using only standard Python modules. It uses `dmsetup' for opening
   encrypted volumes, and no other tools for creating encrypted volumes.
 * tinyveracrypt interoperates with veracrypt, truecrypt and cryptsetup:
