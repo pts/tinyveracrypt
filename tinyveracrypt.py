@@ -2531,7 +2531,7 @@ def build_dechd(
   return dechd
 
 
-def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
+def check_open_dechd(dechd, enchd_suffix_size, is_truecrypt):
   """Does a full, after-decryption check on dechd.
 
   This is also used for passphrase: on a wrong passphrase, dechd is 512
@@ -2543,8 +2543,54 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
   check_dechd(dechd)
   if enchd_suffix_size > 192:
     raise ValueError('enchd_suffix_size too large, got: %s' % enchd_suffix_size)
-  signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
+  expected_signature = ('VERA', 'TRUE')[bool(is_truecrypt)]
   header_format_version, minimum_version_to_extract = struct.unpack('>HH', dechd[68 : 68 + 4])
+  flag_bits, sector_size = struct.unpack('>LL', dechd[124 : 124 + 8])
+
+  # Early errors for get_open_veracrypt_info.
+  if dechd[64 : 64 + 4] != expected_signature:  # Or 'TRUE'.
+    raise ValueError('Signature mismatch.')
+  if not 2 <= header_format_version <= 99:
+    raise ValueError('Unusual header_format_version.')
+  if minimum_version_to_extract >= 0x800:  # Both for TrueCrypt and VeraCrypt.
+    raise ValueError('Unusual minimum_version_to_extract.')
+  if header_format_version >= 4 and dechd[76 : 76 + 16].lstrip('\0'):
+    raise ValueError('Missing NUL padding at 76.')
+  if dechd[132 : 160].lstrip('\0'):
+    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
+    raise ValueError('Missing NUL padding at 160.')
+  if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
+    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
+    raise ValueError('Missing NUL padding after keytable.')
+  if header_format_version < 4 and flag_bits:
+    raise Valueerror('Non-zero flag bits: 0x%x' % flag_bits)
+  if header_format_version >= 4 and flag_bits & ~3:
+    raise ValueError('Unexpected flag bits: 0x%x' % flag_bits)
+  if header_format_version >= 5:
+    check_sector_size(sector_size)
+  else:
+    raise ValueError('Non-zero sector size.')
+  # `veracrypt' and `cryptsetup --mode tcrypt --veracrypt' don't check these
+  # bytes:
+  #
+  # * dechd[160 : 208] is used by --fake-luks=uuid=... .
+  # * dechd[380 : 512] is used by --mkfat=... , but that's covered by
+  #   enchd_suffix_size=132.
+  if dechd[72 : 76] != struct.pack('>l', crc32(buffer(dechd, 256, 256))):
+    raise ValueError('keytablep_crc32 mismatch.')
+  if header_format_version >= 4 and dechd[252 : 256] != struct.pack('>l', crc32(buffer(dechd, 64, 188))):
+    raise ValueError('header_crc32 mismatch.')
+
+
+def check_full_dechd(dechd, enchd_suffix_size, is_truecrypt):
+  """Does a full, after-decryption check on dechd.
+
+  The checks here are more strict than what `cryptsetup' or the mount
+  operation of `veracrypt' does. They can be relaxed if the need arises.
+  """
+  check_open_dechd(dechd, enchd_suffix_size, is_truecrypt)
+  header_format_version, minimum_version_to_extract = struct.unpack('>HH', dechd[68 : 68 + 4])
+  flag_bits, = struct.unpack('>L', dechd[124 : 124 + 4])
   if is_truecrypt:
     if not (2 <= header_format_version <= 5):
       raise ValueError('Invalid header_format_version.')
@@ -2552,18 +2598,9 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
     # 5 is the maximum seen in the wild until VeraCrypt 1.17.
     if not (5 <= header_format_version <= 9):
       raise ValueError('Invalid header_format_version.')
-  if dechd[64 : 64 + 4] != signature:  # Or 'TRUE'.
-    raise ValueError('Signature mismatch.')
-  if dechd[72 : 76] != struct.pack('>l', crc32(buffer(dechd, 256, 256))):
-    raise ValueError('keytablep_crc32 mismatch.')
-  if header_format_version >= 4 and dechd[252 : 256] != struct.pack('>l', crc32(buffer(dechd, 64, 188))):
-    raise ValueError('header_crc32 mismatch.')
-  #if minimum_version_to_extract != (1, 11):
   if ((not is_truecrypt and not 0x100 <= minimum_version_to_extract < 0x200) or
       (is_truecrypt and not 0x400 <= minimum_version_to_extract < 0x800)):
     raise ValueError('minimum_version_to_extract mismatch.')
-  if dechd[76 : 76 + 16].lstrip('\0'):
-    raise ValueError('Missing NUL padding at 76.')
   hidden_volume_size, = struct.unpack('>Q', dechd[92 : 92 + 8])
   if hidden_volume_size:
     # Hidden volume detected here, but currently this tool doesn't support
@@ -2573,30 +2610,14 @@ def check_full_dechd(dechd, enchd_suffix_size=0, is_truecrypt=False):
     decrypted_size, decrypted_ofs, encrypted_area_size = struct.unpack('>QQQ', dechd[100 : 100 + 24])
     if encrypted_area_size != decrypted_size:
       raise ValueError('encrypted_area_size mismatch.')
-    if decrypted_size >> 50:  # Larger than 1 PB is insecure.
-      raise ValueError('Volume too large.')
+    #if decrypted_size >> 50:  # Larger than 1 PiB is insecure. We don't check it, it's not our business.
+    #  raise ValueError('Volume too large.')
     check_decrypted_size(decrypted_size)
     check_decrypted_ofs(decrypted_ofs)
-  flag_bits, = struct.unpack('>L', dechd[124 : 124 + 4])
-  if flag_bits:  # TODO(pts): Do a check based on truecrypt_version.
-    raise ValueError('flag_bits mismatch.')
-  sector_size, = struct.unpack('>L', dechd[128 : 128 + 4])
-  check_sector_size(sector_size)
-  # `veracrypt' and `cryptsetup --mode tcrypt --veracrypt' don't check these
-  # bytes.
-  #
-  # * dechd[160 : 208] is used by --fake-luks=uuid=... .
-  # * dechd[380 : 512] is used by --mkfat=... , but that's covered by
-  #   enchd_suffix_size=132.
-  #if dechd[132 : 132 + 120].lstrip('\0'):
-  #  # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
-  #  raise ValueError('Missing NUL padding at 132.')
-  if dechd[132 : 132 + 28].lstrip('\0'):
-    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
-    raise ValueError('Missing NUL padding at %d.' % len(FAT_NO_BOOT_CODE))
-  if dechd[256 + 64 : 512 - ((enchd_suffix_size + 15) & ~15)].lstrip('\0'):
-    # Does actual VeraCrypt check this? Does cryptsetup --veracrypt check this?
-    raise ValueError('Missing NUL padding after keytable.')
+  if flag_bits & 1:
+    raise ValueError('System volume not supported.')
+  if flag_bits & 2:
+    raise ValueError('Non-system in-place volume not supported.')
 
 
 def build_table(
@@ -2667,6 +2688,7 @@ def get_iterations(pim, is_truecrypt=False, hash='sha512'):
       return 655331
     else:  # --pim=485 corresponds to iterations=500000
       return 500000
+
 
 def parse_dechd(dechd, cipher, device_size):
   check_dechd(dechd)
@@ -2747,12 +2769,13 @@ def get_open_veracrypt_info(enchd, passphrase, pim, truecrypt_mode, hash):
     for cipher in VERACRYPT_AND_TRUECRYPT_CIPHERS[not is_veracrypt]:
       dechd = crypt_veracrypt_encdechd(enchd, header_key, cipher=cipher, do_encrypt=False)
       try:
-        check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
-        return dechd, cipher
+        check_open_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
       except ValueError, e:
         # We may want to put str(e) to the debug log, if requested.
         #print str(e)
-        pass
+        continue
+      check_full_dechd(dechd, enchd_suffix_size=len(FAT_NO_BOOT_CODE), is_truecrypt=not is_veracrypt)
+      return dechd, cipher
   raise IncorrectPassphraseError('Incorrect passphrase (%s).' % str(e).rstrip('.'))
 
 
@@ -2944,7 +2967,7 @@ def build_veracrypt_header(
       salt, veracrypt_keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs,
       zeros_ofs=zeros_ofs, zeros_data=zeros_data, truecrypt_version=truecrypt_version)
   assert len(dechd) == 512
-  check_full_dechd(dechd, is_truecrypt=bool(truecrypt_version))
+  check_full_dechd(dechd, 0, bool(truecrypt_version))
   enchd = crypt_veracrypt_encdechd(dechd, header_key, cipher=cipher, do_encrypt=True)
   assert len(enchd) == 512
   if not enchd.endswith(enchd_suffix):
@@ -2958,7 +2981,7 @@ def build_veracrypt_header(
     dechd2 = build_dechd(
         salt, keytablep, decrypted_size, sector_size,
         decrypted_ofs=decrypted_ofs, truecrypt_version=truecrypt_version)
-    check_full_dechd(dechd2, enchd_suffix_size=len(enchd_suffix), is_truecrypt=bool(truecrypt_version))
+    check_full_dechd(dechd2, len(enchd_suffix), bool(truecrypt_version))
     assert dechd2.endswith(keytablep)
     assert len(dechd2) == 512
     enchd = crypt_veracrypt_encdechd(dechd2, header_key, cipher=cipher, do_encrypt=True)

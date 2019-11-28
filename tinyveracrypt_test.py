@@ -429,7 +429,7 @@ def test_veracrypt():
   assert enchd.startswith(SALT)
   assert dechd[256 : 256 + 64] == keytable
 
-  check_full_dechd(dechd)
+  check_full_dechd(dechd, 0, False)
   assert build_dechd(SALT, keytable, decrypted_size, sector_size) == dechd
   assert parse_dechd(dechd, 'aes-xts-plain64', 65536) == (keytable, decrypted_size, decrypted_ofs)
   table = build_table(keytable, decrypted_size, decrypted_ofs, raw_device, decrypted_ofs, 'aes-xts-plain64', True, (), True)
@@ -490,7 +490,7 @@ def test_veracrypt():
       enchd_prefix=tinyveracrypt.TEST_SALT,
       hash='sha512', cipher='aes-xts-plain64', keytable=keytable)
   dechd = crypt_veracrypt_encdechd(enchd, header_key, 'aes-xts-plain64', False)
-  check_full_dechd(dechd)
+  check_full_dechd(dechd, 0, False)
   keytable2, decrypted_size, decrypted_ofs = parse_dechd(
       dechd, 'aes-xts-plain64', (1 << 20 | 1 << 16))
   assert keytable2 == keytable
