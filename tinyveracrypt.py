@@ -4325,8 +4325,10 @@ def cmd_get_table(args):
     i += 1
     if arg == '--':
       break
-    elif arg.startswith('--pim='):
+    elif arg.startswith('--pim=') or arg.startswith('--veracrypt-pim='):
       pim = parse_pim_arg(arg)
+      if truecrypt_mode == 2:
+        truecrypt_mode = 1
     elif arg in '--no-truecrypt':
       truecrypt_mode = 0
     elif arg in ('--maybe-truecrypt', '--veracrypt'):  # --veracrypt compatible with `cryptsetup open' and `cryptsetup tcryptDump'.
@@ -4385,6 +4387,8 @@ def cmd_get_table(args):
     raise UsageError('--cat conflicts with --showkeys')
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if pim is not None and truecrypt_mode == 3:
+    raise UsageError('--pim=... conflicts with --type=luks')
   if volume_type == 'hidden' and truecrypt_mode == 3:
     raise UsageError('--volume-type=hidden conflicts with --type=luks')
   if isinstance(passphrase, tuple):
@@ -4574,6 +4578,8 @@ def cmd_mount(args):
     truecrypt_mode = 1
   if truecrypt_mode == 3 and hash is not None:
     raise UsageError('--hash=... conflicts with --type=luks')
+  if pim is not None and truecrypt_mode == 3:
+    raise UsageError('--pim=... conflicts with --type=luks')
   if volume_type == 'hidden' and truecrypt_mode == 3:
     raise UsageError('--volume-type=hidden conflicts with --type=luks')
   if isinstance(passphrase, tuple):
@@ -5201,6 +5207,8 @@ def cmd_create(args):
       pim = 0
     else:
       raise UsageError('missing flag --pim=..., recommended: --pim=0')
+  elif type_value == 'luks':
+    raise UsageError('--pim=... conflicts with --type=luks')
   if fatfs_size is None and filesystem != 'fat1':
     if fat_label is not None:
       raise UsageError('--fat-label needs --mkfat=...')
