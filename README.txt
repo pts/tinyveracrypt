@@ -118,12 +118,18 @@ the extremely slow hashes from being tried. If you are stuck with Python
 
 Q2. Can tinyveracrypt create TrueCrypt and VeraCrypt hidden volumes?
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Not implemented, but it would be easy to add this feature.
+Yes, create the normal volume first, and then
+use `./tinyveracrypt.py init --volume-type=hidden --ofs=... ...'.
+
+Be careful not to overwrite the data on the normal volume.
+tinyveracrypt doesn't provide hidden volume protection.
 
 Q2B. Can tinyveracrypt open TrueCrypt and VeraCrypt hidden volumes?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 Yes, it tries to open the normal volume first, and if it doesn't succeed, it
 tries to open the hidden volume.
+
+Please note that tinyveracrypt doesn't provide hidden volume protection.
 
 Q2C. Can tinyveracrypt open with the TrueCrypt and VeraCrypt backup volume
 header?

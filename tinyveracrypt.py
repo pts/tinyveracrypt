@@ -119,7 +119,9 @@ Flags for init, create and luksFormat:
 * --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
   as K, M G are supported.) If not speficied (or --size=auto or
   --size=max is specified), then the size gets autodetected, and the
-  encrypted volume spans over the end of the raw device.
+  encrypted volume spans up to end of the raw device. For --volume-type=hidden,
+  --size=... specifies the size of the encrypted hidden volume in bytes.
+  (This is compatible with veracrypt.)
 * --truncate: If a specific --size=... is specified, truncate <device.img>
   (disk image file) to that size. Enabled by default.
 * --no-truncate: Disable --truncate.
@@ -152,7 +154,6 @@ Flags for init, create and luksFormat:
 * --no-any-luks-uuid: Disable --any-luks-uuid.
 * --uuid=<hex>: Create the LUKS header with the specified UUID. The default
   is random.
-* --volume-type=normal: Compatibility flag, ignored.
 * --encryption=aes: Compatibility flag, ignored.
 * --af-stripes=<number>. Exapansion factor in the LUKS key material (AFSplit).
   The value of 1 means the encrypted master key is stored once (without
@@ -243,11 +244,14 @@ Flags for init, create and luksFormat:
   mkfs) with the allow_discards option, making deletion from the filesystem
   more efficient on SSD, but less secure. Disabled by default.
 * --no-allow-discards: Disable --allow-discards.
+* --volume-type=...: The value normal (default) creates a normal volume.
+  The values hidden creates a hidden volume (TrueCrypt or VeraCrypt).
+* --tcrypt-hidden: Equivalent to --volume-type=hidden.
 
 Please note that create is different from init:
 
 * --quick must be specified explicitly to override the default --no-quick.
-* --volume-type=normal must be specified explicitly.
+* --volume-type=... must be specified explicitly.
 * --size=... must be specified explicitly.
 * --encryption=aes (or other --cipher=...) must be specified explicitly.
 * --hash=sha512 (or other) must be specified explicitly.
@@ -381,7 +385,7 @@ Flags for open-table:
 * --size=<bytes>: Size of the raw device in bytes. (1024-based suffixes such
   as K, M G are supported.) If not speficied (or --size=auto or
   --size=max is specified), then the size gets autodetected, and the
-  encrypted volume spans over the end of the raw device.
+  encrypted volume spans up to the end of the raw device.
 * --ofs=<bytes>: Number of bytes from the start of the raw device where
   the encrypted volume starts. (1024-based suffixes such
   as K, M G are supported.)
@@ -2479,7 +2483,7 @@ assert len(FAT_NO_BOOT_CODE) == 132
 
 def build_dechd(
     salt, keytable, decrypted_size, sector_size, decrypted_ofs=None,
-    zeros_data=None, zeros_ofs=None, truecrypt_version=False):
+    zeros_data=None, zeros_ofs=None, truecrypt_version=False, is_hidden=False):
   # See tech_info.txt for the TrueCrypt and VeraCrypt header formats.
   #
   # We can overlap the returned header with FAT12 and FAT16. FAT12 and FAT16
@@ -2517,7 +2521,7 @@ def build_dechd(
     signature = 'TRUE'
     header_format_version = 4
     minimum_version_to_extract = 0x600  # Earliest version which supports decrypted_ofs (header field 108).
-  hidden_volume_size = 0
+  hidden_volume_size = decrypted_size * bool(is_hidden)
   flag_bits = 0
   if zeros_data is not None:
     if zeros_ofs < 132 or zeros_ofs + len(zeros_data) > 252:
@@ -2932,11 +2936,11 @@ CRYPT_BY_OFS_MAX_512_FUNCS = {
 
 
 def build_veracrypt_header(
-    decrypted_size, decrypted_ofs, passphrase, hash, cipher,
+    decrypted_size, decrypted_ofs, passphrase, hash, cipher, is_hidden,
     enchd_prefix='', enchd_suffix='',
     pim=None, fake_luks_uuid=None,
     truecrypt_version=False, keytable=None, get_random_bytes_func=None):
-  """Returns 512 bytes.
+  """Returns the 512-byte encrypted header.
 
   Args:
     decrypted_size: Size of the decrypted block device, this is 0x20000
@@ -2945,6 +2949,8 @@ def build_veracrypt_header(
     enchd, the encrypted 512-byte header to be saved to the start
     of the raw device.
   """
+  # See tech_info.txt for the TrueCrypt and VeraCrypt header format.
+
   if cipher == 'aes-xts-plain64' and (truecrypt_version or 0x500) >= 0x500:
     veracrypt_keytable = keytable
   elif cipher == 'aes-lrw-benbi' and (truecrypt_version or 0) >= 0x401:
@@ -3006,7 +3012,8 @@ def build_veracrypt_header(
   sector_size = 512
   dechd = build_dechd(
       salt, veracrypt_keytable, decrypted_size, sector_size, decrypted_ofs=decrypted_ofs,
-      zeros_ofs=zeros_ofs, zeros_data=zeros_data, truecrypt_version=truecrypt_version)
+      zeros_ofs=zeros_ofs, zeros_data=zeros_data, truecrypt_version=truecrypt_version,
+      is_hidden=is_hidden)
   assert len(dechd) == 512
   check_full_dechd(dechd, 0, bool(truecrypt_version))
   enchd = crypt_veracrypt_encdechd(dechd, header_key, cipher=cipher, do_encrypt=True)
@@ -3020,7 +3027,7 @@ def build_veracrypt_header(
     keytablep = crypt_func(header_keytable, keytablep_enc, do_encrypt=False, ofs=192)
     #assert crypt_func(header_keytable, keytablep, do_encrypt=True, ofs=192) == keytablep_enc
     dechd2 = build_dechd(
-        salt, keytablep, decrypted_size, sector_size,
+        salt, keytablep, decrypted_size, sector_size, is_hidden=is_hidden,
         decrypted_ofs=decrypted_ofs, truecrypt_version=truecrypt_version)
     check_full_dechd(dechd2, len(enchd_suffix), bool(truecrypt_version))
     assert dechd2.endswith(keytablep)
@@ -4839,13 +4846,13 @@ def cmd_create(args):
   do_restrict_luksformat_defaults = False
   is_luks_allowed = is_nonluks_allowed = True
   do_truncate = True
-  align_ofs = truecrypt_version = keytable = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = hash = filesystem = pim = keyfiles = random_source = passphrase = None
+  key_size = align_ofs = truecrypt_version = keytable = fake_luks_uuid_flag = decrypted_ofs = fatfs_size = do_add_full_header = do_add_backup = volume_type = device = device_size = hash = filesystem = pim = keyfiles = random_source = passphrase = None
   cipher = af_stripe_count = uuid_flag = uuid = None
   fat_label = fat_uuid = fat_rootdir_entry_count = fat_fat_count = fat_fstype = fat_cluster_size = None
-  key_size = None
   do_skip_dash_dash = False
   do_allow_discards = False
   is_test_passphrase = False
+  decrypted_size = None
 
   i, value = 0, None
   while i < len(args):
@@ -4942,9 +4949,11 @@ def cmd_create(args):
         raise UsageError('FAT count must be 1 or 2, got: %s' % arg)
     elif arg.startswith('--volume-type='):
       value = arg[arg.find('=') + 1:].lower()
-      if value != 'normal':
+      if value not in ('normal', 'hidden'):
         raise UsageError('unsupported flag value: %s' % arg)
       volume_type = value
+    elif arg == '--tcrypt-hidden':  # cryptsetup open.
+      volume_type = 'hidden'
     elif arg.startswith('--encryption='):
       value = arg[arg.find('=') + 1:].lower()
       if value != 'aes':
@@ -5163,7 +5172,7 @@ def cmd_create(args):
   # the command to run (e.g. 'mkfs.ext2'), and in the end it doesn't contain
   # the device filename or the filesystem size.
 
-  if volume_type != 'normal':
+  if volume_type is None:
     raise UsageWithHelpError('missing flag: --volume-type=normal')
   if cipher is None:
     raise UsageWithHelpError('missing flag: --encryption=aes')
@@ -5247,6 +5256,8 @@ def cmd_create(args):
       raise UsageError('--type=luks conflicts with --mkfat=...')
     if fake_luks_uuid_flag is not None:
       raise UsageError('--type=luks conflicts with --fake-luks-uuid=..., use --uuid=... instead')
+    if volume_type != 'normal':
+      raise UsageError('--volume-type=%s conflicts with --type=luks' % volume_type)
     uuid = parse_luks_uuid_flag(uuid_flag or '', is_any_luks_uuid, get_random_bytes_func)
     do_add_full_header = True
     do_add_backup = False
@@ -5271,9 +5282,14 @@ def cmd_create(args):
           raise UsageError('--add-full-header conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
         if do_add_backup is True:
           raise UsageError('--add-backup conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' % (truecrypt_version >> 8, truecrypt_version & 255))
-        if truecrypt_version < 0x600 and (align_ofs and 512 % align_ofs):
+        if align_ofs and 512 % align_ofs:
           raise UsageError('--align-ofs=%d conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' %
                            (align_ofs, truecrypt_version >> 8, truecrypt_version & 255))
+        if volume_type != 'normal':
+          # TODO(pts): Support --volume-type=hidden in earlier TrueCrypt versions (with different hidden header offset).
+          # device_size=1M
+          raise UsageError('--volume-type=%s conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version=...' %
+                           (volume_type, truecrypt_version >> 8, truecrypt_version & 255))
       if device_size != 'auto' and device_size < 65536:  # Limitation of TrueCrypt 7.1a and VeraCrypt 1.17 tools.
         if isinstance(decrypted_ofs, (int, long)) and decrypted_ofs != 512:
           raise UsageError('--ofs=%d conflicts with --type=%s --size=%d, try omitting --ofs=... or increasing size to --size=65536' % (decrypted_ofs, type_value, device_size))
@@ -5290,6 +5306,23 @@ def cmd_create(args):
       if hash not in VERACRYPT_HASHES:
         # TODO(pts): Add command-line flag to override, maybe future VeraCrypt versions will support it.
         raise UsageError('--hash=%s not supported by VeraCrypt, try omitting --hash=...' % hash)
+    if volume_type != 'normal':
+      if device_size != 'auto' and volume_type == 'hidden':
+        decrypted_size = int(device_size)
+        device_size = 'auto'
+      if decrypted_ofs is None:
+        if decrypted_size is None:
+          raise UsageError('--volume-type=%s needs --ofs=<bytes> or --size=<bytes>' % volume_type)
+      elif not isinstance(decrypted_ofs, (int, long)):
+        raise UsageError('--ofs=%s conflicts with --volume-type=%s, specify --ofs=<bytes> or --size=<bytes>' % (decrypted_ofs, volume_type))
+      if isinstance(decrypted_ofs, (int, long)) and decrypted_ofs < 66048:
+        raise UsageError('--ofs=%d conflicts with --volume-type=%s, try specifing at least --ofs=66048' % (decrypted_ofs, volume_type))
+      if device_size != 'auto':
+        raise UsageError('--size=... conflicts with with --volume-type=%s' % volume_type)
+      if do_add_full_header:
+        raise UsageError('--add-full-header conflicts with --volume-type=%s' % volume_type)
+      if is_opened:
+        raise UsageError('--opened conflicts with --volume-type=%s' % volume_type)
     if cipher not in CRYPT_BY_OFS_MAX_512_FUNCS:
       if decrypted_ofs == 0:
         raise UsageError('--ofs=0 conflicts with --cipher=%s, try --cipher=aes-xts-plain64' % cipher)
@@ -5320,7 +5353,6 @@ def cmd_create(args):
     mkfs_args[0] = pathname
   xf = read_device_size = None
   try:
-    decrypted_size = None  # is_opened will override it.
     if is_opened:  # RAWDEVICE is a dm-crypt device pathname. Needs Linux and root access.
       if decrypted_ofs is not None:
         raise UsageError('--opened conflicts with --ofs=...')
@@ -5345,7 +5377,7 @@ def cmd_create(args):
           e = str(e)
           raise UsageError(e[:1].lower() + e[1:].rstrip('.'))
         if iv_offset != 0:
-          raise ValueError('iv_offset must be 0 for --type=luks; try specifying --type=veracrypt')
+          raise ValueError('iv_offset must be 0 for --type=luks, try specifying --type=veracrypt')
       else:
         allowed_ciphers = VERACRYPT_AND_TRUECRYPT_CIPHERS[type_value == 'truecrypt']
         if cipher not in allowed_ciphers:
@@ -5389,7 +5421,7 @@ def cmd_create(args):
       if type_value == 'luks':
         if decrypted_ofs < 4096:
           # TODO(pts): Add a flag to disable this check once cryptsetup is patched.
-          raise ValueError('sector_offset too small --type=luks, must be at least 8, got decrypted_ofs=%d sector_offset=%d; try specifying --type=veracrypt' % (decrypted_ofs, sector_offset))
+          raise ValueError('sector_offset too small --type=luks, must be at least 8, got decrypted_ofs=%d sector_offset=%d, try specifying --type=veracrypt' % (decrypted_ofs, sector_offset))
         check_luks_decrypted_ofs(decrypted_ofs)
       else:
         if (do_add_backup is None and
@@ -5444,16 +5476,27 @@ def cmd_create(args):
       if device_size == 'auto':
         device_size = read_device_size
     assert isinstance(device_size, (int, long))
+    if volume_type != 'normal' and device_size < 262656:
+      raise ValueError('Raw device (%d bytes) too small for --volume-type=%s, minimum is 262656' % (device_size, volume_type))
+    if decrypted_size is not None and decrypted_ofs is None and volume_type == 'hidden':
+      decrypted_ofs = device_size - 0x20000 - decrypted_size
+      if decrypted_ofs & 4095 and device_size >= (1 << 20):
+        decrypted_ofs &= ~4095  # Align to 4 KiB boundary, for speed.
+      if decrypted_ofs < 0x20000:
+        raise ValueError('Raw device (%d bytes) too small for --volume-type=hidden --size=%d, try specifying --size=%d' %
+                         (device_size, decrypted_size, device_size - 0x40000))
 
     if do_add_full_header is None:
       assert type_value != 'luks'
-      if decrypted_ofs is None:
+      if volume_type != 'normal':
+        do_add_full_header = False
+      elif decrypted_ofs is None:
         do_add_full_header = device_size >= (4 << 20)  # 4 MiB, At most 0.4% overhead.
       else:
         do_add_full_header = decrypted_ofs not in ('fat', 'mkfat') and decrypted_ofs >= 0x20000 and device_size >= (0x20000 << bool(do_add_backup))
     if do_add_backup is None:
-      do_add_backup = do_add_full_header
-    if do_add_backup and not do_add_full_header:
+      do_add_backup = do_add_full_header or volume_type == 'hidden'
+    if do_add_backup and not do_add_full_header and volume_type != 'hidden':
         raise UsageError('--add-backup needs --add-full-header')
     if do_add_full_header and decrypted_ofs == 'fat':
       raise UsageError('--add-backup conflicts with --ofs=fat')
@@ -5485,19 +5528,21 @@ def cmd_create(args):
         hint = ', try omitting --align-ofs=...'
       else:
         hint = ''
-      raise UsageError('raw device too small for decrypted_ofs %d, actual size: %d%s' %
+      raise ValueError('Raw device too small for decrypted_ofs %d, actual size: %d%s' %
                        (decrypted_ofs, device_size, hint))
     if align_ofs and decrypted_ofs % align_ofs:
-      raise UsageError('decrypted_ofs %d conflicts with --align-ofs=%d, try omitting --align-ofs=...' %
+      raise ValueError('decrypted_ofs %d conflicts with --align-ofs=%d, try omitting --align-ofs=...' %
                        (decrypted_ofs, align_ofs))
+    if volume_type != 'normal' and decrypted_ofs < 66048:
+      raise ValueError('decrypted_ofs %d conflicts with --volume-type=%s, minimum is 66048' % (decrypted_ofs, volume_type))
 
     if decrypted_size is None:
-      decrypted_size = device_size - decrypted_ofs - min(0x20000, decrypted_ofs) * bool(do_add_backup)
+      decrypted_size = device_size - decrypted_ofs - 0x20000 * bool(do_add_backup)
     assert isinstance(decrypted_size, (int, long))
     if type_value != 'luks':
       if decrypted_size < 512:
         raise UsageError('raw device too small for %s volume, minimum is %d (use --ofs=512 or --no-add-full-header to decrease), actual size: %d' %
-                         (('VeraCrypt', 'TrueCrypt')[type_value == 'truecrypt'], 512 + (decrypted_ofs + min(0x20000, decrypted_ofs) * bool(do_add_backup)), device_size))
+                         (('VeraCrypt', 'TrueCrypt')[type_value == 'truecrypt'], 512 + (decrypted_ofs + 0x20000 * bool(do_add_backup)), device_size))
       if (truecrypt_version or 0x600) < 0x600:
         if decrypted_ofs != 512:
           raise UsageError('decrypted_ofs %d conflicts with --truecrypt-version=%d.%d, try omitting --truecrypt-version' % (decrypted_ofs, truecrypt_version >> 8, truecrypt_version & 255))
@@ -5602,6 +5647,7 @@ def cmd_create(args):
       if passphrase is None:
         # Read it now, to prevent multiple prompts below.
         passphrase = prompt_passphrase_with_warning()
+      enchd_prefix2 = ''  # Independent salt to prevent identification.
       if decrypted_ofs_any in ('fat', 'mkfat'):
         boot_sector_data = build_fat_boot_sector(fat_header, FAT_NO_BOOT_CODE)
         assert boot_sector_data.endswith(FAT_NO_BOOT_CODE)
@@ -5613,7 +5659,7 @@ def cmd_create(args):
         padded_mkfs_suffix = '\0' * (-mkfs_suffix_size & 15) + mkfs_data[512 - mkfs_suffix_size : 512]
         enchd_suffix = crypt_func(short_keytable, padded_mkfs_suffix, do_encrypt=True, ofs=512 - len(padded_mkfs_suffix))
       elif is_test_passphrase and not salt:
-        enchd_prefix = TEST_SALT
+        enchd_prefix = enchd_prefix2 = TEST_SALT
         enchd_suffix = ''
       else:
         enchd_prefix = salt
@@ -5623,24 +5669,26 @@ def cmd_create(args):
           enchd_prefix=enchd_prefix, enchd_suffix=enchd_suffix,
           decrypted_ofs=decrypted_ofs, pim=pim, truecrypt_version=truecrypt_version,
           keytable=keytable, hash=hash, cipher=cipher,
-          get_random_bytes_func=get_random_bytes_func)
+          get_random_bytes_func=get_random_bytes_func,
+          is_hidden=(volume_type == 'hidden'))
       assert len(enchd) == 512
       if decrypted_ofs_any == 'mkfat':
         enchd = build_empty_fat(enchd)  # Same as enchd --> boot_sector_data.
         assert len(enchd) >= 1536
       if do_add_full_header:
         assert decrypted_ofs >= len(enchd)
-        enchd += get_random_bytes_func(decrypted_ofs - len(enchd))
-        assert len(enchd) == decrypted_ofs
+        if volume_type != 'hidden':
+          enchd += get_random_bytes_func(decrypted_ofs - len(enchd))
+          assert len(enchd) == decrypted_ofs
       if do_add_backup:
-        xofs = min(0x20000, decrypted_ofs)
-        # https://www.veracrypt.fr/en/VeraCrypt%20Volume%20Format%20Specification.html
+        xofs = (0x20000, 512)[volume_type == 'hidden']
         enchd_backup = build_veracrypt_header(
             decrypted_size=device_size - decrypted_ofs - xofs,
             passphrase=passphrase, decrypted_ofs=xofs,
-            enchd_prefix=salt, pim=pim, truecrypt_version=truecrypt_version,
+            enchd_prefix=enchd_prefix2, pim=pim, truecrypt_version=truecrypt_version,
             keytable=keytable, hash=hash, cipher=cipher,
-            get_random_bytes_func=get_random_bytes_func)
+            get_random_bytes_func=get_random_bytes_func,
+            is_hidden=(volume_type == 'hidden'))
         enchd_backup += get_random_bytes_func(xofs - 512)
         assert len(enchd_backup) == xofs
       else:
@@ -5650,19 +5698,25 @@ def cmd_create(args):
       open(device, 'ab').close()
     if xf is None:
       xf = open(device, 'r+b')
-    xf.write(enchd)
-    random_size = device_size - len(enchd) - len(enchd_backup)
+    if volume_type == 'hidden':
+      xf.seek(0x10000)
+      xf.write(enchd)
+      xf.seek(decrypted_ofs)
+      random_size = decrypted_size
+    else:
+      xf.write(enchd)
+      random_size = device_size - len(enchd) - len(enchd_backup)
     if mkfs_data and decrypted_ofs == 0:
       random_size -= len(mkfs_data) - 512
       if random_size < 0:
         raise ValueError('New filesystem too large.')
-      if is_quick:
+      if not is_quick:
         xf.seek(len(mkfs_data))
     if not is_quick:
       print >>sys.stderr, 'info: overwriting device with random data'
       random_write_func = getattr(xf, 'write_decrypted_fast', None)
-      if callable(random_write_func):
-        # Write random bytes before the decrypting region.
+      if volume_type != 'hidden' and callable(random_write_func):
+        # Write random bytes before the decrypting region, if any.
         i = min(random_size, decrypted_ofs - xf.tell())
         random_size -= i
         while i > 0:
@@ -5678,16 +5732,19 @@ def cmd_create(args):
         data = get_random_bytes_func(min(i, 65536))
         random_write_func(data)
         i -= len(data)
+    if volume_type == 'hidden':
       if enchd_backup:
+        xf.seek(device_size - 0x10000)
         xf.write(enchd_backup)
-    elif enchd_backup:
-      xf.seek(device_size - len(enchd_backup))
-      xf.write(enchd_backup)
-    if do_truncate:
-      try:
-        xf.truncate(device_size)
-      except IOError:
-        pass
+    else:
+      if enchd_backup:
+        xf.seek(device_size - len(enchd_backup))
+        xf.write(enchd_backup)
+      if do_truncate:
+        try:
+          xf.truncate(device_size)
+        except IOError:
+          pass
     if mkfs_data:
       if len(mkfs_data) & 511:
         raise ValueError('mkfs_data size must be divisible by 512, got: %d' % len(mkfs_data))
@@ -5924,7 +5981,6 @@ def main(argv):
     else:
       # !! Add version number.
       # !! Add legacy `luksOpen <device> <name>' syntax.
-      # !! Add flag `init --volume-type=hidden', compatible with veracrypt.
       # !! Document that --size=... is not compatible with veracrypt (or is it?).
       # !! Add flag `open --cipher=...' and also `get-table --cipher=...'.
       # !! Add --random-source for --open-table=... or something which replaces --keytable. Make it hex.
@@ -5937,6 +5993,7 @@ def main(argv):
       # !! IMPROVEMENT: cryptsetup 1.7.3: for TrueCrypt (not VeraCrypt), make hdr->d.version larger (or the other way round?, doesn't make a difference) based on minimum_version_to_extract (hdr->d.version_tc).
       # !! BUG: cryptsetup 2.1.0 open needs --af-stripes=4000 (since which version?); report bug
       # !! BUG: cryptsetup 1.7.3 open requires minimum 2018 KiB of LUKS raw device.
+      # !! BUG: cryptsetup 1.7.3 open --type=tcrypt --veracrypt --key-file=key1.dat mkluks_demo.bin testvol: still asks for passphrase, fails to mount if --key-file=... is specified
       # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_get_data_offset `if (hdr->d.version < 3) return 1;' should be `< 4' (even better: minimum_version_to_extract < 0x600), for compatibility with TrueCrypt 7.1a.
       # !! BUG: cryptsetup 1.7.3 tcrypt.c bug in TCRYPT_hdr_from_disk: `if (!hdr->d.mk_offset) hdr->d.mk_offset = 512;', this should be removed, at least for hdr->d.version >= 4, for compatibility with TrueCrypt 7.1a. Continued:
       #         The compatible behavior (matching what TrueCrypt 7.1a and VeraCrypt 1.17 do ignoring decrypted_ofs and decrypted_size only if the raw device size is at most 64 KiB.

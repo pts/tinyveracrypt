@@ -487,7 +487,7 @@ def test_veracrypt():
   enchd = tinyveracrypt.build_veracrypt_header(
       decrypted_size=1 << 20, decrypted_ofs=4096,
       passphrase=tinyveracrypt.TEST_PASSPHRASE,
-      enchd_prefix=tinyveracrypt.TEST_SALT,
+      enchd_prefix=tinyveracrypt.TEST_SALT, is_hidden=False,
       hash='sha512', cipher='aes-xts-plain64', keytable=keytable)
   dechd = crypt_veracrypt_encdechd(enchd, header_key, 'aes-xts-plain64', False)
   check_full_dechd(dechd, 0, False)
