@@ -1825,6 +1825,7 @@ HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
     'whirlpool': (find_best_digest_cons('whirlpool', 'Whirlpool', SlowWhirlpool), 64),
+    'md5': (find_best_digest_cons('md5', 'md5', None), 64),  # !! Implement SlowMd5, just for GPG.
     # TODO(pts): Add support for hash 'streeblog', supported by VeraCrypt.
 }
 
