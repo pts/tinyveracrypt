@@ -1777,6 +1777,151 @@ class SlowWhirlpool(object):
     return other
 
 
+# --- MD5 hash (message digest).
+
+
+def _md5_rotl32(x, n):
+  x &= 0xffffffff
+  return ((x << n) | (x >> (32 - n)))
+
+
+def slow_md5_process(block, hh, _md5_rotl32=_md5_rotl32, _unpack=struct.unpack):
+  block = _unpack('<16L', block)
+  a, b, c, d = hh
+
+  a = _md5_rotl32(a + ((b & c) | (~b & d)) + block[0] + 0xd76aa478, 7) + b
+  d = _md5_rotl32(d + ((a & b) | (~a & c)) + block[1] + 0xe8c7b756, 12) + a
+  c = _md5_rotl32(c + ((d & a) | (~d & b)) + block[2] + 0x242070db, 17) + d
+  b = _md5_rotl32(b + ((c & d) | (~c & a)) + block[3] + 0xc1bdceee, 22) + c
+  a = _md5_rotl32(a + ((b & c) | (~b & d)) + block[4] + 0xf57c0faf, 7) + b
+  d = _md5_rotl32(d + ((a & b) | (~a & c)) + block[5] + 0x4787c62a, 12) + a
+  c = _md5_rotl32(c + ((d & a) | (~d & b)) + block[6] + 0xa8304613, 17) + d
+  b = _md5_rotl32(b + ((c & d) | (~c & a)) + block[7] + 0xfd469501, 22) + c
+  a = _md5_rotl32(a + ((b & c) | (~b & d)) + block[8] + 0x698098d8, 7) + b
+  d = _md5_rotl32(d + ((a & b) | (~a & c)) + block[9] + 0x8b44f7af, 12) + a
+  c = _md5_rotl32(c + ((d & a) | (~d & b)) + block[10] + 0xffff5bb1, 17) + d
+  b = _md5_rotl32(b + ((c & d) | (~c & a)) + block[11] + 0x895cd7be, 22) + c
+  a = _md5_rotl32(a + ((b & c) | (~b & d)) + block[12] + 0x6b901122, 7) + b
+  d = _md5_rotl32(d + ((a & b) | (~a & c)) + block[13] + 0xfd987193, 12) + a
+  c = _md5_rotl32(c + ((d & a) | (~d & b)) + block[14] + 0xa679438e, 17) + d
+  b = _md5_rotl32(b + ((c & d) | (~c & a)) + block[15] + 0x49b40821, 22) + c
+  a = _md5_rotl32(a + ((b & d) | (c & ~d)) + block[1] + 0xf61e2562, 5) + b
+  d = _md5_rotl32(d + ((a & c) | (b & ~c)) + block[6] + 0xc040b340, 9) + a
+  c = _md5_rotl32(c + ((d & b) | (a & ~b)) + block[11] + 0x265e5a51, 14) + d
+  b = _md5_rotl32(b + ((c & a) | (d & ~a)) + block[0] + 0xe9b6c7aa, 20) + c
+  a = _md5_rotl32(a + ((b & d) | (c & ~d)) + block[5] + 0xd62f105d, 5) + b
+  d = _md5_rotl32(d + ((a & c) | (b & ~c)) + block[10] + 0x02441453, 9) + a
+  c = _md5_rotl32(c + ((d & b) | (a & ~b)) + block[15] + 0xd8a1e681, 14) + d
+  b = _md5_rotl32(b + ((c & a) | (d & ~a)) + block[4] + 0xe7d3fbc8, 20) + c
+  a = _md5_rotl32(a + ((b & d) | (c & ~d)) + block[9] + 0x21e1cde6, 5) + b
+  d = _md5_rotl32(d + ((a & c) | (b & ~c)) + block[14] + 0xc33707d6, 9) + a
+  c = _md5_rotl32(c + ((d & b) | (a & ~b)) + block[3] + 0xf4d50d87, 14) + d
+  b = _md5_rotl32(b + ((c & a) | (d & ~a)) + block[8] + 0x455a14ed, 20) + c
+  a = _md5_rotl32(a + ((b & d) | (c & ~d)) + block[13] + 0xa9e3e905, 5) + b
+  d = _md5_rotl32(d + ((a & c) | (b & ~c)) + block[2] + 0xfcefa3f8, 9) + a
+  c = _md5_rotl32(c + ((d & b) | (a & ~b)) + block[7] + 0x676f02d9, 14) + d
+  b = _md5_rotl32(b + ((c & a) | (d & ~a)) + block[12] + 0x8d2a4c8a, 20) + c
+  a = _md5_rotl32(a + (b ^ c ^ d) + block[5] + 0xfffa3942, 4) + b
+  d = _md5_rotl32(d + (a ^ b ^ c) + block[8] + 0x8771f681, 11) + a
+  c = _md5_rotl32(c + (d ^ a ^ b) + block[11] + 0x6d9d6122, 16) + d
+  b = _md5_rotl32(b + (c ^ d ^ a) + block[14] + 0xfde5380c, 23) + c
+  a = _md5_rotl32(a + (b ^ c ^ d) + block[1] + 0xa4beea44, 4) + b
+  d = _md5_rotl32(d + (a ^ b ^ c) + block[4] + 0x4bdecfa9, 11) + a
+  c = _md5_rotl32(c + (d ^ a ^ b) + block[7] + 0xf6bb4b60, 16) + d
+  b = _md5_rotl32(b + (c ^ d ^ a) + block[10] + 0xbebfbc70, 23) + c
+  a = _md5_rotl32(a + (b ^ c ^ d) + block[13] + 0x289b7ec6, 4) + b
+  d = _md5_rotl32(d + (a ^ b ^ c) + block[0] + 0xeaa127fa, 11) + a
+  c = _md5_rotl32(c + (d ^ a ^ b) + block[3] + 0xd4ef3085, 16) + d
+  b = _md5_rotl32(b + (c ^ d ^ a) + block[6] + 0x04881d05, 23) + c
+  a = _md5_rotl32(a + (b ^ c ^ d) + block[9] + 0xd9d4d039, 4) + b
+  d = _md5_rotl32(d + (a ^ b ^ c) + block[12] + 0xe6db99e5, 11) + a
+  c = _md5_rotl32(c + (d ^ a ^ b) + block[15] + 0x1fa27cf8, 16) + d
+  b = _md5_rotl32(b + (c ^ d ^ a) + block[2] + 0xc4ac5665, 23) + c
+  a = _md5_rotl32(a + (c ^ (b | ~d)) + block[0] + 0xf4292244, 6) + b
+  d = _md5_rotl32(d + (b ^ (a | ~c)) + block[7] + 0x432aff97, 10) + a
+  c = _md5_rotl32(c + (a ^ (d | ~b)) + block[14] + 0xab9423a7, 15) + d
+  b = _md5_rotl32(b + (d ^ (c | ~a)) + block[5] + 0xfc93a039, 21) + c
+  a = _md5_rotl32(a + (c ^ (b | ~d)) + block[12] + 0x655b59c3, 6) + b
+  d = _md5_rotl32(d + (b ^ (a | ~c)) + block[3] + 0x8f0ccc92, 10) + a
+  c = _md5_rotl32(c + (a ^ (d | ~b)) + block[10] + 0xffeff47d, 15) + d
+  b = _md5_rotl32(b + (d ^ (c | ~a)) + block[1] + 0x85845dd1, 21) + c
+  a = _md5_rotl32(a + (c ^ (b | ~d)) + block[8] + 0x6fa87e4f, 6) + b
+  d = _md5_rotl32(d + (b ^ (a | ~c)) + block[15] + 0xfe2ce6e0, 10) + a
+  c = _md5_rotl32(c + (a ^ (d | ~b)) + block[6] + 0xa3014314, 15) + d
+  b = _md5_rotl32(b + (d ^ (c | ~a)) + block[13] + 0x4e0811a1, 21) + c
+  a = _md5_rotl32(a + (c ^ (b | ~d)) + block[4] + 0xf7537e82, 6) + b
+  d = _md5_rotl32(d + (b ^ (a | ~c)) + block[11] + 0xbd3af235, 10) + a
+  c = _md5_rotl32(c + (a ^ (d | ~b)) + block[2] + 0x2ad7d2bb, 15) + d
+  b = _md5_rotl32(b + (d ^ (c | ~a)) + block[9] + 0xeb86d391, 21) + c
+
+  return (hh[0] + a) & 0xffffffff, (hh[1] + b) & 0xffffffff, (hh[2] + c) & 0xffffffff, (hh[3] + d) & 0xffffffff
+
+
+del _md5_rotl32
+
+
+# Fallback pure Python implementation of MD5 based on
+# https://github.com/doegox/python-cryptoplus/blob/master/src/CryptoPlus/Hash/pymd5.py
+# It is about 400+ times slower than OpenSSL's C implementation.
+#
+# Most users shouldn't be using this, because it's too slow in production
+# (as used in pbkdf2). Even Python 2.4 has md5.md5 (autodetected below),
+# and Python >=2.5 has hashlib.md5 (also autodetected below), so most
+# users don't need this implementation.
+class SlowMd5(object):
+  _h0 = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476)
+
+  block_size = 64
+  digest_size = 16
+
+  __slots__ = ('_buffer', '_counter', '_h')
+
+  def __init__(self, m=None):
+    self._buffer = ''
+    self._counter = 0
+    self._h = self._h0
+    if m is not None:
+      self.update(m)
+
+  def update(self, m):
+    if not isinstance(m, (str, buffer)):
+      raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
+    if not m:
+      return
+    buf, process = self._buffer, slow_md5_process
+    lb, lm = len(buf), len(m)
+    self._counter += lm
+    self._buffer = None
+    if lb + lm < 64:
+      buf += str(m)
+      self._buffer = buf
+    else:
+      hh, i, _buffer = self._h, 0, buffer
+      if lb:
+        assert lb < 64
+        i = 64 - lb
+        hh = process(buf + m[:i], hh)
+      for i in xrange(i, lm - 63, 64):
+        hh = process(_buffer(m, i, 64), hh)
+      self._h = hh
+      self._buffer = m[lm - ((lm - i) & 63):]
+
+  def digest(self):
+    c = self._counter
+    if (c & 63) < 56:
+      return struct.pack('<4L', *slow_md5_process(self._buffer + struct.pack('<c%dxQ' % (55 - (c & 63)), '\x80', c << 3), self._h))
+    else:
+      return struct.pack('<4L', *slow_md5_process(struct.pack('<56xQ', c << 3), slow_md5_process(self._buffer + struct.pack('<c%dx' % (~c & 63), '\x80'), self._h)))
+
+  def hexdigest(self):
+    return self.digest().encode('hex')
+
+  def copy(self):
+    other = type(self)()
+    other._buffer, other._counter, other._h = self._buffer, self._counter, self._h
+    return other
+
+
 # --- Built-in hashes.
 
 
@@ -1810,6 +1955,8 @@ def find_best_digest_cons(hash, pycrypto_name, default=None):
     return maybe_hashlib_get_digest_cons(hash)
   elif hash == 'sha1' and maybe_import_and_call('sha', 'sha', ()):  # Python 2.4.
     f = lambda string='', _hash=sys.modules['sha'].sha: _hash(string)
+  elif hash == 'md5' and maybe_import_and_call('md5', 'md5', ()):  # Python 2.4.
+    f = lambda string='', _hash=sys.modules['md5'].md5: _hash(string)
   else:
     #raise ImportError(
     #    'Cannot find SHA-512 implementation: install hashlib or pycrypto, '
@@ -1829,7 +1976,7 @@ HASH_DIGEST_PARAMS = {  # {hash: (digest_cons, digest_blocksize)}.
     'sha512': (find_best_digest_cons('sha512', 'SHA512', SlowSha512), 128),
     'ripemd160': (find_best_digest_cons('ripemd160', 'RIPEMD160', SlowRipeMd160), 64),
     'whirlpool': (find_best_digest_cons('whirlpool', 'Whirlpool', SlowWhirlpool), 64),
-    'md5': (find_best_digest_cons('md5', 'md5', None), 64),  # !! Implement SlowMd5, just for GPG.
+    'md5': (find_best_digest_cons('md5', 'md5', SlowMd5), 64),
     # TODO(pts): Add support for hash 'streeblog', supported by VeraCrypt.
 }
 

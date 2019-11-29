@@ -157,6 +157,22 @@ def test_whirlpool():
   assert whirlpool('?' + data).hexdigest() == '5a743e13b415087036275eb798fcf0770b707bc9a416a0c8829c4192396742e3434fd57ccb10602a0ffdbff3ff009e34ab52f1184dcf508fca0b984a912cf437'
 
 
+def test_md5():
+  md5 = tinyveracrypt.HASH_DIGEST_PARAMS['md5'][0]
+  assert md5('foobar').digest() == '8X\xf6"0\xac<\x91_0\x0cfC\x12\xc6?'
+  assert md5('Foobar! ' * 14).digest() == 'ht\xd1\xb6pq#P\xc3\x8eI\x83\x83`\xff\xb4'
+  d = md5('foobar')
+  for i in xrange(200):
+    d.update(buffer(str(i) * i))
+  assert d.digest() == '\x91\x92q\xba\xd1uiq\\\x82\xddN\xeaqR\xe2'
+  data = 'HelloWorl' * 7 + 'd'
+  data = 'HelloWorld! ' * 10
+  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
+  assert md5(data).hexdigest() == 'f1f0fff69d07c75d8d0720178a8eaa41'
+  assert md5(data[1:]).hexdigest() == '2bd7dde9dbf3c1a8171458e3ddf11ed1'
+  assert md5('?' + data).hexdigest() == '50e0dc0736bbb3f38acfeee7432f76c2'
+
+
 def benchmark_sha1():
   sha1 = tinyveracrypt.sha1
   for i in xrange(200):
@@ -582,6 +598,7 @@ def test():
   test_sha1()
   test_ripemd160()
   test_whirlpool()
+  test_md5()
   test_crypt_aes_xts()
   test_crypt_aes_cbc()
   test_crypt_aes_lrw()
@@ -619,6 +636,8 @@ if __name__ == '__main__':
       tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'] = (tinyveracrypt.SlowRipeMd160,) + tinyveracrypt.HASH_DIGEST_PARAMS['ripemd160'][1:]
     elif arg == '--slow-whirlpool':
       tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'] = (tinyveracrypt.SlowWhirlpool,) + tinyveracrypt.HASH_DIGEST_PARAMS['whirlpool'][1:]
+    elif arg == '--slow-md5':
+      tinyveracrypt.HASH_DIGEST_PARAMS['md5'] = (tinyveracrypt.SlowMd5,) + tinyveracrypt.HASH_DIGEST_PARAMS['md5'][1:]
     elif arg == '--slow-crc32':
       tinyveracrypt.crc32 = tinyveracrypt.slow_crc32
     elif arg == '--slow-pbkdf2-hmac':
