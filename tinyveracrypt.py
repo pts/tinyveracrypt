@@ -1263,7 +1263,7 @@ class SlowSha512(object):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
-    buf = self._buffer
+    buf, process = self._buffer, slow_sha512_process
     lb, lm = len(buf), len(m)
     self._counter += lm
     self._buffer = None
@@ -1275,9 +1275,9 @@ class SlowSha512(object):
       if lb:
         assert lb < 128
         i = 128 - lb
-        hh = slow_sha512_process(buf + m[:i], hh)
+        hh = process(buf + m[:i], hh)
       for i in xrange(i, lm - 127, 128):
-        hh = slow_sha512_process(_buffer(m, i, 128), hh)
+        hh = process(_buffer(m, i, 128), hh)
       self._h = hh
       self._buffer = m[lm - ((lm - i) & 127):]
 
@@ -1396,7 +1396,7 @@ class SlowSha256(object):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
-    buf = self._buffer
+    buf, process = self._buffer, slow_sha256_process
     lb, lm = len(buf), len(m)
     self._counter += lm
     self._buffer = None
@@ -1408,9 +1408,9 @@ class SlowSha256(object):
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = slow_sha256_process(buf + m[:i], hh)
+        hh = process(buf + m[:i], hh)
       for i in xrange(i, lm - 63, 64):
-        hh = slow_sha256_process(_buffer(m, i, 64), hh)
+        hh = process(_buffer(m, i, 64), hh)
       self._h = hh
       self._buffer = m[lm - ((lm - i) & 63):]
 
@@ -1514,7 +1514,7 @@ class SlowSha1(object):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
-    buf = self._buffer
+    buf, process = self._buffer, slow_sha1_process
     lb, lm = len(buf), len(m)
     self._counter += lm
     self._buffer = None
@@ -1526,9 +1526,9 @@ class SlowSha1(object):
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = slow_sha1_process(buf + m[:i], hh)
+        hh = process(buf + m[:i], hh)
       for i in xrange(i, lm - 63, 64):
-        hh = slow_sha1_process(_buffer(m, i, 64), hh)
+        hh = process(_buffer(m, i, 64), hh)
       self._h = hh
       self._buffer = m[lm - ((lm - i) & 63):]
 
@@ -1611,7 +1611,7 @@ class SlowRipeMd160(object):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
       return
-    buf = self._buffer
+    buf, process = self._buffer, slow_ripemd160_process
     lb, lm = len(buf), len(m)
     self._counter += lm
     self._buffer = None
@@ -1623,9 +1623,9 @@ class SlowRipeMd160(object):
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = slow_ripemd160_process(buf + m[:i], hh)
+        hh = process(buf + m[:i], hh)
       for i in xrange(i, lm - 63, 64):
-        hh = slow_ripemd160_process(_buffer(m, i, 64), hh)
+        hh = process(_buffer(m, i, 64), hh)
       self._h = hh
       self._buffer = m[lm - ((lm - i) & 63):]
 
@@ -1730,15 +1730,15 @@ class SlowWhirlpool(object):
 
       cdo_func_ary.append(cdo)
       del cdo_func_ary[1:]  # Delete byproducts of other threads.
-    cdo_func = cdo_func_ary[0]
+    cdo_func, process = cdo_func_ary[0], slow_whirlpool_process
     if m is ():  # Digest. Implemented in thus function because of cdo_func_ary.
       hh, counter, block, _pack, _unpack = self._h, self._counter, self._buffer, struct.pack, struct.unpack
       lb = len(block)
       block += '\x80' + '\0' * (~lb & 31)
       if lb >= 32:
-        return _pack('>8Q', *slow_whirlpool_process(_pack('>56xQ', counter << 3), slow_whirlpool_process(block, hh, cdo_func), cdo_func))
+        return _pack('>8Q', *process(_pack('>56xQ', counter << 3), process(block, hh, cdo_func), cdo_func))
       else:
-        return _pack('>8Q', *slow_whirlpool_process(_pack('>56sQ', block, counter << 3), hh, cdo_func))
+        return _pack('>8Q', *process(_pack('>56sQ', block, counter << 3), hh, cdo_func))
     if not isinstance(m, (str, buffer)):
       raise TypeError('update() argument 1 must be string, not %s' % (type(m).__name__))
     if not m:
@@ -1755,9 +1755,9 @@ class SlowWhirlpool(object):
       if lb:
         assert lb < 64
         i = 64 - lb
-        hh = slow_whirlpool_process(buf + m[:i], hh, cdo_func)
+        hh = process(buf + m[:i], hh, cdo_func)
       for i in xrange(i, lm - 63, 64):
-        hh = slow_whirlpool_process(_buffer(m, i, 64), hh, cdo_func)
+        hh = process(_buffer(m, i, 64), hh, cdo_func)
       self._h = hh
       self._buffer = m[lm - ((lm - i) & 63):]
 
