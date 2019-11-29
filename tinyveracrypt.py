@@ -1661,7 +1661,7 @@ def slow_whirlpool_process(block, hh, cdo_func, _unpack=struct.unpack):
   return [hh[i] ^ m[i] ^ block[i] for i in xrange(8)]
 
 
-# Fallback pure Python implementation of SHA-256 based on
+# Fallback pure Python implementation of Whirlpool based on
 # https://github.com/doegox/python-cryptoplus/blob/master/src/CryptoPlus/Hash/pywhirlpool.py
 # and http://www.bjrn.se/code/whirlpoolpy.txt .
 # It is about 400+ times slower than OpenSSL's C implementation.
