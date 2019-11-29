@@ -524,9 +524,13 @@ def slow_crc32(data, crc=0):
   return (crc & 0x7fffffff) - (crc & 0x80000000)  # Sign-extend.
 
 
-crc32 = maybe_import_and_getattr('zlib', 'crc32')
+crc32 = maybe_import_and_getattr('binascii', 'crc32')
 if not callable(crc32):
-  crc32 = maybe_import_and_getattr('binascii', 'crc32')
+  crc32 = maybe_import_and_getattr('zlib', 'crc32')
+  if callable(crc32):  # In Python 2.5 it returns uint32, sign-extend it.
+    def crc32(data, crc=0, _crc32=crc32):
+      result = _crc32(data, crc)
+      return (result & 0x7fffffff) - (result & 0x80000000)
 if not callable(crc32):
   crc32 = slow_crc32
 
