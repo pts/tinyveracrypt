@@ -976,4 +976,12 @@ tinyveracrypt doesn't support the `--keyfiles=...' flag used by truecrypt
 and veracrypt, except with an empty value (which disables the use of
 keyfiles).
 
+Q37. What are alternative TrueCrypt and VeraCrypt implementations?
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+* tinyveracrypt
+* cryptsetup: can mount but not init volumes
+* tcplay: https://wiki.archlinux.org/index.php/Tcplay
+* pytruecrypt: https://github.com/4144414D/pytruecrypt/
+* others listed in the README: https://github.com/4144414D/pytruecrypt/
+
 __END__
