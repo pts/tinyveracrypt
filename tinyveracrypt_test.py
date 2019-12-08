@@ -74,11 +74,11 @@ def test_sha384():
   for i in xrange(200):
     d.update(buffer(str(i) * i))
   assert d.digest() == "\n\xe3b\xb3\xde\xe4&6\xcc\xa5\xb2\xe1\x9c\x0c\xce)\xbaQ\xee\x03\xa3\xfb`\xac\xbe\xc6#X\x8c\xe4\xfc\xb8\xdf\xbeA\x9f+\x8e%\x80-'7=\xc0*J\xa1"
-  data = 'HelloWorld! ' * 10
-  assert len(data) == 64 + 56  # On the % 64 < 56 boundary.
-  assert sha384(data).hexdigest() == '000b73a112b9c2d65ae8bc20544e4e16818017b65b47b4a3d10418f2778eeaa58c0140531a0506a6b7a5d39bb30e6ad1'
-  assert sha384(data[1:]).hexdigest() == '51dcad7685d00c18645e2cb8f83567d245a5c10df387d1abe5acf2f3c2b642a59e926f8063c0499f5201db6984e7b8dd'
-  assert sha384('?' + data).hexdigest() == '194d26efbc285d8b10f3320964a8615c2474fd78b9c2ed888ec974e6aef5902ad43a6ece90701473ed4bdb78fcc10894'
+  data = 'HelloWorld! ' * 20
+  assert len(data) == 128 + 112  # On the % 128 < 112 boundary.
+  assert sha384(data).hexdigest() == '736a462a4e4bca1d8e831b264916ba8dd6e55e0b969389191f7b9bf98b0acd022678c07831d58e74b3cc27d9386f4410'
+  assert sha384(data[1:]).hexdigest() == 'fce5bf3c6c810b45c8b60ab20d840fab178d01e919e48641345ca4de4784a581345b0e0bf605da94b1ab7d222c8aef22'
+  assert sha384('?' + data).hexdigest() == '921d38ed1012801b42b1ffacc08940782c1d67a06ff72f3d6eb89d9982f6a4b4f6bebb6effbba17333c9c738952b6f0d'
 
 
 def test_sha256():
