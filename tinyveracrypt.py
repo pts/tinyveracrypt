@@ -5817,6 +5817,7 @@ def cmd_create(args):
         enchd_prefix = salt
         enchd_suffix = ''
       enchd = build_veracrypt_header(
+          fake_luks_uuid=uuid,  # Not enabled for backup.
           decrypted_size=decrypted_size, passphrase=passphrase,
           enchd_prefix=enchd_prefix, enchd_suffix=enchd_suffix,
           decrypted_ofs=decrypted_ofs, pim=pim, truecrypt_version=truecrypt_version,
@@ -5834,6 +5835,7 @@ def cmd_create(args):
           assert len(enchd) == decrypted_ofs
       if do_add_backup:
         xofs = (0x20000, 512)[volume_type == 'hidden']
+        # !!! Is this correct? Especially xofs.
         enchd_backup = build_veracrypt_header(
             decrypted_size=device_size - decrypted_ofs - xofs,
             passphrase=passphrase, decrypted_ofs=xofs,
