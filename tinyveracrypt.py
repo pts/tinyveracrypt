@@ -5852,6 +5852,8 @@ def cmd_create(args):
       open(device, 'ab').close()
     if xf is None:
       xf = open(device, 'r+b')
+    else:
+      xf.seek(0)  # May be set incorrectly above.
     if volume_type == 'hidden':
       xf.seek(0x10000)
       xf.write(enchd)
