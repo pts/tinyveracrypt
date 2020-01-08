@@ -5931,6 +5931,17 @@ def cmd_create(args):
       fsync_loop_device(xf)
 
     if mkfs_args:
+      if not isinstance(xf, DmCryptFlushingFile):
+        # Linux-specific. We need this so that the data written to xf gets
+        # flushed from the page cache to `device'. Without this the flush
+        # may happen at xf.close() time (after mkfs.ext4 has finished),
+        # overwriting the first 4 KiB containing the ext4 superblock (at
+        # offset 1024).
+        os.fsync(xf.fileno())
+        if sys.platform.startswith('linux'):
+          import fcntl
+          _BLKFLSBUF = 0x1261
+          fcntl.ioctl(xf.fileno(), _BLKFLSBUF)  # Flush page cache.
       # TODO(pts): Reuse existing dm device if is_opened.
       name = 'tinyveracrypt.mkfs.%d' % os.getpid()
       after_data_ary = []
