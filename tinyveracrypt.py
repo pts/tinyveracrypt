@@ -3524,6 +3524,8 @@ def yield_dm_devices():
   for line in value.pop().splitlines():
     i = line.rfind('\t')
     if i < 0:
+      if line == 'No devices found':
+        continue
       raise ValueError('Bad dmsetup ls line: %r' % line)
     name2, dev2 = line[:i], line[i + 1:].replace(', ', ':')
     try:
