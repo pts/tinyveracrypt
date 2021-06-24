@@ -147,6 +147,7 @@ Flags for init, create and luksFormat:
   derivation. The default is random string of the right size.
 * --fake-luks-uuid=<hex>: Create a fake LUKS header with the specified UUID
   with the VeraCrypt or TrueCrypt header. By default this feature is disabled.
+  Specify an empty value or none to disable it explicitly.
 * --any-luks-uuid: The value of --fake-luks-uuid=... or --uuid=... can be
   any string (not just hex digits). Unfortunately cryptsetup fails to open
   the encrypted volume unless hex digits are used. (This is not a problem for
@@ -5068,6 +5069,8 @@ def cmd_create(args):
         raise UsageError('FAT uuid must be 4 bytes: %s' % arg)
     elif arg.startswith('--fake-luks-uuid='):
       fake_luks_uuid_flag = arg[arg.find('=') + 1:]
+      if fake_luks_uuid_flag in ('', 'none'):
+        fake_luks_uuid_flag = None
     elif arg == '--any-luks-uuid':
       # If you specify a UUID in the wrong format,
       # `cryptsetup open' in cryptsetup-1.7.3 will fail with:
