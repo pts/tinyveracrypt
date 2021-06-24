@@ -5160,6 +5160,8 @@ def cmd_create(args):
       value = arg[arg.find('=') + 1:]
       if value == 'fat':
         decrypted_ofs = value
+      elif value == 'veracrypt':
+        decrypted_ofs = value
       else:
         decrypted_ofs = parse_decrypted_ofs_arg(arg)
     elif arg.startswith('--align-ofs='):
@@ -5667,6 +5669,8 @@ def cmd_create(args):
     if decrypted_ofs in ('fat', 'mkfat'):
       assert isinstance(fatfs_size, (int, long))
       decrypted_ofs = fatfs_size
+    elif decrypted_ofs == 'veracrypt':
+      decrypted_ofs = (512, 0x20000)[bool(do_add_full_header)]  # VeraCrypt minimum, small overhead.
     elif decrypted_ofs is None:
       if align_ofs and device_size <= align_ofs:
         raise UsageError('raw device too small for --align-ofs=%d, actual size: %d, try omitting --align-ofs=...' %
