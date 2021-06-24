@@ -5493,7 +5493,10 @@ def cmd_create(args):
         raise UsageError('--fake-luks-uuid=... conflicts with --ofs=fat')
       if decrypted_ofs == 'mkfat':
         raise UsageError('--fake-luks-uuid=... conflicts with --mkfat=...')
-    uuid = parse_luks_uuid_flag(fake_luks_uuid_flag or '', is_any_luks_uuid, get_random_bytes_func)
+    if fake_luks_uuid_flag is None:
+      uuid = fake_luks_uuid_flag
+    else:
+      uuid = parse_luks_uuid_flag(fake_luks_uuid_flag, is_any_luks_uuid, get_random_bytes_func)
     if uuid_flag is not None:
       raise UsageError('--type=%s conflicts with --uuid=..., maybe use --fake-looks-uuid=... instead' % type_value)
   if mkfs_args:
